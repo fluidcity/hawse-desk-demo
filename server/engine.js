@@ -22,6 +22,13 @@ class Engine {
   addFeed(name, feed) { this.feeds[name] = feed; return feed; }
   addStrategy(s) { this.strategies.push(s); return s; }
   strategy(id) { return this.strategies.find((s) => s.id === id); }
+  /** Freshest real perp quote for a symbol (Hyperliquid preferred, then OKX/Binance/Bybit). null if none fresh. */
+  quote(symbol, maxAgeMs = 3 * 60e3) {
+    const rows = this.feeds.funding.bySymbol(symbol, maxAgeMs); if (!rows.length) return null;
+    const order = ['hyperliquid', 'okx', 'binance', 'bybit'];
+    return rows.sort((a, b) => order.indexOf(a.venue) - order.indexOf(b.venue))[0];
+  }
+  price(symbol) { const q = this.quote(symbol); return q ? q.mark : null; }
   canOpen(simulated) { return this.gates[simulated ? 'sim' : 'real'].canOpen(); }
   start() {
     for (const f of Object.values(this.feeds)) f.start && f.start();

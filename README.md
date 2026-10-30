@@ -29,6 +29,7 @@ You need Node ≥ 22. There are no npm dependencies. One Node process proxies ev
 | # | Strategy | Real source (no key) | Keyed source | Fallback |
 |---|---|---|---|---|
 | 1 | Cross-venue perp funding arb | OKX, Hyperliquid, Binance, Bybit public REST | — | A venue that fails shows **NO DATA** and is excluded. Nothing is faked. |
+| 2 | Whale flow (large-tx monitor) | EVM via public RPC (publicnode) for Ethereum, Base and Arbitrum | `HELIUS_API_KEY` (Solana), `EVM_RPC_URL_*` / `ALCHEMY_API_KEY` / `INFURA_API_KEY` | With no key, Solana runs labeled **MOCK**. With `EVM_PUBLIC_RPC_FALLBACK=false` and no key, EVM runs MOCK. Trades on mock signals book to the SIM book. |
 
 More stages are added below as they land.
 
@@ -42,6 +43,13 @@ A pair qualifies only if the funding spread over `FUNDING_HOLD_HOURS` beats all 
 - a basis-risk buffer (½ of the current mark-price basis plus 2 bp)
 
 While a position is open, funding settles discretely at each venue's next settlement time. Legs are marked to market, so basis moves show up as PnL. The pair closes when the spread flips or after 72h.
+
+### 2. Whale flow
+
+- **Solana:** the Helius enhanced-transactions API polls the watched accounts every 15s. The defaults are the Raydium and Orca SOL-USDC pools, or set `HELIUS_WATCH_ADDRESSES`. Each transaction is classified from the fee payer's side: stables out and SOL in is a buy, the reverse is a sell, and anything else is a transfer sized by the larger leg. This samples the most recent 50 transactions per account per poll, so it is **not** a complete feed.
+- **EVM (Ethereum, Base, Arbitrum):** `eth_getLogs` over each new block range collects USDC, USDT and WETH `Transfer` logs plus directional Uniswap v3 WETH/USDC `Swap` logs. The pool's `token0` is read on chain to orient the swap.
+- **Signal:** this uses directional swaps only, never plain transfers. If net flow over 15 minutes reaches at least 2× `WHALE_MIN_USD` across at least 3 swaps, and at least 60% of it is one-sided, the desk opens a paper perp (SOL or ETH) on the freshest real quote. It uses 50% of the sleeve, a 1.2% take-profit, a 0.6% stop and a 90-minute time stop, with a 30-minute cooldown. Taker fee and slippage apply on both sides.
+- Whale-follow edge is speculative. The tape logs every skip with its numbers.
 
 ## Risk gate
 

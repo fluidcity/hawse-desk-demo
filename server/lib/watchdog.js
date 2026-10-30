@@ -13,14 +13,16 @@ const { performance } = require('perf_hooks');
 class Watchdog {
   constructor({ health, log = (m) => console.log(m), now = () => Date.now(), mono = () => performance.now(), checkMs = 15000, factor = 3, minStaleMs = 45000, maxBackoffMs = 10 * 60e3, jumpMs = 30000, setTimer = setInterval, clearTimer = clearInterval } = {}) {
     Object.assign(this, { health, log, now, mono, checkMs, factor, minStaleMs, maxBackoffMs, jumpMs, setTimer, clearTimer });
-    this.entries = new Map(); this.restarts = 0; this.clockJumps = []; this.lastCheckAt = null; this.started = false;
+    this.entries = new Map(); this.jumpListeners = []; this.restarts = 0; this.clockJumps = []; this.lastCheckAt = null; this.started = false;
   }
   /** spec: { key, ids: [healthId...], intervalMs, restart: () => void, activity?: 'any'|'ok' } */
   watch(spec) {
     if (!spec || !spec.key || typeof spec.restart !== 'function' || !(spec.ids || []).length) return;
     this.entries.set(spec.key, { activity: 'any', ...spec, restarts: 0, lastRestartAt: null, nextAllowedAt: 0, backoffMs: 0, lastReason: null, staleSince: null, addedAt: this.now() });
   }
-  watchAll(feeds) { for (const f of Object.values(feeds || {})) { if (f && typeof f.watchSpec === 'function') { let s; try { s = f.watchSpec(); } catch { s = null; } for (const e of [].concat(s || [])) this.watch(e); } } return this; }
+  watchAll(feeds) { for (const f of Object.values(feeds || {})) { if (f && typeof f.onClockJump === 'function') this.onJump((j) => f.onClockJump(j)); if (f && typeof f.watchSpec === 'function') { let s; try { s = f.watchSpec(); } catch { s = null; } for (const e of [].concat(s || [])) this.watch(e); } } return this; }
+  /** Called with {at, ms} on every detected wall-clock jump (the recorder writes an explicit gap marker). */
+  onJump(f) { if (typeof f === 'function') this.jumpListeners.push(f); return this; }
   start() { if (this.started) return; this.started = true; this.w0 = this.now(); this.m0 = this.mono(); this.timer = this.setTimer(() => this.check(), this.checkMs); if (this.timer && this.timer.unref) this.timer.unref(); }
   stop() { this.started = false; if (this.timer) this.clearTimer(this.timer); this.timer = null; }
   /** Last activity (ms epoch) across an entry's health rows; null if none of them has ever reported. */
@@ -38,6 +40,7 @@ class Watchdog {
     if (jumped) {
       this.clockJumps.push({ at: now, ms: Math.round(jumped) }); this.clockJumps = this.clockJumps.slice(-20);
       this.log(`[watchdog] wall clock jumped +${Math.round(jumped / 1000)}s vs monotonic (box paused/resumed?) -> restarting ${this.entries.size} feed loops`);
+      for (const f of this.jumpListeners) { try { f({ at: now, ms: Math.round(jumped) }); } catch { /* listener errors never stop the watchdog */ } }
     }
     const out = [];
     for (const e of this.entries.values()) {

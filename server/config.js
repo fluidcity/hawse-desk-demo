@@ -96,6 +96,17 @@ function build(env = process.env) {
       eventsFile: env.MEMPOOL_EVENTS_FILE !== undefined ? (env.MEMPOOL_EVENTS_FILE || null) : path.join(__dirname, '..', 'data', 'mev', 'events.json'),
       duneFile: env.MEMPOOL_DUNE_FILE !== undefined ? (env.MEMPOOL_DUNE_FILE || null) : path.join(__dirname, '..', 'data', 'mev', 'dune-sandwiched.json'),
     },
+    recorder: { // H6 market-data RECORDER: public read-only endpoints, append-only files under data/recorder (gitignored)
+      enabled: bool(env.RECORDER_ENABLED, true),
+      dir: env.RECORDER_DIR || path.join(__dirname, '..', 'data', 'recorder'),
+      capBytes: Math.max(64 * 2 ** 20, num(env.RECORDER_CAP_GB, 5) * 2 ** 30), maxFileBytes: num(env.RECORDER_MAX_FILE_MB, 64) * 2 ** 20, rotateMs: num(env.RECORDER_ROTATE_MIN, 60) * 60e3,
+      kalshi: { enabled: bool(env.RECORDER_KALSHI, true), base: env.KALSHI_PUBLIC_BASE || 'https://api.elections.kalshi.com/trade-api/v2',
+        series: list(env.RECORDER_KALSHI_SERIES, ['KXBTC15M', 'KXETH15M', 'KXSOL15M', 'KXXRP15M']), extraSeries: list(env.RECORDER_KALSHI_EXTRA_SERIES, ['KXNFLGAME', 'KXNBAGAME', 'KXNHLGAME', 'KXBTCD']),
+        extraTop: num(env.RECORDER_KALSHI_EXTRA_TOP, 12), bookMs: Math.max(500, num(env.RECORDER_KALSHI_BOOK_MS, 1000)), tradesMs: Math.max(1000, num(env.RECORDER_KALSHI_TRADES_MS, 2000)), maxRps: Math.min(15, num(env.RECORDER_KALSHI_MAX_RPS, 10)) },
+      polymarket: { enabled: bool(env.RECORDER_POLYMARKET, true), assets: list(env.RECORDER_POLY_ASSETS, ['btc', 'eth', 'sol', 'xrp']), topN: num(env.RECORDER_POLY_TOP, 10), bookMs: Math.max(1000, num(env.RECORDER_POLY_BOOK_MS, 2000)) },
+      ref: { enabled: bool(env.RECORDER_REF, true), venues: list(env.RECORDER_REF_VENUES, ['coinbase', 'kraken', 'bitstamp', 'gemini', 'cryptocom']), assets: list(env.RECORDER_REF_ASSETS, ['BTC', 'ETH', 'SOL', 'XRP']) },
+      odds: { enabled: bool(env.RECORDER_ODDS, true) },
+    },
     creditsFile: env.CREDITS_FILE !== undefined ? env.CREDITS_FILE : path.join(__dirname, '..', 'data', 'credits.json'),
     evm: {
       alchemyKey: env.ALCHEMY_API_KEY || '',

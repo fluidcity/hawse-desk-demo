@@ -23,7 +23,14 @@ module.exports = [
     unlocks: ['Funding arb', 'Perp momentum', 'Perp basis'], fallback: 'REST (geo-blocked from some regions)' },
   { id: 'okx', name: 'OKX (swaps + spot)', category: 'exchange', keyless: true, health: ['ws.okx', 'funding.okx', 'candles.okx', 'spot.okx'], signup: 'https://www.okx.com',
     unlocks: ['Funding arb', '1% mode candles', 'Perp momentum', 'Perp basis', 'Strategy backtests'], fallback: 'REST polling' },
-  { id: 'coinbase', name: 'Coinbase Exchange', category: 'exchange', keyless: true, health: ['candles.coinbase'], signup: 'https://www.coinbase.com', unlocks: ['1% mode candles (fallback)'] },
+  { id: 'coinbase', name: 'Coinbase Exchange', category: 'exchange', keyless: true, health: ['candles.coinbase', 'rec.ref.coinbase'], signup: 'https://www.coinbase.com', unlocks: ['1% mode candles (fallback)', 'Recorder 1 s reference median (ticker WS)'] },
+  // ---- H6 recorder (public market data, record-only) ----
+  { id: 'kalshi-public', name: 'Kalshi public market data', category: 'prediction', keyless: true, env: [{ name: 'KALSHI_PUBLIC_BASE' }], health: ['rec.kalshi.*'], signup: 'https://docs.kalshi.com',
+    unlocks: ['Recorder: 15m crypto books + trades + settlements', 'Recorder: sports/other series books', 'Kalshi H2 forward paper test'], fallback: 'none (no mock): recorder rows stop and gap markers are written' },
+  { id: 'polymarket-public', name: 'Polymarket public (Gamma + CLOB + data-api)', category: 'prediction', keyless: true, health: ['rec.poly.*'], signup: 'https://docs.polymarket.com',
+    unlocks: ['Recorder: 15m up/down books + trades', 'Recorder: top markets by volume'], fallback: 'none (no mock)' },
+  { id: 'ref-venues', name: 'Spot reference WebSockets (Kraken, Bitstamp, Gemini, Crypto.com)', category: 'exchange', keyless: true, health: ['rec.ref.kraken', 'rec.ref.bitstamp', 'rec.ref.gemini', 'rec.ref.cryptocom', 'rec.ref'], signup: 'https://docs.kraken.com/api/docs/websocket-v2/trade',
+    unlocks: ['Recorder 1 s BRTI-like median (research only; not the CF index)'], fallback: 'median over whichever venues are fresh (n is recorded)' },
   // ---- Solana ----
   { id: 'helius', name: 'Helius (Solana webhook → HAWSE inbox)', category: 'solana', feed: 'whale.solana',
     env: [{ name: 'WHALES_ENABLED' }, { name: 'HAWSE_WEBHOOK_URL', required: true }, { name: 'HAWSE_READ_TOKEN', required: true }, { name: 'HELIUS_API_KEY' }, { name: 'HELIUS_WEBHOOK_AUTH' },

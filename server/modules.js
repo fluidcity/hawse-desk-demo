@@ -20,6 +20,7 @@ const betting = require('./betting'); // self-contained module; see server/betti
 const { Strategy } = require('./strategies/base');
 const { MempoolFeed } = require('./feeds/mempool');
 const { MevLab } = require('./strategies/mev-lab');
+const { Recorder } = require('./recorder');
 
 module.exports = {
   whales(engine) {
@@ -66,6 +67,10 @@ module.exports = {
     engine.addStrategy(new PerpBasis(engine));
   },
   betting(engine) { betting.mount(engine, { Strategy }); },
+  recorder(engine) { // H6: record-only market data (public endpoints; no orders, no auth). Mounted after betting so it can tap the odds feed.
+    const c = engine.cfg.recorder; if (!c || !c.enabled) return;
+    engine.recorder = engine.addFeed('recorder', new Recorder({ health: engine.health, cfg: c, odds: engine.feeds.odds || null, log: engine.log || ((m) => console.log(m)) }));
+  },
   lab(engine) {
     const file = engine.cfg.lab && engine.cfg.lab.file !== undefined ? engine.cfg.lab.file : path.join(__dirname, '..', 'data', 'lab', 'strategies.json');
     engine.lab = engine.addFeed('lab', new Lab({ file, health: engine.health })); engine.lab.importers = engine.importers || (engine.importers = []); // modules (e.g. betting) register import handlers

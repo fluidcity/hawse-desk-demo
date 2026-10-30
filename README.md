@@ -503,3 +503,54 @@ Every polling or streaming feed declares `watchSpec()` (its health ids, expected
 
 ## Geo-blocked venues (Stage A)
 From some hosts (this box egresses from the US), `fapi.binance.com`/`dapi.binance.com` answer HTTP 451 "restricted location", and `api.bybit.com`/`api.bytick.com` answer a CloudFront 403 "block access from your country". Such responses mark the row **BLOCKED (HTTP xxx)**, not a bare DOWN. The row names where the data actually comes from, and the REST endpoint is probed again only every 30 min. The same venues' public WebSockets (`fstream.binance.com`, `stream.bybit.com`, `data-stream.binance.vision`) are not blocked and already carry funding rates, marks and books. Binance spot REST uses `data-api.binance.vision`, which Binance documents as its public market-data-only host (override with `BINANCE_SPOT_REST`). The undocumented website proxy paths are deliberately not used.
+
+## Market-data recorder (H6 Stage B)
+
+Record only. There is no strategy, no order code and no authentication. It implements miro's §7A recorder spec
+(`hawse-research/kalshi-15m-study.md`) on free public endpoints, and is on by default (`RECORDER_ENABLED=false` turns it off).
+
+| Stream (file prefix) | Source (public, GET only) | Cadence | Timestamps |
+|---|---|---|---|
+| `kalshi.market` | Kalshi `/markets?series_ticker=` (strike, open/close, rules), `/markets/{t}` (official result), `/series/{s}` (fee terms) | 20 s discovery, settlement polled after close, fees hourly | rx |
+| `kalshi.book` | Kalshi `/markets/{t}/orderbook?depth=10`, KXBTC15M / KXETH15M / KXSOL15M / KXXRP15M | every 1 s per live market, written when changed | rx, `sent`, **ex: null** (REST book has no exchange time) |
+| `kalshi.trade` | Kalshi `/markets/trades?ticker=` | every 2 s, deduped by trade_id | ex = Kalshi `created_time`, rx |
+| `kalshi.extra` | books for the top 12 open markets by 24 h volume across `KXNFLGAME, KXNBAGAME, KXNHLGAME, KXBTCD` | ~30 s each (round-robin) | rx |
+| `poly.market` / `poly.book` / `poly.trade` | Polymarket Gamma `/markets?slug={asset}-updown-15m-{start}`, CLOB `/book`, data-api `/trades` | books 2 s (written on hash change), trades 5 s | ex = CLOB book timestamp / trade time, rx |
+| `poly.top` | CLOB books for the top 10 Polymarket markets by 24 h volume | 60 s | ex, rx |
+| `ref` | Coinbase, Kraken, Bitstamp, Gemini and Crypto.com public WebSockets | one row per asset per second | each venue's px + ex + age, `med` over venues fresher than 10 s, `n` |
+| `odds` | a tap on the betting module's own The Odds API snapshots | whenever that feed refreshes | rx (**no extra credits**, existing budget guard unchanged; MOCK odds are never recorded) |
+| `gaps`, `meta` | the recorder itself | — | session_start/stop, a 10 s heartbeat, gap rows |
+
+**Deviation from the spec:** miro asked for Kalshi's WebSocket (`orderbook_delta`). That WebSocket requires API-key
+request signing, and this job forbids auth-signing code, so books are polled over public REST instead. That gives
+1 s resolution, not every delta, and no exchange timestamp on books (trades do carry one).
+The `ref` median is a BRTI-*like* median of last trades from 5 of the 7 CF constituents (LMAX and Bullish are not wired).
+It is **not** the CF Benchmarks index and not Kalshi's settlement source.
+
+**Files.** Output goes to `data/recorder/<UTC day>/<stream>.<HHMMSS>-<pid>.jsonl`. Files are append-only
+(opened with `O_APPEND`, never rewritten). They rotate hourly or at `RECORDER_MAX_FILE_MB` (default 64), and are then
+gzipped to `.jsonl.gz`. `RECORDER_CAP_GB` (default 5) caps the whole folder: the **oldest closed** files are deleted
+first, down to 90% of the cap, and each deletion is logged as a `meta` `evict` row. If only open files remain over the
+cap, new rows are dropped and counted, and the panel shows CAPPED. `data/` is gitignored.
+
+**Gaps and pauses.** This box is a VM that is paused between sessions. The recorder writes explicit `gap` rows rather
+than pretending to be continuous:
+
+| Reason | What it means |
+|---|---|
+| `offline` | The time from the previous process's last heartbeat to this start (desk stopped or box asleep). |
+| `vm-pause` | The wall clock jumped ahead of the monotonic clock (VM paused). |
+| `stall` | The 1 s tick fired more than 5 s late (event loop blocked or VM froze). |
+| `clock-jump` | The H5.1 watchdog saw the jump. It then also restarts the feed loops. |
+| `box-pause` | A stream's gap that overlaps one of the pauses above. |
+| `poll-gap` | More than 5 s (Kalshi 15m books) without a good response, with no pause behind it: a venue or network problem. |
+| `trade-page-limit` | A full trade page with no overlap was returned, so prints may be missing. |
+
+**Network.** All HTTP goes through `server/recorder/public-get.js`: GET only, no headers, and a host + path allowlist
+(Kalshi `/markets*`, `/series/*`, `/exchange/status`; Polymarket `/markets`, `/events`, `/book`, `/trades`). It has token
+buckets (Kalshi ≤ 10 rps). `test/recorder.test.js` checks that portfolio, order and auth URLs are refused before any
+network call, and source-scans `server/recorder` + `server/kalshi-h2` for signing, POST, order or key code.
+
+**UI.** The "Market-data recorder" card shows markets tracked, rows/min, bytes, last write, disk vs cap, the per-day
+projection, gaps by reason and live 15m markets. Health rows appear in group `recorder` (Settings → Feeds) and as
+providers `kalshi-public`, `polymarket-public` and `ref-venues`.

@@ -80,7 +80,7 @@ window.HAWSE.explain = (() => {
 
   function render() {
     renderHero(); renderTicker(); renderStrats(); renderRisk(); renderFunding(); renderAttr(); renderHealth(); renderTape();
-    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
+    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderRecorder(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
   }
 
   // ---------- hero + animated curve ----------
@@ -406,6 +406,32 @@ window.HAWSE.explain = (() => {
     $('mevEvents').innerHTML = `<div class="row head" style="${G}"><span>seen</span><span>swap</span><span>size</span><span>slip</span><span>ceil <span class="badge sim">SIM</span></span><span>realistic</span><span>back-run</span><span>truth</span></div>` +
       ((v.events || []).map((e) => `<div class="row ${e.simSandwichRealUsd > 0 ? 'ok' : ''}" style="${G}"><span class="dim">${hhmmss(e.seenAt)}</span><span><a href="https://etherscan.io/tx/${esc(e.hash)}" target="_blank" rel="noopener" style="color:inherit">${esc(e.pair || '')}</a> <span class="dim sm">${esc(e.v || '')} ${esc(e.fn || '')}${e.likelyCrossesTicks ? ' · crosses ticks?' : ''}${e.status !== 'simulated' ? ' · ' + esc(e.status || '') : ''}</span></span><span>$${compact(e.usd || 0)}</span><span>${d(e.slipTolPct, 2)}</span><span class="${(e.simSandwichCeilUsd || 0) > 0 ? 'pos' : 'dim'}">${$u(e.simSandwichCeilUsd)}</span><span class="${(e.simSandwichRealUsd || 0) > 0 ? 'pos' : 'dim'}">${$u(e.simSandwichRealUsd)}</span><span class="${(e.simBackrunUsd || 0) > 0 ? 'pos' : 'dim'}">${$u(e.simBackrunUsd)}</span><span>${truth(e)}</span></div>`).join('') ||
         `<div class="dim mono sm">${v.mode === 'off' ? 'off by default: set MEMPOOL_ENABLED=true to observe the public mempool (free publicnode WebSocket; read-only)' : 'waiting for a large Uniswap swap in the public mempool…'}</div>`);
+  }
+  function renderRecorder() {
+    const R = S.feeds && S.feeds.recorder; $('recCard').hidden = !R; if (!R) return;
+    const st = R.store || {}, P = R.projection, K = R.kalshi || {}, PM = R.poly || {}, RF = R.ref || {}, G = R.gaps || {}, O = R.odds || {};
+    const B = (n) => (n == null ? '—' : n >= 2 ** 30 ? (n / 2 ** 30).toFixed(2) + ' GiB' : n >= 2 ** 20 ? (n / 2 ** 20).toFixed(1) + ' MiB' : n >= 1024 ? (n / 1024).toFixed(0) + ' KiB' : n + ' B');
+    const lw = st.lastWriteAt ? Date.now() - st.lastWriteAt : null;
+    $('recMode').innerHTML = `${badge(!R.running ? 'down' : st.capped ? 'stale' : lw != null && lw < 15000 ? 'live' : 'stale')} ${R.running ? 'writing' : 'not running'} · last write ${ago(lw)}`;
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const pct = st.capBytes && st.usedBytes != null ? (100 * st.usedBytes) / st.capBytes : null;
+    const markets = (K.live || []).length + (K.extra || 0) + (PM.live || []).length + (PM.top || 0);
+    $('recMetrics').innerHTML = `<div class="subh">Public read-only endpoints; append-only JSONL under <code>data/recorder/</code> (gitignored, never committed). Every row: local receive time + monotonic clock, plus the venue's own timestamp when it sends one (Kalshi REST books do not). Gaps are written, never filled.</div>` +
+      `<div class="riskgrid">` + meter('markets tracked', markets, `Kalshi ${(K.live || []).length} 15m + ${K.extra || 0} other · Poly ${(PM.live || []).length} 15m + ${PM.top || 0} top`) +
+      meter('rows / min', compact(st.rowsPerMin || 0), `${compact(st.rows || 0)} rows this session · ${st.dropped || 0} dropped`) +
+      meter('bytes written', B(st.bytes || 0), `${st.rotations || 0} rotations · ${st.gzipped || 0} gzipped${st.gzRatio ? ' · gzip ×' + (1 / st.gzRatio).toFixed(1) : ''}`) +
+      meter('disk', `${B(st.usedBytes)} <span class="dim sm">/ ${B(st.capBytes)}</span>`, `${pct == null ? '—' : pct.toFixed(1) + '%'} of cap · ${st.files ?? '—'} files · ${st.evicted || 0} evicted${st.capped ? ' · <span class="neg">CAPPED</span>' : ''}`) +
+      meter('projection / day', P ? B(P.gzBytesPerDay) : '—', P ? `${B(P.rawBytesPerDay)} raw · ${compact(P.rowsPerDay)} rows · cap ≈ ${P.daysToCap ?? '—'} days${P.gzRatioMeasured ? '' : ' (gzip ratio assumed)'}` : 'after 1 min of data') +
+      meter('gaps', G.n || 0, Object.entries(G.byReason || {}).map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || 'none') + `</div>` +
+      `<div class="subh">Reference (1 s BRTI-like median of last trades; research only, <b>not</b> the CF index or Kalshi's settlement source): ${Object.entries(RF.latest || {}).map(([a, x]) => `${esc(a)} ${x.med == null ? '—' : x.med} <span class="dim sm">n=${x.n}</span>`).join(' · ') || '—'}` +
+      ` · venues ${Object.entries(RF.venues || {}).map(([v, x]) => `<span class="${x.open ? 'pos' : 'neg'}">${esc(v)}</span>`).join(' ')}</div>` +
+      `<div class="subh">Sports odds tap: ${esc(O.note || '')} · ${O.rows || 0} rows${O.credits ? ` · Odds API credits remaining ${O.credits.remaining}` : ''}</div>`;
+    const cols = 'grid-template-columns:1.6fr 60px 70px 70px 64px 64px';
+    const rowsK = (K.live || []).map((m) => `<div class="row" style="${cols}"><span>${esc(m.tk)} <span class="dim sm">K ${m.strike ?? ''}</span></span><span>${m.secLeft == null ? '—' : Math.floor(m.secLeft / 60) + 'm' + String(m.secLeft % 60).padStart(2, '0')}</span><span>${m.yb == null ? '—' : m.yb.toFixed(3)} / ${m.ya == null ? '—' : m.ya.toFixed(3)}</span><span>${m.books} polls</span><span>${m.bookRows} book</span><span>${m.trades} trd</span></div>`);
+    const rowsP = (PM.live || []).map((m) => `<div class="row" style="${cols}"><span>${esc(m.slug)} <span class="dim sm">Poly</span></span><span>${Math.floor(m.secLeft / 60)}m${String(m.secLeft % 60).padStart(2, '0')}</span><span class="dim">—</span><span></span><span>${m.bookRows} book</span><span>${m.trades} trd</span></div>`);
+    $('recMarkets').innerHTML = `<div class="row head" style="${cols}"><span>live 15m market</span><span>left</span><span>YES bid/ask</span><span>polls</span><span>rows</span><span>trades</span></div>` + ([...rowsK, ...rowsP].join('') || '<div class="dim mono sm">no live 15-minute market right now</div>');
+    const gc = 'grid-template-columns:70px 110px 1.2fr 70px';
+    $('recGaps').innerHTML = (G.recent || []).length ? `<div class="row head" style="${gc}"><span>at</span><span>reason</span><span>stream · key</span><span>length</span></div>` + G.recent.map((g) => `<div class="row" style="${gc}"><span class="dim">${hhmmss(g.to)}</span><span class="warn">${esc(g.reason)}</span><span class="sm">${esc(g.stream)} · ${esc(String(g.key))}</span><span>${ago(g.ms)}</span></div>`).join('') : '';
   }
   function renderGaps() {
     const s = S.strategies.find((x) => x.id === 'gaps'); $('gapCard').hidden = !s; if (!s) return;

@@ -54,7 +54,7 @@ function scoreFromApi(row) {
 class OddsFeed {
   constructor({ health, cfg, rng = Math.random, now = () => Date.now(), fetchImpl = (...a) => fetch(...a) }) {
     this.health = health; this.c = cfg; this.rng = rng; this.now = now; this.fetch = fetchImpl;
-    this.mode = cfg.apiKey ? 'pending' : 'mock';
+    this.mode = cfg.apiKey ? 'pending' : 'mock'; this.listeners = [];
     this.note = cfg.apiKey ? 'connecting to The Odds API' : 'ODDS_API_KEY not set → MOCK odds (synthetic, labelled; bets SIMULATED)';
     this.events = new Map(); this.closing = new Map(); this.scores = new Map(); this.quota = null; this.everOk = false; this.mockTruth = new Map();
     this.schedule = cfg.schedule || 'interval'; this.slate = new Map(); this.done = new Set(); this.skipped = []; this.lastScores = {}; this.slateAt = 0; this.snapshots = 0;
@@ -180,6 +180,7 @@ class OddsFeed {
   }
   /** Store an event snapshot. While the game has not started, it is also the latest closing-line candidate. */
   upsert(ev) {
+    if (!ev.simulated) for (const f of this.listeners || []) { try { f(ev); } catch { /* recorder tap must never break the feed */ } } // H6 recorder tap (no extra API calls)
     const prev = this.events.get(ev.id); this.events.set(ev.id, { ...ev, firstSeen: prev ? prev.firstSeen : this.now() });
     if (this.now() < ev.commence) this.closing.set(ev.id, { ...ev, capturedAt: this.now() });
   }

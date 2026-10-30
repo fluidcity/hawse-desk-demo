@@ -12,10 +12,8 @@ const { PerpBars } = require('./feeds/perp-bars');
 const { Lab } = require('./lab/lab');
 const path = require('path');
 const { PerpMomentum, PerpBasis } = require('./strategies/perps');
-const { OddsFeed } = require('./feeds/odds');
-const { BetBook } = require('./betting/book');
-const { LiveBetPlacer } = require('./betting/live');
-const { BetEV, BetSpread, BetArb } = require('./strategies/betting');
+const betting = require('./betting'); // self-contained module; see server/betting/index.js for the host contract
+const { Strategy } = require('./strategies/base');
 
 module.exports = {
   whales(engine) {
@@ -42,14 +40,9 @@ module.exports = {
     engine.addStrategy(new PerpMomentum(engine, bars));
     engine.addStrategy(new PerpBasis(engine));
   },
-  betting(engine) {
-    const feed = engine.addFeed('odds', new OddsFeed({ health: engine.health, cfg: engine.cfg.betting }));
-    const book = engine.bets = engine.addFeed('bets', new BetBook(engine, feed, engine.cfg.betting));
-    engine.liveBets = new LiveBetPlacer(); engine.placeLiveBet = () => engine.liveBets.placeBet(); // always throws
-    for (const S of [BetEV, BetSpread, BetArb]) engine.addStrategy(new S(engine, feed, book));
-  },
+  betting(engine) { betting.mount(engine, { Strategy }); },
   lab(engine) {
     const file = engine.cfg.lab && engine.cfg.lab.file !== undefined ? engine.cfg.lab.file : path.join(__dirname, '..', 'data', 'lab', 'strategies.json');
-    engine.lab = engine.addFeed('lab', new Lab({ file, health: engine.health }));
+    engine.lab = engine.addFeed('lab', new Lab({ file, health: engine.health })); engine.lab.importers = engine.importers || (engine.importers = []); // modules (e.g. betting) register import handlers
   },
 };

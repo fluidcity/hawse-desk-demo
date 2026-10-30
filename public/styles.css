@@ -97,7 +97,7 @@ button{font:inherit;color:inherit}
 .tape{max-height:340px;overflow-y:auto;font-size:11.5px}
 .tape-row{display:grid;grid-template-columns:64px 74px 1fr auto;gap:8px;padding:6px 2px;border-bottom:1px solid var(--line);animation:flash .9s ease-out}
 .tape-row .k{font-size:9px;letter-spacing:.08em;text-transform:uppercase;padding-top:2px}
-.k-fill{color:var(--mint)}.k-skip{color:var(--amber)}.k-risk{color:var(--hot)}.k-flow{color:var(--violet)}.k-info{color:var(--dim)}.k-error{color:var(--hot)}
+.k-fill{color:var(--mint)}.k-skip{color:var(--amber)}.k-risk{color:var(--hot)}.k-flow{color:var(--violet)}.k-info{color:var(--dim)}.k-error{color:var(--hot)}.k-signal{color:var(--lime)}
 @keyframes flash{from{background:rgba(61,255,176,.10)}to{background:transparent}}
 .whalenet{display:grid;grid-template-columns:repeat(auto-fit,minmax(110px,1fr));gap:6px;margin-bottom:10px}
 .whales{max-height:300px;overflow-y:auto}

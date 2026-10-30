@@ -45,7 +45,11 @@ class Lab {
   remove(id) { if (!this.db.configs[id]) return { ok: false }; delete this.db.configs[id]; delete this.db.runs[id]; this.persist(); return { ok: true }; }
   exportJson(id, version) { const c = this.get(id, version); if (!c) return null; const out = clone(c); delete out.lastBacktest; delete out.savedAt; return out; }
   /** Import JSON (object or string) or plain text. Always stored as 'unverified'; imported performance is dropped. */
-  importAny({ json, text }) {
+  importAny({ json, text, as }) {
+    // Delegation: other modules register importers (e.g. betting rules / signal-type packs) on this existing import path.
+    const imps = this.importers || [];
+    if (text != null && json == null && as && as !== 'strategy') { const imp = imps.find((i) => i.id === as || (as === 'bet_rule' && i.id === 'betting')); return imp ? { ...imp.importText(text), routedTo: imp.id } : { ok: false, errors: [`no importer for "${as}"`] }; }
+    if (json != null) { let o = json; if (typeof o === 'string') { try { o = JSON.parse(o); } catch { o = null; } } const imp = o && imps.find((i) => i.canImport(o)); if (imp) return { ...imp.importJson(o), routedTo: imp.id }; }
     if (text != null && json == null) {
       const r = textToConfig(text); if (!r.ok) return { ok: false, errors: [r.error], mapped: r.mapped, unmapped: r.unmapped };
       const s = this.save(r.config, { source: r.config.source }); return { ...s, mapped: r.mapped, unmapped: r.unmapped, warnings: r.warnings };

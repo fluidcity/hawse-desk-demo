@@ -7,7 +7,7 @@ const M = require('./math');
 
 const selKey = (market, name, point) => `${market}|${name}|${point == null ? '' : point}`;
 const fmtPt = (p) => (p == null ? '' : (p > 0 ? '+' : '') + p);
-const label = (ev, market, name, point) => (market === 'totals' ? `${name} ${point}` : market === 'spreads' ? `${name} ${fmtPt(point)}` : `${name} ML`);
+const label = (ev, market, name, point) => (market === 'totals' ? `${name} ${point}` : market === 'spreads' ? `${name} ${point === 0 ? "PK" : fmtPt(point)}` : `${name} ML`);
 
 /** Every complete two/three-way market quoted by one book, grouped by line. Returns [{market, line, outcomes:[{name, point, dec}]}]. */
 function bookMarkets(ev, b, markets = ['h2h', 'spreads', 'totals']) {

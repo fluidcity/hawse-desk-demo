@@ -68,16 +68,7 @@ function build(env = process.env) {
     jupiter: { base: env.JUPITER_API_BASE || 'https://lite-api.jup.ag' },
     orb: { minutes: num(env.ORB_MINUTES, 15), targetR: num(env.ORB_TARGET_R, 1.5), feePerSide: num(env.ORB_FEE_PER_SIDE, 0.72), maxRiskPct: num(env.ORB_MAX_RISK_PCT, 8),
       minWidthPct: num(env.ORB_MIN_WIDTH_PCT, 0.1), maxWidthPct: num(env.ORB_MAX_WIDTH_PCT, 0.8), lastEntryMinute: 240, flatMinute: 385 },
-    betting: {
-      apiKey: env.ODDS_API_KEY || '', // server-side only; never in publicFlags/snapshots
-      sports: list(env.ODDS_SPORTS, ['basketball_nba', 'americanfootball_nfl', 'icehockey_nhl']), regions: list(env.ODDS_REGIONS, ['us']), markets: list(env.ODDS_MARKETS, ['h2h', 'spreads', 'totals']),
-      pollSec: num(env.ODDS_POLL_SEC, 900), scoresPollSec: num(env.ODDS_SCORES_POLL_SEC, 1800),
-      minEdgePct: num(env.BET_MIN_EDGE_PCT, 2), minBooks: num(env.BET_MIN_BOOKS, 3), maxOddsDec: num(env.BET_MAX_ODDS_DEC, 6), fairMethod: env.BET_FAIR_METHOD === 'power' ? 'power' : 'multiplicative',
-      kellyFraction: num(env.BET_KELLY_FRACTION, 0.25), maxStakePct: num(env.BET_MAX_STAKE_PCT, 2), maxEventPct: num(env.BET_MAX_EVENT_PCT, 4), maxOpenPct: num(env.BET_MAX_OPEN_PCT, 25), minStakeUsd: num(env.BET_MIN_STAKE_USD, 5),
-      minMinutesToStart: num(env.BET_MIN_MINUTES_TO_START, 2), minPointEdge: num(env.BET_MIN_POINT_EDGE, 1), pointValuePct: num(env.BET_POINT_VALUE_PCT, 2.5),
-      minArbPct: num(env.BET_MIN_ARB_PCT, 0.5), arbStakePct: num(env.BET_ARB_STAKE_PCT, 6), middleMaxCostPct: num(env.BET_MIDDLE_MAX_COST_PCT, 3),
-      mockEvents: num(env.ODDS_MOCK_EVENTS, 8), mockTickMs: num(env.ODDS_MOCK_TICK_MS, 5000), mockLeadMin: [3, 25], mockGameMin: num(env.ODDS_MOCK_GAME_MIN, 4),
-    },
+    betting: require('./betting/config').fromEnv(env), // self-contained module config (server/betting/config.js)
     gaps: { notionalUsd: num(env.GAP_NOTIONAL_USD, 1000), pSuccess: num(env.GAP_P_SUCCESS, 0.35), solTipLamports: num(env.GAP_SOL_TIP_LAMPORTS, 100000),
       solPriorityMicroLamports: num(env.GAP_SOL_PRIORITY_MICROLAMPORTS, 50000), evmGasUnits: num(env.GAP_EVM_GAS_PER_SWAP, 180000), evmPoolFeeBps: num(env.GAP_EVM_POOL_FEE_BPS, 5),
       minEvUsd: num(env.GAP_MIN_EV_USD, 0.5), solPollMs: num(env.GAP_SOL_POLL_MS, 30000), evmPollMs: num(env.GAP_EVM_POLL_MS, 60000) },

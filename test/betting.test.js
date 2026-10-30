@@ -5,10 +5,10 @@ const M = require('../server/betting/math');
 const S = require('../server/betting/scanner');
 const { BetBook } = require('../server/betting/book');
 const { LiveBetPlacer } = require('../server/betting/live');
-const { OddsFeed, normalizeOddsApi, scoreFromApi } = require('../server/feeds/odds');
+const { OddsFeed, normalizeOddsApi, scoreFromApi } = require('../server/betting/data/odds');
 const { Engine } = require('../server/engine');
 const config = require('../server/config');
-const B = require('../server/strategies/betting');
+const B = require('../server/betting/strategies')(require('../server/strategies/base').Strategy);
 const near = (a, b, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `${a} ≉ ${b}`);
 
 test('american ↔ decimal and implied probability', () => {

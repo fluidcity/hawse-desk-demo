@@ -66,12 +66,13 @@
   $('labRun').onclick = async () => { const on = $('labRun').textContent.startsWith('Start'); await api(`/api/lab/configs/${cur.id}/run`, { on, version: cur.version }); $('labRun').textContent = on ? 'Stop paper run' : 'Start paper run'; await load(); };
   $('labExport').onclick = async () => { const j = await api(`/api/lab/configs/${cur.id}/export?v=${cur.version}`); const a = document.createElement('a'); a.href = URL.createObjectURL(new Blob([JSON.stringify(j, null, 2)], { type: 'application/json' })); a.download = `${cur.id}-v${cur.version}.json`; a.click(); };
   $('labClose').onclick = () => { $('labEditor').hidden = true; cur = null; };
-  const showImport = (r) => { $('labImportOut').innerHTML = (r.ok ? `<div class="lab-ok">Imported as “${esc(r.config.name)}” (${esc(r.config.id)} v${r.config.version}) · ${statusBadge('unverified')} until backtested.</div>` : errs(r)) +
+  const showImport = (r) => { $('labImportOut').innerHTML = (r.routedTo === 'betting' ? (r.ok ? `<div class="lab-ok">Routed to the betting module as ${esc(r.kind)}${r.rule ? ` “${esc(r.rule.name)}” (disabled draft)` : r.rules ? `: ${r.rules.length} rule(s), disabled` : r.added ? `: ${r.added.map(esc).join(', ')}` : ''}. Review it in <b>Bet rules → Rules</b>.</div>` : errs(r)) : r.ok ? `<div class="lab-ok">Imported as “${esc(r.config.name)}” (${esc(r.config.id)} v${r.config.version}) · ${statusBadge('unverified')} until backtested.</div>` : errs(r)) +
     (r.mapped && r.mapped.length ? `<div class="subh">Mapped</div>${r.mapped.map((x) => `<div class="pos">✓ ${esc(x)}</div>`).join('')}` : '') +
     (r.unmapped && r.unmapped.length ? `<div class="subh">Could not map (left at template defaults)</div>${r.unmapped.map((x) => `<div class="warn">✗ ${esc(x)}</div>`).join('')}` : '') +
     ((r.warnings || []).length ? `<div class="subh">Warnings</div>${r.warnings.map((x) => `<div class="warn">! ${esc(x)}</div>`).join('')}` : '') +
-    (r.ok ? `<div class="lab-actions"><button type="button" class="btn sm" data-edit="${esc(r.config.id)}">Open in editor</button></div>` : ''); load(); };
+    (r.ok && r.config ? `<div class="lab-actions"><button type="button" class="btn sm" data-edit="${esc(r.config.id)}">Open in editor</button></div>` : ''); load(); };
   $('labImportJson').onclick = async () => showImport(await api('/api/lab/import', { json: $('labImportText').value }));
+  $('labImportBet').onclick = async () => showImport(await api('/api/lab/import', { text: $('labImportText').value, as: 'bet_rule' }));
   $('labImportPlain').onclick = async () => showImport(await api('/api/lab/import', { text: $('labImportText').value }));
   load(); setInterval(() => { if (!$('labRuns').hidden) load(); }, 15000);
 })();

@@ -4,9 +4,12 @@
 //  bet_spread a book hanging a better NUMBER than the consensus spread; edge per point is an explicit ASSUMPTION.
 //  bet_arb    cross-book arbitrage at quoted prices (paper-booked as one grouped position); middles are ALERTS ONLY.
 // Every bet on the mock feed is tagged simulated and lands in the SIM book, never blended with real-data results.
-const { Strategy } = require('./base');
-const S = require('../betting/scanner');
-const M = require('../betting/math');
+// Module boundary: the host's Strategy base class is INJECTED (defineStrategies(Strategy)), so this file imports nothing
+// from the rest of HAWSE. Uses host.cfg.betting, host ledger via BetBook, and the Strategy base API (arm/gate/log/view).
+const S = require('./scanner');
+const M = require('./math');
+
+function defineStrategies(Strategy) {
 
 class BetStrategy extends Strategy {
   constructor(engine, feed, book, meta) { super(engine, meta); this.feed = feed; this.bk = book; this.c = engine.cfg.betting; this.opps = []; this.taken = new Set(); }
@@ -100,4 +103,6 @@ class BetArb extends BetStrategy {
   view() { return { ...super.view(), middles: this.middles }; }
 }
 
-module.exports = { BetEV, BetSpread, BetArb };
+return { BetEV, BetSpread, BetArb };
+}
+module.exports = defineStrategies;

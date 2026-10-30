@@ -302,6 +302,51 @@ Limits:
 - `POST /api/lab/configs/:id/duplicate|backtest|run|delete` (`backtest` takes `{version, limit<=1500}`; `run` takes `{on:false}` to stop)
 - `POST /api/lab/import` with `{json}` or `{text}`
 
+## Betting module: rules → signals → printable slips (Stage 10)
+
+> **Paper / manual only.** The desk never places a bet. A rule raises a **signal**. You review it, and if you want to act on it you print or export a **slip** and place the bet yourself on Kalshi, Polymarket or a sportsbook. The direct venue links are **disabled interfaces**.
+
+**Module boundary.** Everything for sports betting lives in `server/betting/` (data layer, rules engine, signals, slips, venue adapters, strategies) and `public/betting/` (UI + CSS). It is written so it can be split out as its own app later.
+- Server files require only Node built-ins and other files inside `server/betting/`. A test (`module boundary`) fails if anything reaches outside.
+- The host (`server/modules.js`) calls `mount(host, { Strategy })` with a small contract: `host.cfg.betting`, `addFeed`, `addStrategy`, `health`, `tape`, `ledger`. The module adds:
+  - `host.routes[]`: `{ prefix, handle(method, path, readBody) }`. `server/server.js` loops over these.
+  - `host.importers[]`: `{ id, canImport, importJson, importText }`. The strategy lab's import endpoint hands betting JSON/text to these.
+  - `host.placeLiveBet`: always throws.
+- The client module talks to the app only through `window.HAWSE.onState` (an array of callbacks that receive each SSE state) and its own `/api/betting/*` endpoints. Its data is `state.feeds.betdesk`.
+
+**Flow.**
+1. **Rules** (`hawse.betRule/1`). A rule has a name, `match: all|any`, `cooldownMin`, `enabled` and `conditions: [{ type, params, negate? }]`. You can add one from 6 templates (all start **disabled**), write it as JSON, or import it. Rules are saved to `BET_RULES_FILE` (default `data/betting/rules.json`, gitignored; `''` = in-memory only). Fields that would mean auto-placing (`autoPlace`, `autoBet`, `placeOrders`, `live`, `execute`, `venue`, `orderSize`) are **rejected**. Performance claims (`winRate`, `roi`, `record`, `pnl`, …) are **dropped** with a warning.
+2. **Scanner.** Every `BET_SCAN_MS` (5 s) each enabled rule is checked against every upcoming game and every quoted line (live lines from the odds feed and the line history since first seen). Games that already started are skipped.
+3. **Signals.** When a rule matches, a signal is raised with the price, book, no-vig fair price, EV and a "why it matched" list. Statuses are `new → reviewed | slipped | dismissed`, and signals expire at kickoff. There is **no "placed" status**. A rule + side + line can't re-signal inside its cooldown. Signals also go to the tape as `SIGNAL`. A signal built from MOCK odds or MOCK stats is tagged **SIM**, with the reasons listed.
+4. **Slip** (`hawse.betSlip/1`). This is a printable paper slip with: pick, game, start time, the price seen and book, fair price, edge, **worst price that still has edge**, the prediction-market equivalent (YES ≤ N¢ before fees), a stake idea (quarter-Kelly capped at the rule's `maxStakePct`, as a % of `BET_SLIP_BANKROLL_USD` paper bankroll), a checklist and a disclaimer. You can Print (print CSS shows only the slip), Copy text, or Download .txt / .json. Simulated slips carry a red **SIMULATED** watermark.
+
+**Signal types (registry).** There are 17 built-ins: `sport_in, team_matches, starts_within, market_is, side_is, odds_between, line_between, ev_at_least, books_at_least, line_moved, off_consensus_line, key_number, arb_available, back_to_back, rest_advantage, key_player_out, player_form`. Every type declares typed params (number/integer/string/enum/list/bool, min/max), and every rule is validated against them. `GET /api/betting/registry` lists them.
+- **Custom types** are pure data, so no code is ever loaded. A custom type is a named composition of existing types with `"$param"` placeholders, and it can nest up to a depth limit. They come in a pack:
+  ```json
+  { "schema": "hawse.signalTypes/1", "source": { "type": "reelripper", "note": "…" },
+    "types": [ { "id": "fade_tired_favorite", "label": "…", "params": { "minRestDiff": { "type": "integer", "default": 1 } },
+                 "conditions": [ { "type": "back_to_back", "params": { "team": "opponent" } },
+                                 { "type": "rest_advantage", "params": { "minDays": "$minRestDiff" } } ] } ] }
+  ```
+- **ReelRipper path.** Extract types/rules from transcripts into `hawse.signalTypes/1` or `hawse.betRule(s)/1` JSON, then POST them to `/api/betting/import`, paste them into the desk's Import tab, or paste them into the **strategy lab import** box (the lab sends betting schemas to the module and says "Routed to the betting module"). Plain text also works: the lab's *Import text as betting rule* button, or `{ text }` on `/api/betting/import`, maps phrases with a fixed table into a **disabled draft** and lists mapped and unmapped phrases. Built-in types can't be replaced.
+
+**Stats are MOCK.** No real team/player stats provider is wired up (`BET_STATS_MOCK=true`). The stats-based types (`back_to_back`, `rest_advantage`, `key_player_out`, `player_form`) use labeled synthetic schedules/injuries, so **every signal that uses them is SIM-tagged**. With no `ODDS_API_KEY` the odds are MOCK too.
+
+**Venue adapters (disabled).** `server/betting/venues/index.js` defines `VenueAdapter` with `connect, getBalance, getPositions, findMarkets, previewOrder, placeOrder, cancelOrder` for **Kalshi** and **Polymarket**. Every method throws `VenueLinkDisabledError` (`VENUE_LINK_DISABLED`), and `POST /api/betting/venues/:venue/:method` returns 403. A test checks every method, and that the adapter source reads no `process.env` and makes no network calls. A future enabled version must use your own account, read credentials only from server env vars, and need a **per-order approval** (`checkApproval` requires an approval from the user, tied to the exact order hash, expiring within 2 minutes; single-use tracking is left to that future change). The env var names are documented here only (no values, unused today):
+- Kalshi: `KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`, `KALSHI_ENV`
+- Polymarket: `POLYMARKET_PRIVATE_KEY`, `POLYMARKET_FUNDER_ADDRESS`, `POLYMARKET_API_KEY`, `POLYMARKET_API_SECRET`, `POLYMARKET_API_PASSPHRASE`
+
+**Endpoints.**
+- `GET /api/betting` (desk snapshot + full rules), `/api/betting/registry`, `/api/betting/templates`, `/api/betting/signal-types/export`, `/api/betting/venues`
+- `POST /api/betting/rules` `{rule}` or `{fromTemplate}`; `GET|POST /api/betting/rules/:id`; `POST /api/betting/rules/:id/enable` `{on}`; `POST /api/betting/rules/:id/delete`; `GET /api/betting/rules/:id/export`
+- `POST /api/betting/import` `{json}` or `{text}`; `POST /api/betting/scan`
+- `POST /api/betting/signals/:id/status` `{status}`; `GET /api/betting/signals/:id/slip|slip.txt|slip.json`
+- `POST /api/betting/venues/:venue/:method` → always 403
+
+**Tests.** `test/betting-rules.test.js` (15 suites) covers: registry, pack import (placeholders, nesting, invalid packs), validation (forbidden fields, bad params, dropped claims), scanning (SIM tagging, upcoming only, disabled rules), stats reasons, line movement, signal lifecycle and cooldown, slip math (+130, cents, 2% cap) and watermark, venue refusal, text import, persistence, routes, host/lab wiring and the module boundary.
+
+Screenshots: `docs/screenshots/stage10-{signals,rules,import,venues,slip}-{desktop,mobile}.png` and `stage10-slip-print-preview.png` (print media). For the element crops the sticky top bar was unpinned so it doesn't cover the panel.
+
 ## Risk gate
 
 - **Daily loss halt** (`RISK_DAILY_LOSS_PCT`) blocks new entries until the next UTC day.
@@ -328,8 +373,9 @@ server/lib/risk.js        RiskGate (unit tested)
 server/lib/broker.js      PaperBroker + disabled LiveBroker stub
 server/feeds/*.js         upstream adapters, each reports into the health registry
 server/strategies/*.js    one module per strategy (arm/disarm, own PnL, skip log)
-server/betting/           odds math, scanner, paper bet book, disabled live-bet stub
-server/feeds/odds.js      The Odds API adapter + labeled MOCK odds market
+server/betting/           self-contained betting module: data/ (odds, MOCK stats, line history), rules/ (registry,
+                          engine, templates, text), signals, slip, venues/ (disabled), strategies, routes, index (mount)
+public/betting/           betting desk UI (rules, signals, import, venue links, printable slip)
 server/lab/               strategy lab: schema validator, templates, backtester, text import
 public/                   terminal UI (vanilla JS, canvas charts)
 public/demo/              original simulator (Demo mode only)
@@ -338,6 +384,7 @@ test/                     node:test suites
 
 ## Known limits
 
+- Betting rules desk: team/player stats are MOCK (no provider wired), so stats-based signals are always SIM. Kalshi/Polymarket adapters are interface-only and refuse. Print and clipboard were checked only in headless Chromium (print media emulation); a real print dialog was not exercised.
 - Sports betting: The Odds API live path has been written against the documented v4 API and unit tested with fixtures, but it has **not** been exercised against the live API: no `ODDS_API_KEY` was set on the build box. Mock-market arb and +EV frequency is unrealistically high.
 
 - Binance perp funding interval is assumed to be 8 h because REST `fundingInfo` is geo-blocked from the test box. Symbols with 4 h intervals would show a halved hourly rate.

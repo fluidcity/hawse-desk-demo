@@ -10,6 +10,7 @@
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet" />
   <link rel="icon" href="favicon.svg" type="image/svg+xml" />
   <link rel="stylesheet" href="styles.css" />
+  <link rel="stylesheet" href="betting/betting.css" />
 </head>
 <body>
   <header class="topbar">
@@ -124,6 +125,13 @@
         <div id="betLedger" class="tbl"></div>
       </section>
 
+      <section class="card a-bet bd" id="betDesk" hidden>
+        <div class="card-h"><h2>Bet rules → signals → slips · you place bets yourself</h2><span class="dim mono sm" id="bdMode"></span></div>
+        <div class="bet-warn">PAPER / MANUAL ONLY. Rules raise <b>signals</b> for you to review; a <b>slip</b> is a printable note you take to Kalshi or a sportsbook yourself. Nothing is placed automatically. Venue links are disabled stubs. SIM-tagged signals came from MOCK odds or MOCK player stats.</div>
+        <div class="tabs" role="tablist"><button type="button" class="tab on" data-bdtab="signals">Signals</button><button type="button" class="tab" data-bdtab="rules">Rules</button><button type="button" class="tab" data-bdtab="import">Import</button><button type="button" class="tab" data-bdtab="venues">Venue links</button></div>
+        <div id="bdBody"></div>
+      </section>
+
       <section class="card a-health" id="dataSources">
         <div class="card-h"><h2>Settings · Data sources</h2><span class="dim mono sm" id="healthSum"></span></div>
         <div class="tabs" role="tablist"><button type="button" class="tab on" data-dtab="providers">Providers</button><button type="button" class="tab" data-dtab="feeds">Feeds · latency · staleness</button></div>
@@ -148,7 +156,7 @@
           <div class="lab-import">
             <label class="subh" for="labImportText">Paste strategy JSON or a plain-text description</label>
             <textarea id="labImportText" class="code" rows="8" spellcheck="false" placeholder='{"schemaVersion":1,...}  or  "Trend following on ETH 4h: buy when the 9 and 21 EMA cross up, stop 3%"'></textarea>
-            <div class="lab-actions"><button type="button" class="btn sm" id="labImportJson">Import JSON</button><button type="button" class="btn sm" id="labImportPlain">Import text</button></div>
+            <div class="lab-actions"><button type="button" class="btn sm" id="labImportJson">Import JSON</button><button type="button" class="btn sm" id="labImportPlain">Import text</button><button type="button" class="btn sm ghost" id="labImportBet" title="Map the text to a sports-betting rule (disabled draft) instead of a trading strategy">Import text as betting rule</button></div>
             <div id="labImportOut" class="mono sm"></div>
           </div>
         </div>
@@ -174,6 +182,7 @@
           <div class="chips" id="tapeChips">
             <button type="button" class="chip on" data-f="all">all</button>
             <button type="button" class="chip" data-f="fill">fills</button>
+            <button type="button" class="chip" data-f="signal">signals</button>
             <button type="button" class="chip" data-f="flow">flows</button>
             <button type="button" class="chip" data-f="skip">skips</button>
             <button type="button" class="chip" data-f="risk">risk</button>
@@ -191,5 +200,11 @@
   </main>
   <script src="app.js"></script>
   <script src="lab.js"></script>
+  <script src="betting/betting.js"></script>
+  <div class="slip-modal" id="slipModal" hidden role="dialog" aria-modal="true" aria-label="Bet slip">
+    <div class="slip-sheet"><div id="slipBody"></div>
+      <div class="slip-actions no-print"><button type="button" class="btn sm" data-slip="print">Print</button><button type="button" class="btn sm" data-slip="copy">Copy text</button><button type="button" class="btn sm" data-slip="txt">Download .txt</button><button type="button" class="btn sm" data-slip="json">Download .json</button><button type="button" class="btn sm ghost" data-slip="close">Close</button><span id="slipCopyMsg" class="sm dim"></span></div>
+    </div>
+  </div>
 </body>
 </html>

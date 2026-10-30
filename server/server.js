@@ -44,6 +44,11 @@ function createServer(engine, flags) {
       if (p === '/api/state' && req.method === 'GET') return send(res, 200, engine.snapshot(flags));
       if (p === '/api/providers' && req.method === 'GET') return send(res, 200, engine.providers.list());
       if (p === '/schema/strategy.schema.json') { res.writeHead(200, { 'content-type': 'application/json' }); return fs.createReadStream(path.join(__dirname, '..', 'schema', 'strategy.schema.json')).pipe(res); }
+      for (const r of engine.routes || []) if (p.startsWith(r.prefix)) { // module-owned routes (e.g. server/betting/routes.js)
+        const x = await r.handle(req.method, p, () => body(req)); if (!x) continue;
+        if (Array.isArray(x)) return send(res, x[0], x[1]);
+        res.writeHead(x.status, { 'content-type': x.type, 'cache-control': 'no-store', ...(x.filename ? { 'content-disposition': `attachment; filename="${x.filename}"` } : {}) }); return res.end(x.body);
+      }
       if (p.startsWith('/api/lab')) { const r = await labRoute(engine.lab, req, p, url, body); if (r) return send(res, r[0], r[1]); }
       if (p === '/api/stream') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });

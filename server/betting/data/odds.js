@@ -6,7 +6,7 @@
 //        default (ODDS_POLL_SEC) and shows the remaining quota the API reports. Check current pricing/quota with the provider.
 //  MOCK: without a key (or if the first live request fails), a labelled synthetic market: invented teams/books on an
 //        accelerated schedule, outcomes drawn from the mock "true" probabilities. Every bet on it is SIMULATED.
-const { redact } = require('../lib/net');
+const { redact } = require('../util');
 
 const BASE = 'https://api.the-odds-api.com/v4';
 const MOCK_BOOKS = ['mockbook_a', 'mockbook_b', 'mockbook_c', 'mockbook_d', 'mockbook_e', 'mockbook_f'];

@@ -21,6 +21,7 @@ const { Strategy } = require('./strategies/base');
 const { MempoolFeed } = require('./feeds/mempool');
 const { MevLab } = require('./strategies/mev-lab');
 const { Recorder } = require('./recorder');
+const { StorageMonitor, readRuntimeCap } = require('./storage');
 const { KalshiH2Paper } = require('./kalshi-h2');
 
 module.exports = {
@@ -70,11 +71,17 @@ module.exports = {
   betting(engine) { betting.mount(engine, { Strategy }); },
   recorder(engine) { // H6: record-only market data (public endpoints; no orders, no auth). Mounted after betting so it can tap the odds feed.
     const c = engine.cfg.recorder; if (!c || !c.enabled) return;
+    const sc = engine.cfg.storage; // a cap set live in the Storage panel survives restarts (data/runtime/recorder-cap.json) and wins over RECORDER_CAP_GB
+    if (sc && sc.enabled && sc.runtimeCap) { const gb = readRuntimeCap(path.join(sc.dataDir, 'runtime', 'recorder-cap.json')); if (gb && gb >= sc.minGb && gb <= sc.maxGb) { c.capBytes = gb * 2 ** 30; c.capSource = 'runtime'; } }
     engine.recorder = engine.addFeed('recorder', new Recorder({ health: engine.health, cfg: c, odds: engine.feeds.odds || null, log: engine.log || ((m) => console.log(m)) }));
   },
   kalshiH2(engine) { // H6 Part C: frozen forward paper test; paper ledger only, never desk equity, no order path.
     const c = engine.cfg.kalshiH2; if (!c || !c.enabled || !engine.recorder || !engine.recorder.kalshi) return;
     engine.kalshiH2 = engine.addFeed('kalshiH2', new KalshiH2Paper({ kalshi: engine.recorder.kalshi, health: engine.health, dir: c.dir, log: engine.log || ((m) => console.log(m)) }));
+  },
+  storage(engine) { // H7: disk/memory fill bars + live recorder-cap control. Read-only measuring; the only write is the cap file.
+    const c = engine.cfg.storage; if (!c || !c.enabled) return;
+    engine.storage = engine.addFeed('storage', new StorageMonitor({ dataDir: c.dataDir, recorder: engine.recorder || null, logFiles: c.logFile ? [c.logFile] : [], minGb: c.minGb, maxGb: c.maxGb, warnPct: c.warnPct, critPct: c.critPct, log: engine.log || ((m) => console.log(m)) }));
   },
   lab(engine) {
     const file = engine.cfg.lab && engine.cfg.lab.file !== undefined ? engine.cfg.lab.file : path.join(__dirname, '..', 'data', 'lab', 'strategies.json');

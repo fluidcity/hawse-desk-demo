@@ -20,13 +20,13 @@ const { RefPriceRecorder } = require('./refprice');
 class Recorder {
   constructor({ health, cfg, now = () => Date.now(), mono = () => performance.now(), log = (m) => console.log(m), odds = null, deps = {} }) {
     Object.assign(this, { health, cfg, now, mono, log, odds });
-    this.store = deps.store || new RecorderStore({ dir: cfg.dir, capBytes: cfg.capBytes, maxFileBytes: cfg.maxFileBytes, rotateMs: cfg.rotateMs, now, mono, log });
+    this.store = deps.store || new RecorderStore({ dir: cfg.dir, capBytes: cfg.capBytes, maxFileBytes: cfg.maxFileBytes, rotateMs: cfg.rotateMs, now, mono, log, protect: cfg.protect || [] });
     const gap = (stream, key, from, to, reason) => this.gap(stream, key, from, to, reason);
     this.kalshi = cfg.kalshi && cfg.kalshi.enabled ? deps.kalshi || new KalshiRecorder({ store: this.store, health, cfg: cfg.kalshi, gap, now, log }) : null;
     this.poly = cfg.polymarket && cfg.polymarket.enabled ? deps.poly || new PolymarketRecorder({ store: this.store, health, cfg: cfg.polymarket, gap, now, log }) : null;
     this.ref = cfg.ref && cfg.ref.enabled ? deps.ref || new RefPriceRecorder({ store: this.store, health, cfg: cfg.ref, now, log }) : null;
     this.gaps = { n: 0, byReason: {}, recent: [] }; this.pauses = []; this.timers = []; this.running = false; this.startedAt = null; this.oddsRows = 0; this.oddsSeen = new Map();
-    health.register('rec.store', { label: 'Recorder · disk writer', group: 'recorder', note: `append-only JSONL under data/recorder · hourly/${Math.round(cfg.maxFileBytes / 2 ** 20)} MiB rotation + gzip · cap ${(cfg.capBytes / 2 ** 30).toFixed(1)} GiB (oldest files evicted)`, staleMs: 15000 });
+    health.register('rec.store', { label: 'Recorder · disk writer', group: 'recorder', note: `append-only JSONL under data/recorder · hourly/${Math.round(cfg.maxFileBytes / 2 ** 20)} MiB rotation + gzip · cap ${(cfg.capBytes / 2 ** 30).toFixed(1)} GiB at start, adjustable live in the Storage panel (oldest files evicted)`, staleMs: 15000 });
     if (cfg.odds && cfg.odds.enabled) health.register('rec.odds', { label: 'Recorder · sports odds (The Odds API tap)', group: 'recorder', note: 'records the betting feed’s own live snapshots; zero extra API credits; nothing recorded from MOCK odds', staleMs: 24 * 3600e3 });
   }
   gap(stream, key, from, to, reason) {
@@ -70,7 +70,7 @@ class Recorder {
   projection() {
     const up = this.startedAt ? (this.now() - this.startedAt) / 1000 : 0; const v = this.store.view();
     if (up < 60) return null; const rawPerDay = (v.bytes / up) * 86400; const ratio = v.gzRatio || 0.12; // gzip ratio measured on rotated files once one exists; 0.12 is an assumption until then
-    return { rawBytesPerDay: Math.round(rawPerDay), gzBytesPerDay: Math.round(rawPerDay * ratio), gzRatio: ratio, gzRatioMeasured: !!v.gzRatio, rowsPerDay: Math.round((v.rows / up) * 86400), daysToCap: rawPerDay ? +(this.cfg.capBytes / (rawPerDay * ratio)).toFixed(1) : null, basisSec: Math.round(up) };
+    return { rawBytesPerDay: Math.round(rawPerDay), gzBytesPerDay: Math.round(rawPerDay * ratio), gzRatio: ratio, gzRatioMeasured: !!v.gzRatio, rowsPerDay: Math.round((v.rows / up) * 86400), daysToCap: rawPerDay ? +(this.store.capBytes / (rawPerDay * ratio)).toFixed(1) : null, basisSec: Math.round(up) };
   }
   snapshot() {
     const o = this.odds; const oddsMode = o ? o.mode : 'absent';

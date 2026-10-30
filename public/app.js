@@ -80,7 +80,7 @@ window.HAWSE.explain = (() => {
 
   function render() {
     renderHero(); renderTicker(); renderStrats(); renderRisk(); renderFunding(); renderAttr(); renderHealth(); renderTape();
-    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderRecorder(); renderH2(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
+    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderRecorder(); renderStorage(); renderH2(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
   }
 
   // ---------- hero + animated curve ----------
@@ -433,6 +433,21 @@ window.HAWSE.explain = (() => {
     $('recMarkets').innerHTML = `<div class="row head" style="${cols}"><span>live 15m market</span><span>left</span><span>YES bid/ask</span><span>polls</span><span>rows</span><span>trades</span></div>` + ([...rowsK, ...rowsP].join('') || '<div class="dim mono sm">no live 15-minute market right now</div>');
     const gc = 'grid-template-columns:70px 110px 1.2fr 70px';
     $('recGaps').innerHTML = (G.recent || []).length ? `<div class="row head" style="${gc}"><span>at</span><span>reason</span><span>stream · key</span><span>length</span></div>` + G.recent.map((g) => `<div class="row" style="${gc}"><span class="dim">${hhmmss(g.to)}</span><span class="warn">${esc(g.reason)}</span><span class="sm">${esc(g.stream)} · ${esc(String(g.key))}</span><span>${ago(g.ms)}</span></div>`).join('') : '';
+  }
+  function renderStorage() {
+    const V = S.feeds && S.feeds.storage; $('storCard').hidden = !V; if (!V || !V.bars) return;
+    const B = (n) => (n == null ? '—' : n >= 2 ** 30 ? (n / 2 ** 30).toFixed(2) + ' GiB' : n >= 2 ** 20 ? (n / 2 ** 20).toFixed(1) + ' MiB' : n >= 1024 ? (n / 1024).toFixed(0) + ' KiB' : n + ' B');
+    const col = { ok: 'var(--mint)', warn: 'var(--amber)', crit: 'var(--hot)', 'n/a': 'var(--dim)' };
+    const worst = V.bars.some((b) => b.level === 'crit') ? 'down' : V.bars.some((b) => b.level === 'warn') ? 'stale' : 'live';
+    $('storMode').innerHTML = `${badge(worst)} measured ${ago(Date.now() - V.at)}`;
+    $('storBars').innerHTML = V.bars.map((b) => `<div style="margin:6px 0"><div class="dim sm mono" style="display:flex;justify-content:space-between"><span><b style="color:var(--fg,inherit)">${esc(b.label)}</b> · ${esc(b.note || '')}</span><span class="${b.level === 'crit' ? 'neg' : b.level === 'warn' ? 'warn' : ''}">${B(b.used)}${b.limit ? ' / ' + B(b.limit) + ' · ' + b.pct.toFixed(1) + '%' : ''} ${b.level === 'n/a' ? '' : esc(b.level.toUpperCase())}</span></div><div class="bar"><i style="left:0;width:${Math.min(100, Math.max(b.pct ? 0.6 : 0, b.pct || 0)).toFixed(1)}%;background:${col[b.level]}"></i></div></div>`).join('');
+    const inp = $('storCap'), rb = V.bars.find((b) => b.id === 'recorder');
+    if (inp && document.activeElement !== inp) { if (rb && rb.limit) inp.value = +(rb.limit / 2 ** 30).toFixed(1); inp.min = V.limits.minGb; inp.max = V.limits.maxGb; }
+    $('storCtl').hidden = !(rb && rb.limit);
+    if (!$('storApply').dataset.wired) { $('storApply').dataset.wired = '1'; $('storApply').onclick = () => { const v = +$('storCap').value; $('storMsg').textContent = 'applying…';
+      post('/api/storage/recorder-cap', { capGb: v }).then((r) => { $('storMsg').innerHTML = r.ok ? `<span class="pos">cap ${r.prevGb} → ${r.capGb} GiB, live${r.pruned ? ` · pruned ${r.pruned} oldest file(s)` : ''}</span>` : `<span class="neg">${esc(r.error || 'refused')}</span>`; }).catch((e) => { $('storMsg').textContent = e.message; }); }; }
+    $('storLog').innerHTML = `<div class="dim sm mono">allowed ${V.limits.minGb}–${V.limits.maxGb} GiB · persisted in <code>${esc(V.capFile)}</code> (gitignored) · shrinking prunes the oldest closed recorder files only (whole files; paper ledgers and config/frozen are never touched)</div>` +
+      (V.changes || []).map((c) => `<div class="row" style="grid-template-columns:70px 1fr"><span class="dim">${hhmmss(c.at)}</span><span class="sm mono">cap ${c.prevGb} → ${c.capGb} GiB (${esc(c.by)})${c.pruned ? ' · pruned ' + c.pruned : ''}</span></div>`).join('');
   }
   function renderH2() {
     const H = S.feeds && S.feeds.kalshiH2; $('h2Card').hidden = !H; if (!H) return;

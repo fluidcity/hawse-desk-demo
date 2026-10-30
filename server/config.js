@@ -103,13 +103,19 @@ function build(env = process.env) {
     recorder: { // H6 market-data RECORDER: public read-only endpoints, append-only files under data/recorder (gitignored)
       enabled: bool(env.RECORDER_ENABLED, true),
       dir: env.RECORDER_DIR || path.join(__dirname, '..', 'data', 'recorder'),
-      capBytes: Math.max(64 * 2 ** 20, num(env.RECORDER_CAP_GB, 5) * 2 ** 30), maxFileBytes: num(env.RECORDER_MAX_FILE_MB, 64) * 2 ** 20, rotateMs: num(env.RECORDER_ROTATE_MIN, 60) * 60e3,
+      capBytes: Math.max(64 * 2 ** 20, num(env.RECORDER_CAP_GB, 12) * 2 ** 30), // 12 GiB ≈ 8 weeks at the measured ~210 MiB/day gzipped (H6 live run)
+      protect: [path.join(__dirname, '..', 'data', 'paper'), path.join(__dirname, '..', 'config'), path.join(__dirname, '..', 'data', 'runtime'), env.KALSHI_H2_DIR || ''], maxFileBytes: num(env.RECORDER_MAX_FILE_MB, 64) * 2 ** 20, rotateMs: num(env.RECORDER_ROTATE_MIN, 60) * 60e3,
       kalshi: { enabled: bool(env.RECORDER_KALSHI, true), base: env.KALSHI_PUBLIC_BASE || 'https://api.elections.kalshi.com/trade-api/v2',
         series: list(env.RECORDER_KALSHI_SERIES, ['KXBTC15M', 'KXETH15M', 'KXSOL15M', 'KXXRP15M']), extraSeries: list(env.RECORDER_KALSHI_EXTRA_SERIES, ['KXNFLGAME', 'KXNBAGAME', 'KXNHLGAME', 'KXBTCD']),
         extraTop: num(env.RECORDER_KALSHI_EXTRA_TOP, 12), bookMs: Math.max(500, num(env.RECORDER_KALSHI_BOOK_MS, 1000)), tradesMs: Math.max(1000, num(env.RECORDER_KALSHI_TRADES_MS, 2000)), maxRps: Math.min(15, num(env.RECORDER_KALSHI_MAX_RPS, 10)) },
       polymarket: { enabled: bool(env.RECORDER_POLYMARKET, true), assets: list(env.RECORDER_POLY_ASSETS, ['btc', 'eth', 'sol', 'xrp']), topN: num(env.RECORDER_POLY_TOP, 10), bookMs: Math.max(1000, num(env.RECORDER_POLY_BOOK_MS, 2000)) },
       ref: { enabled: bool(env.RECORDER_REF, true), venues: list(env.RECORDER_REF_VENUES, ['coinbase', 'kraken', 'bitstamp', 'gemini', 'cryptocom']), assets: list(env.RECORDER_REF_ASSETS, ['BTC', 'ETH', 'SOL', 'XRP']) },
       odds: { enabled: bool(env.RECORDER_ODDS, true) },
+    },
+    storage: { // H7 Storage panel: fill bars per disk/memory consumer + runtime recorder-cap control (data/runtime/recorder-cap.json, gitignored)
+      enabled: bool(env.STORAGE_PANEL, true), dataDir: env.STORAGE_DATA_DIR || path.join(__dirname, '..', 'data'), logFile: env.DESK_LOG_FILE || '',
+      minGb: Math.max(0.1, num(env.RECORDER_CAP_MIN_GB, 1)), maxGb: num(env.RECORDER_CAP_MAX_GB, 500), warnPct: num(env.STORAGE_WARN_PCT, 70), critPct: num(env.STORAGE_CRIT_PCT, 90),
+      runtimeCap: bool(env.RECORDER_RUNTIME_CAP, true),
     },
     creditsFile: env.CREDITS_FILE !== undefined ? env.CREDITS_FILE : path.join(__dirname, '..', 'data', 'credits.json'),
     evm: {

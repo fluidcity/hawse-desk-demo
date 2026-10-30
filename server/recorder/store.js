@@ -31,9 +31,10 @@ function walk(dir) {
 
 class RecorderStore {
   constructor({ dir, capBytes = 5 * 2 ** 30, maxFileBytes = 64 * 2 ** 20, rotateMs = 3600e3, flushMs = 1000, capCheckMs = 30000, gzip = true,
-    now = () => Date.now(), mono = () => performance.now(), log = (m) => console.log(m), pid = process.pid } = {}) {
+    now = () => Date.now(), mono = () => performance.now(), log = (m) => console.log(m), pid = process.pid, protect = [] } = {}) {
     if (!dir) throw new Error('RecorderStore needs a dir');
     Object.assign(this, { dir, capBytes, maxFileBytes, rotateMs, flushMs, capCheckMs, gzip, now, mono, log, pid });
+    this.protect = protect.filter(Boolean).map((p) => path.resolve(p)); // never evicted, even if they sit under dir (paper ledgers, config/frozen, runtime config)
     this.open = new Map(); // stream -> { fd, file, openedAt, bytes, buf: [] , bufBytes }
     this.rows = 0; this.bytes = 0; this.dropped = 0; this.evicted = 0; this.evictedBytes = 0; this.rotations = 0; this.gzipped = 0; this.gzIn = 0; this.gzOut = 0;
     this.byStream = {}; this.lastWriteAt = null; this.lastFlushAt = null; this.capped = false; this.usedBytes = null; this.fileCount = null; this.errors = 0; this.lastError = null;
@@ -93,12 +94,13 @@ class RecorderStore {
     };
     if (this.started) zlib.gzip(raw, done); else { try { done(null, zlib.gzipSync(raw)); } catch (e) { done(e); } }
   }
+  isProtected(p) { const a = path.resolve(p); return this.protect.some((q) => a === q || a.startsWith(q + path.sep)); }
   openFiles() { return new Set([...this.open.values()].map((o) => o.file).filter(Boolean)); }
   enforceCap() {
     const files = walk(this.dir); let used = files.reduce((a, f) => a + f.size, 0);
     if (used > this.capBytes) {
       const open = this.openFiles(); const target = this.capBytes * 0.9;
-      const closed = files.filter((f) => !open.has(f.path) && !this.pending.has(f.path)).sort((a, b) => a.mtimeMs - b.mtimeMs || (a.path < b.path ? -1 : 1));
+      const closed = files.filter((f) => !open.has(f.path) && !this.pending.has(f.path) && !this.isProtected(f.path) && /\.jsonl(\.gz)?$/.test(f.path)).sort((a, b) => a.mtimeMs - b.mtimeMs || (a.path < b.path ? -1 : 1));
       const gone = [];
       for (const f of closed) { if (used <= target) break; try { fs.unlinkSync(f.path); used -= f.size; this.evicted++; this.evictedBytes += f.size; gone.push(path.relative(this.dir, f.path)); } catch { /* ignore */ } }
       if (gone.length) { this.log(`[recorder] disk cap ${Math.round(this.capBytes / 2 ** 20)} MiB: evicted ${gone.length} oldest file(s)`); this.capped = false; this.write('meta', { t: 'evict', files: gone.slice(0, 50), n: gone.length, usedAfter: used }); }

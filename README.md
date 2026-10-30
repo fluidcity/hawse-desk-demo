@@ -529,7 +529,8 @@ It is **not** the CF Benchmarks index and not Kalshi's settlement source.
 
 **Files.** Output goes to `data/recorder/<UTC day>/<stream>.<HHMMSS>-<pid>.jsonl`. Files are append-only
 (opened with `O_APPEND`, never rewritten). They rotate hourly or at `RECORDER_MAX_FILE_MB` (default 64), and are then
-gzipped to `.jsonl.gz`. `RECORDER_CAP_GB` (default 5) caps the whole folder: the **oldest closed** files are deleted
+gzipped to `.jsonl.gz`. `RECORDER_CAP_GB` (default **12**, about 8 weeks at the measured ~210 MiB/day gzipped; it can also be changed live, see
+*Storage panel* below) caps the whole folder: the **oldest closed** files are deleted
 first, down to 90% of the cap, and each deletion is logged as a `meta` `evict` row. If only open files remain over the
 cap, new rows are dropped and counted, and the panel shows CAPPED. `data/` is gitignored.
 
@@ -557,6 +558,38 @@ network call, and source-scans `server/recorder` + `server/kalshi-h2` for signin
 **UI.** The "Market-data recorder" card shows markets tracked, rows/min, bytes, last write, disk vs cap, the per-day
 projection, gaps by reason and live 15m markets. Health rows appear in group `recorder` (Settings → Feeds) and as
 providers `kalshi-public`, `polymarket-public` and `ref-venues`.
+
+### Storage panel (H7)
+
+The "Storage · disk & memory" card has one fill bar per consumer, coloured ok / warn ≥ 70% / crit ≥ 90%
+(`STORAGE_WARN_PCT`, `STORAGE_CRIT_PCT`):
+
+| Bar | Measured | Against |
+|---|---|---|
+| Recorder data | `data/recorder` (or `RECORDER_DIR`) | the recorder cap |
+| Paper ledgers | `data/paper` | host disk (no cap; never pruned) |
+| Odds cache + credits | `data/odds-cache.json`, `data/credits.json` | host disk |
+| Logs | `*.log` under `data/` plus `DESK_LOG_FILE` | host disk |
+| Total data/ dir | everything under `data/` | host disk |
+| Host disk | `statfs` of the data filesystem | its size |
+| Process memory (RSS) | `process.memoryUsage().rss` | host RAM |
+| V8 heap | heap used | V8 heap limit |
+
+**Live cap.** The card's "Recorder cap (GiB)" box calls `POST /api/storage/recorder-cap {"capGb": n}`
+(`GET /api/storage` returns the same view). The change:
+- is validated against `RECORDER_CAP_MIN_GB` (1) up to the lower of `RECORDER_CAP_MAX_GB` (500) and 95% of free disk plus
+  what the recorder already uses;
+- is applied to the running store at once, with no restart;
+- is saved to `data/runtime/recorder-cap.json` (gitignored), which wins over `RECORDER_CAP_GB` at the next start
+  (`RECORDER_RUNTIME_CAP=false` ignores it);
+- is logged to the console, `data/runtime/cap-changes.jsonl` and a `meta` `cap_change` row.
+
+A smaller cap prunes at once: the **oldest closed** recorder `.jsonl(.gz)` files go first, as whole files. Rows are never
+cut, and the file being written is never touched. `data/paper`, `config/` and `data/runtime` are on a protect list that
+eviction skips even if `RECORDER_DIR` were pointed above them. The POST is accepted only from a loopback address, with
+a localhost `Host`, a matching `Origin` (if sent), no cross-site `Sec-Fetch-Site`, and `content-type: application/json`.
+Anything else gets 403. `test/storage.test.js` covers the bars, validation, pruning order, protection, persistence and
+the guard.
 
 ## Kalshi H2 frozen forward paper test (H6 Stage C)
 

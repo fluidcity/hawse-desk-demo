@@ -9,6 +9,7 @@ const { Engine } = require('./engine');
 const modules = require('./modules');
 
 const PUB = path.join(__dirname, '..', 'public');
+const { localOnly } = require('./storage');
 const { resolveStatic } = require('./static');
 
 async function labRoute(lab, req, p, url, body) {
@@ -45,6 +46,12 @@ function createServer(engine, flags) {
       if (p === '/api/state' && req.method === 'GET') return send(res, 200, engine.snapshot(flags));
       if (p === '/api/explain' && req.method === 'GET') return send(res, 200, { strategies: engine.explainAll() });
       if (p === '/api/providers' && req.method === 'GET') return send(res, 200, engine.providers.list());
+      if (p === '/api/storage' && req.method === 'GET') return engine.storage ? send(res, 200, engine.storage.snapshot()) : send(res, 404, { error: 'storage panel off' });
+      if (p === '/api/storage/recorder-cap' && req.method === 'POST') { // H7: same-origin + localhost only; validated; persisted to data/runtime (gitignored)
+        const g = localOnly(req.socket.remoteAddress, req.headers); if (!g.ok) return send(res, 403, { ok: false, error: 'refused: ' + g.why });
+        if (!engine.storage) return send(res, 404, { ok: false, error: 'storage panel off' });
+        const b = await body(req); const r = engine.storage.setRecorderCap(b.capGb, { by: 'ui' }); return send(res, r.ok ? 200 : 422, r);
+      }
       if (p === '/schema/strategy.schema.json') { res.writeHead(200, { 'content-type': 'application/json' }); return fs.createReadStream(path.join(__dirname, '..', 'schema', 'strategy.schema.json')).pipe(res); }
       for (const r of engine.routes || []) if (p.startsWith(r.prefix)) { // module-owned routes (e.g. server/betting/routes.js)
         const x = await r.handle(req.method, p, () => body(req)); if (!x) continue;

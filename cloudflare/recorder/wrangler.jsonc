@@ -1,0 +1,18 @@
+// SKELETON: not deployed. No secrets in this file. Bucket name is a placeholder; create it yourself (see docs/cloudflare-recorder.md).
+{
+  "name": "hawse-recorder",
+  "main": "src/index.js",
+  "compatibility_date": "2026-10-01",
+  "durable_objects": { "bindings": [{ "name": "RECORDER", "class_name": "Recorder" }] },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Recorder"] }],
+  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "hawse-recorder" }],
+  "vars": {
+    "KALSHI_BASE": "https://api.elections.kalshi.com/trade-api/v2",
+    "SERIES": "KXBTC15M,KXETH15M,KXSOL15M,KXXRP15M",
+    "POLL_MS": "1000",
+    "DISCOVER_MS": "60000",
+    "FLUSH_MS": "60000",
+    "DEPTH": "10"
+  }
+  // Secret (set with `wrangler secret put STATUS_TOKEN`, never committed): STATUS_TOKEN guards /status, /start and /stop.
+}

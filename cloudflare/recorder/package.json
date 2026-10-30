@@ -1,0 +1,10 @@
+{
+  "name": "hawse-cf-recorder",
+  "private": true,
+  "type": "module",
+  "description": "SKELETON (not deployed): always-on Kalshi public market-data recorder on a Durable Object, batches to R2.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "echo 'Not deployed by GrokBot. Read docs/cloudflare-recorder.md, then run: npx wrangler deploy' && exit 1"
+  }
+}

@@ -10,3 +10,8 @@
 /data/
 *.log
 .DS_Store
+
+# Cloudflare skeleton local state/secrets
+.dev.vars
+.wrangler/
+cloudflare/**/node_modules/

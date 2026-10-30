@@ -47,7 +47,9 @@ class KalshiRecorder {
   async call(id, p, q) { if (!this.bucket.take()) return null; try { return await this.get(this.url(p, q), { health: this.health, id }); } catch (e) { this.errors++; return null; } }
   on(kind, f) { this.listeners[kind].push(f); }
   emit(kind, x) { for (const f of this.listeners[kind]) { try { f(x); } catch (e) { this.log('[recorder] listener error: ' + e.message); } } }
-  every(ms, f) { const t = setInterval(f, ms); if (t.unref) t.unref(); this.timers.push(t); }
+  // One in-flight run per loop: a slow cycle is skipped (and later shows up as a measured gap), never stacked on itself.
+  every(ms, f) { let busy = false; const run = async () => { if (busy) { this.skipped = (this.skipped || 0) + 1; return; } busy = true; try { await f(); } catch (e) { this.log('[recorder] loop error: ' + e.message); } finally { busy = false; } };
+    const t = setInterval(run, ms); if (t.unref) t.unref(); this.timers.push(t); }
   start() {
     if (this.running) return; this.running = true;
     this.discover(); this.checkSeries(); setTimeout(() => this.discoverExtra(), 3000).unref?.();

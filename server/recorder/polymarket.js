@@ -27,7 +27,9 @@ class PolymarketRecorder {
     health.register('rec.poly.markets', { label: 'Recorder · Polymarket discovery + top markets', group: 'recorder', note: `public gamma-api; top ${this.c.topN} by 24h volume sampled every ${this.c.topMs / 1000}s`, staleMs: 180000 });
   }
   async call(id, url) { if (!this.bucket.take()) return null; try { return await this.get(url, { health: this.health, id }); } catch { this.errors++; return null; } }
-  every(ms, f) { const t = setInterval(f, ms); if (t.unref) t.unref(); this.timers.push(t); }
+  // One in-flight run per loop: a slow cycle is skipped (and later shows up as a measured gap), never stacked on itself.
+  every(ms, f) { let busy = false; const run = async () => { if (busy) { this.skipped = (this.skipped || 0) + 1; return; } busy = true; try { await f(); } catch (e) { this.log('[recorder] loop error: ' + e.message); } finally { busy = false; } };
+    const t = setInterval(run, ms); if (t.unref) t.unref(); this.timers.push(t); }
   start() {
     if (this.running) return; this.running = true; this.discover(); setTimeout(() => this.pollTop(), 5000).unref?.();
     this.every(this.c.bookMs, () => this.pollBooks()); this.every(this.c.tradesMs, () => this.pollTrades()); this.every(this.c.discoverMs, () => this.discover()); this.every(this.c.topMs, () => this.pollTop());

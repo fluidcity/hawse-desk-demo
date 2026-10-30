@@ -6,11 +6,12 @@
 // 'close', so the client keeps its own clock: no frame for idleMs => the socket is dropped and reconnected;
 // not open within connectTimeoutMs => same. restart() does that on demand (used by the feed watchdog).
 class WsClient {
-  constructor({ url, health, id, onOpen, onMessage, pingMs = 0, ping = null, label, idleMs, connectTimeoutMs = 15000, now = () => Date.now(), WebSocketImpl, log = null }) {
+  constructor({ url, health, id, onOpen, onMessage, pingMs = 0, ping = null, label, idleMs, connectTimeoutMs = 15000, now = () => Date.now(), WebSocketImpl, log = null, headers = null }) {
     this.url = url; this.health = health; this.id = id; this.onOpen = onOpen; this.onMessage = onMessage; this.pingMs = pingMs; this.ping = ping;
     this.label = label || id; this.backoff = 1000; this.open = false; this.msgs = 0; this.stopped = false; this.lastLatency = null;
     this.idleMs = idleMs != null ? idleMs : Math.max(60000, pingMs * 3); this.connectTimeoutMs = connectTimeoutMs; this.now = now;
-    this.WS = WebSocketImpl || globalThis.WebSocket; this.log = log; this.reconnects = 0; this.idleKicks = 0; this.lastMsgAt = null;
+    this.WS = WebSocketImpl || globalThis.WebSocket; this.log = log; this.headers = headers; this.reconnects = 0; this.idleKicks = 0; this.lastMsgAt = null;
+    // headers: optional () => ({...}); re-built on every connect (H7: the Kalshi WS handshake needs a fresh timestamped signature)
   }
   start() { this.stopped = false; this.connect(); this.armIdle(); }
   stop() { this.stopped = true; clearInterval(this.pt); clearTimeout(this.rt); clearInterval(this.it); clearTimeout(this.ct); this.drop(); }
@@ -32,7 +33,7 @@ class WsClient {
   }
   connect() {
     if (this.stopped) return;
-    let ws; try { ws = this.ws = new this.WS(this.url); } catch (e) { return this.retry(e.message); }
+    let ws; try { ws = this.ws = this.headers ? new this.WS(this.url, { headers: this.headers() }) : new this.WS(this.url); } catch (e) { return this.retry(e.message); }
     clearTimeout(this.ct); this.ct = setTimeout(() => { if (this.ws === ws && !this.open) { this.drop(); if (this.health && this.id) this.health.fail(this.id, 'websocket connect timeout'); this.retry(); } }, this.connectTimeoutMs);
     if (this.ct.unref) this.ct.unref();
     ws.onopen = () => { if (this.ws !== ws) return; clearTimeout(this.ct); this.open = true; this.backoff = 1000; this.openedAt = this.now(); try { this.onOpen && this.onOpen(this); } catch {}

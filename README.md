@@ -591,6 +591,16 @@ a localhost `Host`, a matching `Origin` (if sent), no cross-site `Sec-Fetch-Site
 Anything else gets 403. `test/storage.test.js` covers the bars, validation, pruning order, protection, persistence and
 the guard.
 
+### Optional Kalshi WebSocket recorder (H7, off by default)
+`KALSHI_WS=true` plus a **read-only** Kalshi key (`KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`) adds an
+authenticated market-data socket next to the REST poller. It subscribes `orderbook_delta` (snapshot, then deltas,
+with seq-gap detection and a fresh snapshot after a gap) and `trade` for the live 15m markets, and with
+`KALSHI_WS_CF_INDEX=true` also `cfbenchmarks_value`, the CF Benchmarks RTI values Kalshi settles on.
+Kalshi needs a signed handshake even for public channels. That signing lives **only** in
+`server/kalshi-auth/ws-sign.js`, which signs exactly `ts + GET + /trade-api/ws/v2` and nothing else. The recorder
+allowlists every outgoing frame. Tests enforce both. With no key, the card says so and no socket is opened.
+**Not tested live yet; no key existed.** Setup steps: [docs/kalshi-api-key.md](docs/kalshi-api-key.md).
+
 ## Kalshi H2 frozen forward paper test (H6 Stage C)
 
 This is miro's one surviving hypothesis (`kalshi-15m-payout-sweep.md` §7): on KXBTC15M / KXETH15M / KXSOL15M, at the

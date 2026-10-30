@@ -21,6 +21,7 @@ const { Strategy } = require('./strategies/base');
 const { MempoolFeed } = require('./feeds/mempool');
 const { MevLab } = require('./strategies/mev-lab');
 const { Recorder } = require('./recorder');
+const { makeWsAuth } = require('./kalshi-auth/ws-sign');
 const { StorageMonitor, readRuntimeCap } = require('./storage');
 const { KalshiH2Paper } = require('./kalshi-h2');
 
@@ -73,7 +74,11 @@ module.exports = {
     const c = engine.cfg.recorder; if (!c || !c.enabled) return;
     const sc = engine.cfg.storage; // a cap set live in the Storage panel survives restarts (data/runtime/recorder-cap.json) and wins over RECORDER_CAP_GB
     if (sc && sc.enabled && sc.runtimeCap) { const gb = readRuntimeCap(path.join(sc.dataDir, 'runtime', 'recorder-cap.json')); if (gb && gb >= sc.minGb && gb <= sc.maxGb) { c.capBytes = gb * 2 ** 30; c.capSource = 'runtime'; } }
-    engine.recorder = engine.addFeed('recorder', new Recorder({ health: engine.health, cfg: c, odds: engine.feeds.odds || null, log: engine.log || ((m) => console.log(m)) }));
+    const log = engine.log || ((m) => console.log(m)); const deps = {};
+    if (c.kalshiWs && c.kalshiWs.enabled) { // H7: the WS handshake signer is built here from env, server-side; the recorder only gets the header function
+      try { deps.kalshiWsAuth = makeWsAuth(engine.env || process.env); } catch (e) { log('[recorder] ' + e.message); deps.kalshiWsAuth = null; }
+    }
+    engine.recorder = engine.addFeed('recorder', new Recorder({ health: engine.health, cfg: c, odds: engine.feeds.odds || null, log, deps }));
   },
   kalshiH2(engine) { // H6 Part C: frozen forward paper test; paper ledger only, never desk equity, no order path.
     const c = engine.cfg.kalshiH2; if (!c || !c.enabled || !engine.recorder || !engine.recorder.kalshi) return;

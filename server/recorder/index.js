@@ -16,6 +16,7 @@ const { RecorderStore } = require('./store');
 const { KalshiRecorder } = require('./kalshi');
 const { PolymarketRecorder } = require('./polymarket');
 const { RefPriceRecorder } = require('./refprice');
+const { KalshiWsRecorder } = require('./kalshi-ws');
 
 class Recorder {
   constructor({ health, cfg, now = () => Date.now(), mono = () => performance.now(), log = (m) => console.log(m), odds = null, deps = {} }) {
@@ -25,6 +26,8 @@ class Recorder {
     this.kalshi = cfg.kalshi && cfg.kalshi.enabled ? deps.kalshi || new KalshiRecorder({ store: this.store, health, cfg: cfg.kalshi, gap, now, log }) : null;
     this.poly = cfg.polymarket && cfg.polymarket.enabled ? deps.poly || new PolymarketRecorder({ store: this.store, health, cfg: cfg.polymarket, gap, now, log }) : null;
     this.ref = cfg.ref && cfg.ref.enabled ? deps.ref || new RefPriceRecorder({ store: this.store, health, cfg: cfg.ref, now, log }) : null;
+    // H7: optional authenticated read-only WebSocket (off by default). deps.kalshiWsAuth is the handshake-header function from server/kalshi-auth.
+    this.kws = cfg.kalshiWs && cfg.kalshiWs.enabled ? deps.kws || new KalshiWsRecorder({ store: this.store, health, cfg: cfg.kalshiWs, auth: deps.kalshiWsAuth || null, kalshi: this.kalshi, gap, now, log, WebSocketImpl: deps.WebSocketImpl }) : null;
     this.gaps = { n: 0, byReason: {}, recent: [] }; this.pauses = []; this.timers = []; this.running = false; this.startedAt = null; this.oddsRows = 0; this.oddsSeen = new Map();
     health.register('rec.store', { label: 'Recorder · disk writer', group: 'recorder', note: `append-only JSONL under data/recorder · hourly/${Math.round(cfg.maxFileBytes / 2 ** 20)} MiB rotation + gzip · cap ${(cfg.capBytes / 2 ** 30).toFixed(1)} GiB at start, adjustable live in the Storage panel (oldest files evicted)`, staleMs: 15000 });
     if (cfg.odds && cfg.odds.enabled) health.register('rec.odds', { label: 'Recorder · sports odds (The Odds API tap)', group: 'recorder', note: 'records the betting feed’s own live snapshots; zero extra API credits; nothing recorded from MOCK odds', staleMs: 24 * 3600e3 });
@@ -49,15 +52,15 @@ class Recorder {
     if (this.running) return; this.running = true; this.startedAt = this.now();
     this.store.start();
     const prev = this.store.lastMetaRow();
-    this.store.write('meta', { t: 'session_start', pid: process.pid, node: process.version, streams: { kalshi: !!this.kalshi, polymarket: !!this.poly, ref: !!this.ref, odds: !!(this.cfg.odds && this.cfg.odds.enabled) }, capBytes: this.cfg.capBytes });
+    this.store.write('meta', { t: 'session_start', pid: process.pid, node: process.version, streams: { kalshi: !!this.kalshi, kalshiWs: !!(this.kws && !this.kws.problem), polymarket: !!this.poly, ref: !!this.ref, odds: !!(this.cfg.odds && this.cfg.odds.enabled) }, capBytes: this.cfg.capBytes });
     if (prev && prev.rx && this.startedAt - prev.rx > 5000) this.pause(prev.rx, this.startedAt, 'offline', { prev: prev.t });
-    for (const x of [this.kalshi, this.poly, this.ref]) if (x) x.start();
+    for (const x of [this.kalshi, this.poly, this.ref, this.kws]) if (x) x.start();
     this.tapOdds();
     const t1 = setInterval(() => this.tick(), 1000); const t2 = setInterval(() => this.beat(), 10000);
     for (const t of [t1, t2]) { if (t.unref) t.unref(); this.timers.push(t); }
   }
   beat() { this.store.write('meta', { t: 'heartbeat', rows: this.store.rows }); const v = this.store.view(); if (v.capped) this.health.fail('rec.store', `disk cap reached: ${v.dropped} rows dropped`); else if (v.errors && v.lastError) this.health.fail('rec.store', 'write error: ' + v.lastError); else this.health.ok('rec.store', null); }
-  stop() { if (!this.running) return; for (const t of this.timers) clearInterval(t); this.timers = []; for (const x of [this.kalshi, this.poly, this.ref]) if (x) x.stop(); this.store.write('meta', { t: 'session_stop', rows: this.store.rows }); this.store.stop(); this.running = false; }
+  stop() { if (!this.running) return; for (const t of this.timers) clearInterval(t); this.timers = []; for (const x of [this.kalshi, this.poly, this.ref, this.kws]) if (x) x.stop(); this.store.write('meta', { t: 'session_stop', rows: this.store.rows }); this.store.stop(); this.running = false; }
   tapOdds() {
     const f = this.odds; if (!f || !(this.cfg.odds && this.cfg.odds.enabled) || !Array.isArray(f.listeners)) return;
     f.listeners.push((ev) => {
@@ -66,7 +69,7 @@ class Recorder {
       this.store.write('odds', { t: 'odds', id: ev.id, sport: ev.sport, home: ev.home, away: ev.away, commence: ev.commence, books: ev.books }); this.oddsRows++; this.health.ok('rec.odds', null);
     });
   }
-  watchSpec() { return [].concat(...[this.kalshi, this.poly, this.ref].filter(Boolean).map((x) => x.watchSpec())); }
+  watchSpec() { return [].concat(...[this.kalshi, this.poly, this.ref, this.kws].filter(Boolean).map((x) => x.watchSpec())); }
   projection() {
     const up = this.startedAt ? (this.now() - this.startedAt) / 1000 : 0; const v = this.store.view();
     if (up < 60) return null; const rawPerDay = (v.bytes / up) * 86400; const ratio = v.gzRatio || 0.12; // gzip ratio measured on rotated files once one exists; 0.12 is an assumption until then
@@ -75,7 +78,7 @@ class Recorder {
   snapshot() {
     const o = this.odds; const oddsMode = o ? o.mode : 'absent';
     return { enabled: true, running: this.running, startedAt: this.startedAt, store: this.store.view(), projection: this.projection(), gaps: this.gaps,
-      kalshi: this.kalshi ? this.kalshi.view() : null, poly: this.poly ? this.poly.view() : null, ref: this.ref ? this.ref.view() : null,
+      kalshi: this.kalshi ? this.kalshi.view() : null, kalshiWs: this.kws ? this.kws.view() : null, poly: this.poly ? this.poly.view() : null, ref: this.ref ? this.ref.view() : null,
       odds: { enabled: !!(this.cfg.odds && this.cfg.odds.enabled), feedMode: oddsMode, rows: this.oddsRows, credits: o && o.quota ? { remaining: o.quota.remaining, used: o.quota.used } : null,
         note: oddsMode === 'mock' ? 'betting feed is on MOCK odds: nothing recorded (mock is never written as real data)' : 'records the betting feed’s live snapshots (no extra credits; budget guard unchanged)' } };
   }

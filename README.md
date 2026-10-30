@@ -30,6 +30,7 @@ You need Node ≥ 22. There are no npm dependencies. One Node process proxies ev
 |---|---|---|---|---|
 | 1 | Cross-venue perp funding arb | OKX, Hyperliquid, Binance, Bybit public REST | — | A venue that fails shows **NO DATA** and is excluded. Nothing is faked. |
 | 2 | Whale flow (large-tx monitor) | EVM via public RPC (publicnode) for Ethereum, Base and Arbitrum | `HELIUS_API_KEY` (Solana), `EVM_RPC_URL_*` / `ALCHEMY_API_KEY` / `INFURA_API_KEY` | With no key, Solana runs labeled **MOCK**. With `EVM_PUBLIC_RPC_FALLBACK=false` and no key, EVM runs MOCK. Trades on mock signals book to the SIM book. |
+| 3 | 1% mode | OKX spot candles (15m) and spot top-of-book | — | Coinbase, then Binance data-api candles. With no candles the strategy shows NO DATA and does not trade. |
 
 More stages are added below as they land.
 
@@ -50,6 +51,21 @@ While a position is open, funding settles discretely at each venue's next settle
 - **EVM (Ethereum, Base, Arbitrum):** `eth_getLogs` over each new block range collects USDC, USDT and WETH `Transfer` logs plus directional Uniswap v3 WETH/USDC `Swap` logs. The pool's `token0` is read on chain to orient the swap.
 - **Signal:** this uses directional swaps only, never plain transfers. If net flow over 15 minutes reaches at least 2× `WHALE_MIN_USD` across at least 3 swaps, and at least 60% of it is one-sided, the desk opens a paper perp (SOL or ETH) on the freshest real quote. It uses 50% of the sleeve, a 1.2% take-profit, a 0.6% stop and a 90-minute time stop, with a 30-minute cooldown. Taker fee and slippage apply on both sides.
 - Whale-follow edge is speculative. The tape logs every skip with its numbers.
+
+### 3. 1% mode
+
+This mode aims for about **1% net per completed cycle**, long spot only. It holds one position at a time on the full sleeve, so cycles compound, and it only trades top-quality trend pullbacks on **closed** 15m bars. Every gate below must pass:
+
+| Gate | Rule |
+|---|---|
+| trend | EMA20 > EMA50, and EMA50 is rising over 8 bars |
+| pullback | Price is within 0.6 ATR of EMA20, a recent low tagged EMA20, and price is above EMA50 |
+| momentum | RSI14 is between 45 and 65 and rising |
+| volatility | ATR is 0.25–1.5% of price |
+| volume | The last 3 bars run at least 0.8× the 20-bar average |
+| reward:risk | At least 1.5, with the stop below the 10-bar swing low |
+
+The take-profit is set from `grossMoveForNet()`, so that after a 0.1% taker fee and modeled slippage on **both** sides the fill nets exactly `ONEPCT_TARGET_NET_PCT`. Exits are the stop or a 24h time stop, both of which can lose money. When nothing qualifies, it logs which gates failed and waits. Nothing forces a profit.
 
 ## Risk gate
 

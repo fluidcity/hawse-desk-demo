@@ -56,6 +56,7 @@ function build(env = process.env) {
       appId: env.TRADOVATE_APP_ID || '', cid: env.TRADOVATE_CID || '', secret: env.TRADOVATE_SECRET || '',
       appVersion: env.TRADOVATE_APP_VERSION || '1.0', symbols: list(env.TRADOVATE_SYMBOLS, null),
     },
+    onepct: { symbols: list(env.ONEPCT_SYMBOLS, ['BTC', 'ETH', 'SOL']), targetNetPct: num(env.ONEPCT_TARGET_NET_PCT, 1), minScore: num(env.ONEPCT_MIN_SCORE, 80) },
     jupiter: { base: env.JUPITER_API_BASE || 'https://lite-api.jup.ag' },
   };
   c.tradovate.configured = !!(c.tradovate.username && c.tradovate.password && c.tradovate.appId && c.tradovate.cid && c.tradovate.secret);

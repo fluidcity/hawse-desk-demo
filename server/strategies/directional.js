@@ -7,7 +7,7 @@ function openPos(s, { symbol, side, notional, quote, feeRate, slipBps, tp, sl, m
   const qty = notional / quote.mark;
   const f = s.e.broker.fill({ strategy: s.id, venue: quote.venue, symbol, side: side === 'long' ? 'buy' : 'sell', qty, price: quote.mark, feeRate, slipBps, simulated });
   s.e.ledger.charge(s.id, { amount: f.fee, simulated });
-  const p = { id: f.id, symbol, side, qty, entry: f.price, venue: quote.venue, openedAt: now, notional, feeRate, slipBps, tp, sl, maxHoldMs, simulated, entryFee: f.fee, reason, ...extra };
+  const p = { id: f.id, symbol, side, qty, entry: f.price, ref: quote.mark, venue: quote.venue, openedAt: now, notional, feeRate, slipBps, tp, sl, maxHoldMs, simulated, entryFee: f.fee, reason, ...extra };
   s.positions.push(p);
   s.fillLog(`OPEN ${side.toUpperCase()} ${symbol} ${qty.toFixed(4)} @ ${f.price.toFixed(4)} on ${quote.venue} · ${reason}`, -f.fee, simulated);
   return p;
@@ -22,7 +22,7 @@ function managePos(s, markFn, now = Date.now(), { onClose } = {}) {
     const gross = p.side === 'long' ? (exitPx - p.entry) * p.qty : (p.entry - exitPx) * p.qty;
     const exitFee = F.fee(exitPx * p.qty, p.feeRate);
     p.upnl = gross - exitFee; // entry fee already booked
-    const move = p.side === 'long' ? px / p.entry - 1 : p.entry / px - 1;
+    const move = p.side === 'long' ? px / p.ref - 1 : p.ref / px - 1; // vs. pre-slippage reference (targets already include costs)
     let why = null;
     if (p.tp != null && move >= p.tp) why = 'take-profit';
     else if (p.sl != null && move <= -p.sl) why = 'stop-loss';

@@ -368,6 +368,12 @@ Every strategy has an expandable **How it works** box. That covers all ten desk 
 
 You can edit the limits live. When the gate is closed, strategies keep managing their open positions but log `risk gate: …` skips instead of opening new ones.
 
+## Security boundaries
+
+- **Bind and auth.** The desk binds to `127.0.0.1` and has no auth, so do not expose it. Only the hooks-only listener (`HOOKS_PORT`) is meant for a tunnel. It serves nothing but `/hooks/*`, and the Helius hook demands `HELIUS_WEBHOOK_AUTH`.
+- **Static files** (`server/static.js`). Only `public/` is served. The path is decoded once, and the request is refused if it contains malformed escapes, double-encoding, NUL, backslashes, `..`/dot segments, dotfiles (`.env`), or the names `data`, `node_modules`, `server`, `scripts`, `test`, `docs` or `package*.json`. Symlinks are resolved with `realpath`, and the target must be inside the public root by `path.relative`, not a prefix match, so `/public-evil` is refused. Only `.html/.js/.css/.svg/.png/.json/.ico` regular files are served, and only via GET/HEAD. Tests: `test/static-boundary.test.js`.
+- **No env values in responses.** API responses expose only booleans (`publicFlags()`). A test boots the server with sentinel values for every secret env var and checks that no GET endpoint, and neither hooks route, ever echoes them. `GET /api/health` returns `{ok, mode:'paper', uptimeSec}`.
+
 ## Environment variables
 
 See [`.env.example`](.env.example). Every variable is listed there with its default. Secrets are read in `server/config.js`. `publicFlags()` exposes only booleans such as `heliusConfigured`, and a test asserts that no secret value leaks into the client payload. `.env` is gitignored.
@@ -380,6 +386,7 @@ See [`.env.example`](.env.example). Every variable is listed there with its defa
 
 ```
 server/server.js          HTTP + SSE + static, binds 127.0.0.1
+server/static.js          static-file boundary (realpath + path.relative, allowlist)
 server/engine.js          feeds -> strategies -> paper broker -> ledger -> risk gates
 server/lib/fees.js        fee / slippage / funding / tx-cost / EV math (unit tested)
 server/lib/risk.js        RiskGate (unit tested)

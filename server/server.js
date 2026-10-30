@@ -9,7 +9,7 @@ const { Engine } = require('./engine');
 const modules = require('./modules');
 
 const PUB = path.join(__dirname, '..', 'public');
-const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.ico': 'image/x-icon' };
+const { resolveStatic } = require('./static');
 
 async function labRoute(lab, req, p, url, body) {
   if (!lab) return [404, { error: 'lab module disabled' }];
@@ -66,6 +66,7 @@ function createServer(engine, flags) {
     const p = url.pathname;
     if (p.startsWith('/hooks/')) return hookRoute(engine, req, res, p);
     try {
+      if (p === '/api/health' && req.method === 'GET') return send(res, 200, { ok: true, mode: 'paper', uptimeSec: Math.round(process.uptime()) });
       if (p === '/api/state' && req.method === 'GET') return send(res, 200, engine.snapshot(flags));
       if (p === '/api/explain' && req.method === 'GET') return send(res, 200, { strategies: engine.explainAll() });
       if (p === '/api/providers' && req.method === 'GET') return send(res, 200, engine.providers.list());
@@ -92,14 +93,14 @@ function createServer(engine, flags) {
         if (p === '/api/live-order') { try { engine.placeLiveOrder(); } catch (e) { return send(res, 403, { ok: false, error: e.message }); } }
         return send(res, 404, { error: 'not found' });
       }
-      // static
-      let file = path.normalize(path.join(PUB, decodeURIComponent(p === '/' ? '/index.html' : p)));
-      if (!file.startsWith(PUB)) return send(res, 403, { error: 'forbidden' });
-      if (fs.existsSync(file) && fs.statSync(file).isDirectory()) file = path.join(file, 'index.html');
-      if (!fs.existsSync(file)) return send(res, 404, { error: 'not found' });
-      res.writeHead(200, { 'content-type': MIME[path.extname(file)] || 'application/octet-stream', 'cache-control': 'no-cache' });
-      fs.createReadStream(file).pipe(res);
-    } catch (e) { send(res, 400, { error: e.message }); }
+      // static (boundary rules in server/static.js)
+      if (req.method !== 'GET' && req.method !== 'HEAD') return send(res, 405, { error: 'method not allowed' });
+      const r = resolveStatic(PUB, p);
+      if (r.status !== 200) return send(res, r.status, { error: r.status === 400 ? 'bad request' : 'not found' });
+      res.writeHead(200, { 'content-type': r.type, 'cache-control': 'no-cache', 'x-content-type-options': 'nosniff' });
+      if (req.method === 'HEAD') return res.end();
+      fs.createReadStream(r.file).pipe(res);
+    } catch (e) { send(res, 400, { error: e.message }); } // API validation errors only; static never throws (server/static.js)
   });
 }
 

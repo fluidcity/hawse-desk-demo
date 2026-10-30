@@ -9,7 +9,7 @@
 // chunk row in the object's own SQLite storage (R2 is optional: if a BUCKET binding exists the chunk is mirrored there).
 // Retention: chunks older than RETAIN_DAYS or beyond MAX_BYTES (oldest first) are deleted at each flush.
 // HTTP (Worker): GET /health (public: ok/stale only), GET /status and GET /pull/list, /pull/chunk (READ token),
-// POST /start, /stop (ADMIN token). Tokens are compared by SHA-256 against READ_TOKEN_SHA256 / ADMIN_TOKEN_SHA256; the
+// POST /start, /stop, /restart (ADMIN token). Tokens are compared by SHA-256 against READ_TOKEN_SHA256 / ADMIN_TOKEN_SHA256; the
 // Worker never holds a token itself.
 
 const KALSHI_PATH = /^\/trade-api\/v2\/markets(\/trades|\/[A-Z0-9._-]+(\/orderbook)?)?$/;
@@ -62,7 +62,7 @@ export async function tokenOk(req, hexDigest) {
 const pos = (v, d) => (Number.isFinite(+v) && +v > 0 ? +v : d);
 const list = (v, d) => String(v == null ? d : v).split(',').map((s) => s.trim()).filter(Boolean);
 const DAY = 86400e3;
-export const CODE_VERSION = '2'; // shown in /status so a redeploy can be confirmed as running (a busy DO can keep old code until evicted)
+export const CODE_VERSION = '3'; // shown in /status so a redeploy can be confirmed as running (a busy DO can keep old code until evicted)
 
 /** Chunk store on the Durable Object's SQLite (ctx.storage.sql). Pure SQL, so tests run it against node:sqlite. */
 export class ChunkStore {
@@ -141,15 +141,15 @@ export class Recorder {
   async kalshiTrades() {
     for (const m of this.liveK()) {
       // Newest first, 1000 per page. A full page that has no trade we already saw means older ones may be missing: follow the
-      // cursor (up to TRADE_PAGES pages). Still full after that = a 'trade-page-limit' gap row (the first poll of a market is a backfill).
+      // cursor (up to TRADE_PAGES pages). Still full after that = a 'trade-page-limit' gap row (also on a market's first poll: the opening seconds of a BTC 15m market can exceed 1000 trades).
       const q = { ticker: m.tk, limit: 1000 }; if (m.lastTradeEx) q.min_ts = Math.floor(m.lastTradeEx / 1000) - 2;
       let j = await this.get(this.c.kalshi, '/markets/trades', q); if (!j) continue;
       const rx = this.now(); if (m.lastTradeOk != null && rx - m.lastTradeOk > this.c.gapMs * 2) this.gap('kalshi.trade', m.tk, m.lastTradeOk, rx); m.lastTradeOk = rx;
       let ts = j.trades || [];
-      for (let pg = 1; m.lastTradeEx && j && j.cursor && (j.trades || []).length >= 1000 && !(j.trades || []).some((t) => m.seen.has(t.trade_id)) && pg < this.c.tradePages; pg++) {
+      for (let pg = 1; j && j.cursor && (j.trades || []).length >= 1000 && !(j.trades || []).some((t) => m.seen.has(t.trade_id)) && pg < this.c.tradePages; pg++) {
         j = await this.get(this.c.kalshi, '/markets/trades', { ...q, cursor: j.cursor }); if (j) ts = ts.concat(j.trades || []);
       }
-      if (m.lastTradeEx && (j && (j.trades || []).length >= 1000) && !ts.some((t) => m.seen.has(t.trade_id))) this.row('gap', { t: 'gap', stream: 'kalshi.trade', key: m.tk, reason: 'trade-page-limit' });
+      if ((j && (j.trades || []).length >= 1000) && !ts.some((t) => m.seen.has(t.trade_id))) this.row('gap', { t: 'gap', stream: 'kalshi.trade', key: m.tk, reason: 'trade-page-limit' });
       for (const t of ts.slice().reverse()) { if (!t.trade_id || m.seen.has(t.trade_id)) continue; m.seen.add(t.trade_id); const r = normTrade(t); m.trades++; if (r.ex && (!m.lastTradeEx || r.ex > m.lastTradeEx)) m.lastTradeEx = r.ex; this.row('kalshi.trade', { t: 'trade', ...r }); }
       if (m.seen.size > 5000) m.seen = new Set([...m.seen].slice(-2500));
     }
@@ -237,6 +237,8 @@ export class Recorder {
   async fetch(req) { // reached only through the Worker below, after it checked the token for the route
     const u = new URL(req.url), p = u.pathname;
     if (p === '/start') { await this.ctx.storage.put('running', true); await this.ctx.storage.setAlarm(this.now() + 100); return Response.json({ ok: true, running: true }); }
+    if (p === '/restart') { // after a redeploy a busy DO keeps the old code; flush, then abort so the next alarm builds a fresh instance
+      await this.flush(true); setTimeout(() => this.ctx.abort?.('restart after deploy'), 50); return Response.json({ ok: true, restarting: true, version: CODE_VERSION }); }
     if (p === '/stop') { await this.ctx.storage.put('running', false); await this.ctx.storage.deleteAlarm(); await this.flush(true); return Response.json({ ok: true, running: false }); }
     if (p === '/health') { const s = this.status(); return Response.json({ ok: s.ok, stale: s.stale, running: await this.running(), lastWriteAgeS: s.lastWriteAgeS }); }
     if (p === '/status') return Response.json({ running: await this.running(), ...this.status() });
@@ -254,7 +256,7 @@ export class Recorder {
   }
 }
 
-const ROUTES = { '/health': ['GET', null], '/status': ['GET', 'READ_TOKEN_SHA256'], '/pull/list': ['GET', 'READ_TOKEN_SHA256'], '/pull/chunk': ['GET', 'READ_TOKEN_SHA256'], '/start': ['POST', 'ADMIN_TOKEN_SHA256'], '/stop': ['POST', 'ADMIN_TOKEN_SHA256'] };
+const ROUTES = { '/health': ['GET', null], '/status': ['GET', 'READ_TOKEN_SHA256'], '/pull/list': ['GET', 'READ_TOKEN_SHA256'], '/pull/chunk': ['GET', 'READ_TOKEN_SHA256'], '/start': ['POST', 'ADMIN_TOKEN_SHA256'], '/stop': ['POST', 'ADMIN_TOKEN_SHA256'], '/restart': ['POST', 'ADMIN_TOKEN_SHA256'] };
 export default {
   async fetch(req, env) {
     const p = new URL(req.url).pathname, r = ROUTES[p];

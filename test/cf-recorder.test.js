@@ -71,6 +71,8 @@ test('cf recorder: 1 s alarm loop records Kalshi books+trades and Polymarket boo
   const rows = chunkRows(r.store.get(ch.id)); assert.equal(rows[0].reason, 'do-start', 'restart is an explicit gap'); assert.equal(rows.length, ch.rows);
   assert.ok(F.calls.every((c) => c.o.method === 'GET'));
   const perSec = F.calls.length / 61; assert.ok(perSec < 12, `request budget ${perSec.toFixed(1)}/s`);
+  let aborted = null; r.ctx.abort = (why) => { aborted = why; }; const rs = await (await r.fetch(new Request('https://x/restart', { method: 'POST' }))).json();
+  assert.equal(rs.restarting, true); await new Promise((ok) => setTimeout(ok, 80)); assert.match(String(aborted), /restart/, '/restart aborts the instance'); assert.equal(r.buf.length, 0, 'flushed before abort');
   await r.fetch(new Request('https://x/stop', { method: 'POST' })); assert.equal(F.alarm(), null); const n = F.calls.length; await r.alarm(); assert.equal(F.calls.length, n, 'stopped: alarm does nothing');
 });
 
@@ -119,6 +121,7 @@ test('cf recorder: Worker entry: /health public, READ token for /status + /pull,
   assert.equal(await st('/status', { headers: R }), 200); assert.equal(await st('/pull/list?after=3', { headers: R }), 200); assert.equal(await st('/pull/chunk?id=4', { headers: R }), 200);
   assert.equal(await st('/start', { method: 'POST', headers: R }), 401, 'read token cannot start/stop');
   assert.equal(await st('/start', { headers: A }), 405); assert.equal(await st('/start', { method: 'POST', headers: A }), 200);
+  assert.equal(await st('/restart', { method: 'POST', headers: R }), 401, 'read token cannot restart'); assert.equal(await st('/restart', { method: 'POST', headers: A }), 200);
   assert.equal(await st('/orders', { headers: A }), 404); assert.equal(await st('/pull/list', { method: 'POST', headers: R }), 405);
   assert.ok(hits.every(([, auth]) => auth == null), 'token not forwarded to the DO'); assert.ok(hits.some(([p]) => p === '/pull/list?after=3'));
 });
@@ -134,4 +137,16 @@ test('cf recorder: a full Kalshi trades page follows the cursor until it meets a
   assert.deepEqual(pages, [null, 'p2'], 'second page fetched, stopped at the seen trade');
   assert.ok(!r.buf.some((x) => x.reason === 'trade-page-limit' && x.rx > T0 + 2000), 'no page-limit gap when the cursor closed the hole');
   assert.ok(r.status().stored.chunks > before, 'flushed early on row count, before FLUSH_MS');
+});
+
+test('cf recorder: a market\'s first trades poll also follows the cursor, and a still-full last page is a page-limit gap', async () => {
+  const F = fakes(T0); const r = await mk(F); await r.fetch(new Request('https://x/start', { method: 'POST' }));
+  const ok = F.fetch, pages = []; let n = 0;
+  r.http = async (u, o) => { const url = new URL(u); if (!url.pathname.endsWith('/markets/trades')) return ok(u, o);
+    if (url.searchParams.get('ticker') === 'KXBTC15M-26OCT301715-15') pages.push(url.searchParams.get('cursor'));
+    const mkT = () => ({ trade_id: 'f' + n++, ticker: url.searchParams.get('ticker'), created_time: new Date(F.c.t - 100).toISOString(), yes_price_dollars: '0.5', no_price_dollars: '0.5', count_fp: '1', taker_side: 'yes' });
+    return Response.json({ cursor: 'c' + n, trades: Array.from({ length: 1000 }, mkT) }); };
+  await step(r, F, 2);
+  assert.equal(pages.length, 3, 'TRADE_PAGES=3 pages on the first poll');
+  assert.ok(r.buf.some((x) => x.reason === 'trade-page-limit' && x.key === 'KXBTC15M-26OCT301715-15'));
 });

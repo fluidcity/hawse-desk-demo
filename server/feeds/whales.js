@@ -8,6 +8,8 @@ const { fetchJson, redact } = require('../lib/net');
 const { WsClient } = require('../lib/ws');
 const H = require('./helius');
 
+// PUBLIC IDENTIFIERS, NOT SECRETS: token mints, public pool addresses, and the keccak256 event topics of
+// ERC-20 Transfer and Uniswap-v3 Swap. Scanners flag the 64-hex topics; see .gitleaks.toml.
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = { EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: 'USDC', Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: 'USDT' };
 const DEFAULT_SOL_WATCH = [

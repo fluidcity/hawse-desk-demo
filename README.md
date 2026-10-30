@@ -374,6 +374,8 @@ You can edit the limits live. When the gate is closed, strategies keep managing 
 - **Static files** (`server/static.js`). Only `public/` is served. The path is decoded once, and the request is refused if it contains malformed escapes, double-encoding, NUL, backslashes, `..`/dot segments, dotfiles (`.env`), or the names `data`, `node_modules`, `server`, `scripts`, `test`, `docs` or `package*.json`. Symlinks are resolved with `realpath`, and the target must be inside the public root by `path.relative`, not a prefix match, so `/public-evil` is refused. Only `.html/.js/.css/.svg/.png/.json/.ico` regular files are served, and only via GET/HEAD. Tests: `test/static-boundary.test.js`.
 - **No env values in responses.** API responses expose only booleans (`publicFlags()`). A test boots the server with sentinel values for every secret env var and checks that no GET endpoint, and neither hooks route, ever echoes them. `GET /api/health` returns `{ok, mode:'paper', uptimeSec}`.
 
+- **Secret scanning.** `gitleaks git .` and `gitleaks dir .` (8.28, default rules plus `.gitleaks.toml`) and `trufflehog git file://.` (3.90) report no findings over the full history. The only flags were deliberately fake values in leak-assertion tests, which are allowlisted by exact value, not by path, so a real-looking key in `test/` is still flagged. Pyth feed ids, token mints, contract and pool addresses, and EVM event topics are public identifiers and are commented as such. `scripts/check-secret-presence.sh` checks whether the value of each secret env var set in your shell appears anywhere in history, the working tree (including `data/`) or stashes. It prints only match/no-match and never prints a value.
+
 ## Environment variables
 
 See [`.env.example`](.env.example). Every variable is listed there with its default. Secrets are read in `server/config.js`. `publicFlags()` exposes only booleans such as `heliusConfigured`, and a test asserts that no secret value leaks into the client payload. `.env` is gitignored.
@@ -387,6 +389,7 @@ See [`.env.example`](.env.example). Every variable is listed there with its defa
 ```
 server/server.js          HTTP + SSE + static, binds 127.0.0.1
 server/static.js          static-file boundary (realpath + path.relative, allowlist)
+scripts/check-secret-presence.sh  presence-only check that no env secret value is in git/tree
 server/engine.js          feeds -> strategies -> paper broker -> ledger -> risk gates
 server/lib/fees.js        fee / slippage / funding / tx-cost / EV math (unit tested)
 server/lib/risk.js        RiskGate (unit tested)

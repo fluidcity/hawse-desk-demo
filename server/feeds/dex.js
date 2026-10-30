@@ -7,6 +7,7 @@
 const { fetchJson, sleep } = require('../lib/net');
 const { resolveRpc } = require('./whales');
 
+// PUBLIC IDENTIFIERS, NOT SECRETS: token mint / ERC-20 contract addresses (SOL, USDC, USDT, WETH), see .gitleaks.toml.
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v';
 const USDT_MINT = 'Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB';

@@ -3,6 +3,8 @@
 // (Authorization: Bearer), so without PYTH_API_KEY this adapter stays idle and the registry shows 'missing key'. Implements the adapter interface:
 //   create({ env, health, engine, entry }) -> { start(), stop(), snapshot(), publicInfo() } | null
 // It registers its own health row ('pyth.hermes'), which the registry entry lists under `health`.
+// PUBLIC IDENTIFIERS, NOT SECRETS: Pyth price-feed ids are published on-chain and in Pyth's docs.
+// Secret scanners flag 64-hex strings; these are allowlisted in .gitleaks.toml.
 const FEEDS = { // Pyth price-feed ids (Crypto.X/USD), from hermes.pyth.network/v2/price_feeds
   BTC: 'e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43',
   ETH: 'ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace',

@@ -28,4 +28,7 @@ function deskRisk(s) {
     'Paper only: fills are simulated against real quotes; no live order path exists'];
 }
 
-module.exports = { explanation, deskRisk, num, pct, usd, list, hours, etFromOpen, ORDER };
+/** One line naming the fee table date, so every fee-dependent explainer states how fresh its cost model is. */
+function feesLine() { const F = require('./fees'); return `Taker fees (base tier) verified against venue fee pages on ${F.FEES_VERIFIED}`; }
+
+module.exports = { feesLine, explanation, deskRisk, num, pct, usd, list, hours, etFromOpen, ORDER };

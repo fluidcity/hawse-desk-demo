@@ -92,7 +92,7 @@ class PerpMomentum extends Strategy {
       Entry: ['Evaluated once per new closed bar per coin; one position per coin',
         `Size: risk ${X.pct(m.riskPct * 100, 1)} of the sleeve to the stop, capped at ${X.pct(m.sizePct * 100, 0)} of the sleeve notional`],
       Exit: [`Stop ${m.slAtr}× ATR, target ${m.tpAtr}× ATR from entry`, `Time stop after ${X.hours(m.maxHoldH)}`, 'Funding is settled on the venue schedule while held'],
-      Risk: X.deskRisk(this) });
+      Risk: X.deskRisk(this), Data: [X.feesLine()] });
   }
 }
 
@@ -167,7 +167,7 @@ class PerpBasis extends Strategy {
       Entry: [`Open the best spot/perp pair when net ≥ ${X.num(c.minNetBps)} bp`, 'Long spot + short perp only (never the reverse)',
         `Size: ${X.pct(c.sizePct * 100, 0)} of the sleeve; one carry per coin, at most ${c.maxPositions} open`],
       Exit: [`Close both legs when the basis converges to ≤ ${X.num(c.exitBps)} bp`, `Time stop after ${X.hours(c.maxHoldH)}`],
-      Risk: X.deskRisk(this) });
+      Risk: X.deskRisk(this), Data: [X.feesLine()] });
   }
 }
 module.exports = { PerpMomentum, PerpBasis, momentumSignal, basisEdge, settleFunding, MOMENTUM_DEFAULTS };

@@ -4,7 +4,21 @@
 
 const BPS = 1e4;
 
-/** Venue taker fees (base tier, fraction of notional). Approximate public schedules; override per deployment. */
+/**
+ * Venue taker fees (base / VIP0 tier, fraction of notional). Re-verified against the venues' public fee pages on
+ * FEES_VERIFIED. Re-check before any paper test that depends on them (H2) and update the date + table together.
+ *   Hyperliquid  https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees        perps 0.045%, spot 0.070%
+ *   Bybit        https://www.bybit.com/en/help-center/article/Trading-Fee-Structure perps 0.055%, spot 0.100%
+ *   Binance      https://www.binance.com/en/fee/futureFee  /fee/schedule             USD-M 0.050%, spot 0.100%
+ *   OKX          https://www.okx.com/fees                                            swaps 0.050%, spot 0.100%
+ */
+const FEES_VERIFIED = '2026-10-29';
+const FEE_SOURCES = Object.freeze({
+  hyperliquid: 'https://hyperliquid.gitbook.io/hyperliquid-docs/trading/fees',
+  bybit: 'https://www.bybit.com/en/help-center/article/Trading-Fee-Structure',
+  binance: 'https://www.binance.com/en/fee/futureFee',
+  okx: 'https://www.okx.com/fees',
+});
 const TAKER_FEES = Object.freeze({
   binance: 0.0005,     // USD-M futures base taker 0.050%
   bybit: 0.00055,      // linear perps base taker 0.055%
@@ -12,6 +26,8 @@ const TAKER_FEES = Object.freeze({
   hyperliquid: 0.00045,// base taker 0.045%
   spot: 0.001,         // generic CEX spot taker 0.10%
 });
+/** Spot taker fees per venue (base tier), used by carry mode (spot long + perp short on the same venue). */
+const SPOT_TAKER_FEES = Object.freeze({ binance: 0.001, bybit: 0.001, okx: 0.001, hyperliquid: 0.0007 });
 
 function fee(notional, rate) {
   if (!(notional >= 0) || !(rate >= 0)) throw new RangeError('fee: notional and rate must be >= 0');
@@ -118,6 +134,6 @@ function futuresRoundTrip({ side, entry, exit, contracts, pointValue, tickSize, 
 }
 
 module.exports = {
-  BPS, TAKER_FEES, fee, slippageBps, applySlippage, hourlyRate, annualizedPct, fundingPayment,
+  BPS, TAKER_FEES, SPOT_TAKER_FEES, FEES_VERIFIED, FEE_SOURCES, fee, slippageBps, applySlippage, hourlyRate, annualizedPct, fundingPayment,
   fundingArbEdge, grossMoveForNet, longRoundTripNet, solanaTxCostSol, evmTxCostNative, atomicArbEV, futuresRoundTrip,
 };

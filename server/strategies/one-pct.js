@@ -101,7 +101,7 @@ class OnePct extends Strategy {
         `Re-scored every ${X.num(R.evalMs / 1000, 0)} s`],
       Exit: [`Target: the gross move that nets ${X.pct(c.targetNetPct)} after spot taker fees (${X.pct(F.TAKER_FEES.spot * 100, 2)}/side) and modeled slippage`,
         `Stop: ${S.stopBufferAtr} ATR below the ${S.swingBars}-bar swing low, never closer than ${S.minStopAtr} ATR`, `Time stop after ${R.maxHoldH} h`],
-      Risk: X.deskRisk(this) });
+      Risk: X.deskRisk(this), Data: [X.feesLine()] });
   }
 }
 module.exports = { OnePct, scoreSetup, ema, rsi, atr, SETUP };

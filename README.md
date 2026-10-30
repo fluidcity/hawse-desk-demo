@@ -44,7 +44,7 @@ More stages are added below as they land.
 The desk goes long the perp on the venue paying the lowest funding and short where it is highest. Rates are normalized to hourly so the model works across intervals (Binance/Bybit 8h or 4h, OKX from `nextFundingTime − fundingTime`, Hyperliquid 1h).
 
 A pair qualifies only if the funding spread over `FUNDING_HOLD_HOURS` beats all of the following costs by `FUNDING_MIN_NET_BPS`:
-- 4 taker fills (open and close on both legs; per-venue fees in `server/lib/fees.js`)
+- 4 taker fills (open and close on both legs; per-venue fees in `server/lib/fees.js`, base tier, **re-verified 2026-10-29** against each venue's fee page: Hyperliquid 0.045% perp / 0.07% spot, Bybit 0.055% / 0.10%, Binance 0.05% / 0.10%, OKX 0.05% / 0.10%. `FEES_VERIFIED` and `FEE_SOURCES` in that file carry the date and URLs, and every fee-dependent explainer prints the date)
 - 4 slippage fills (half-spread plus square-root impact against depth)
 - a basis-risk buffer (½ of the current mark-price basis plus 2 bp)
 
@@ -396,6 +396,8 @@ test/                     node:test suites
 ```
 
 ## Known limits
+
+- Fee table: base-tier taker fees only (no maker, VIP, or token discounts); verified 2026-10-29, re-check before relying on a paper test. No Blocknative dependency exists (the service shut down 2026-06-19); a test asserts no references creep back in.
 
 - Betting rules desk: team/player stats are MOCK (no provider wired), so stats-based signals are always SIM. Kalshi/Polymarket adapters are interface-only and refuse. Print and clipboard were checked only in headless Chromium (print media emulation); a real print dialog was not exercised.
 - Sports betting: The Odds API live path was smoke-tested once against the real API on 2026-10-29 (1 `/events` call = 0 credits, 1 `/odds` snapshot = 1 credit; headers parsed, 10 NBA games, Pinnacle on all). The scheduler and budget logic are unit-tested with fixtures. Mock-market arb and +EV frequency is unrealistically high.

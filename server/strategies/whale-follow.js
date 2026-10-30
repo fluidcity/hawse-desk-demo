@@ -64,7 +64,7 @@ class WhaleFollow extends Strategy {
         `${r.cooldownMin}-min cooldown per asset after an entry`],
       Exit: [`Take profit +${X.pct(r.tp * 100, 1)}`, `Stop loss −${X.pct(r.sl * 100, 1)}`, `Time stop after ${r.maxHoldMin} min`],
       Risk: X.deskRisk(this),
-      Data: ['Chains without a key/RPC run on MOCK whale events; trades from MOCK signals go to the SIMULATED book, never the real one'] });
+      Data: [X.feesLine(), 'Chains without a key/RPC run on MOCK whale events; trades from MOCK signals go to the SIMULATED book, never the real one'] });
   }
 }
 module.exports = { WhaleFollow };

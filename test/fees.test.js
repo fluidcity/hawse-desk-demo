@@ -75,3 +75,19 @@ test('futures round trip includes slippage ticks and per-side fees', () => {
   const s = F.futuresRoundTrip({ side: 'short', entry: 20000, exit: 20010, contracts: 2, pointValue: 2, tickSize: 0.25, slipTicks: 1, feePerSide: 0.5 });
   close(s.net, -40 - 2 - 2);
 });
+
+test('fee table carries a verification date + sources and the 2026-10-29 verified values (spot incl.)', () => {
+  const F = require('../server/lib/fees');
+  assert.match(F.FEES_VERIFIED, /^\d{4}-\d{2}-\d{2}$/); assert.equal(F.FEES_VERIFIED, '2026-10-29');
+  assert.deepEqual({ ...F.TAKER_FEES }, { binance: 0.0005, bybit: 0.00055, okx: 0.0005, hyperliquid: 0.00045, spot: 0.001 });
+  assert.deepEqual({ ...F.SPOT_TAKER_FEES }, { binance: 0.001, bybit: 0.001, okx: 0.001, hyperliquid: 0.0007 });
+  for (const v of ['binance', 'bybit', 'okx', 'hyperliquid']) assert.match(F.FEE_SOURCES[v], /^https:\/\//);
+  const X = require('../server/lib/explain'); assert.ok(X.feesLine().includes(F.FEES_VERIFIED));
+});
+
+test('no Blocknative references remain anywhere in the shipped code (service shut down 2026-06-19)', () => {
+  const fs = require('fs'), path = require('path'); const root = path.join(__dirname, '..'); const hits = [];
+  const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { if (['node_modules', '.git', 'data'].includes(e.name)) continue; const p = path.join(d, e.name);
+    if (e.isDirectory()) walk(p); else if (/\.(js|html|css|json)$/.test(e.name) && /blocknative/i.test(fs.readFileSync(p, 'utf8')) && !p.endsWith('fees.test.js')) hits.push(p); } };
+  walk(path.join(root, 'server')); walk(path.join(root, 'public')); walk(path.join(root, 'scripts')); assert.deepEqual(hits, []);
+});

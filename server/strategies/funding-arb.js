@@ -132,7 +132,7 @@ class FundingArb extends Strategy {
       Exit: ['Close both legs when the funding spread flips (short leg no longer earns more than the long leg pays)', `Close after ${X.hours(r.maxHoldH)} at the latest`,
         'Funding is credited at each venue\'s own settlement time'],
       Risk: X.deskRisk(this),
-      Data: [`A leg whose quote is older than ${X.num(r.staleMs / 60e3, 0)} min is marked stale and not closed on old prices`] });
+      Data: [X.feesLine(), `A leg whose quote is older than ${X.num(r.staleMs / 60e3, 0)} min is marked stale and not closed on old prices`] });
   }
 }
 module.exports = { FundingArb };

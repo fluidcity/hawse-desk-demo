@@ -548,7 +548,10 @@ than pretending to be continuous:
 
 **Network.** All HTTP goes through `server/recorder/public-get.js`: GET only, no headers, and a host + path allowlist
 (Kalshi `/markets*`, `/series/*`, `/exchange/status`; Polymarket `/markets`, `/events`, `/book`, `/trades`). It has token
-buckets (Kalshi ≤ 10 rps). `test/recorder.test.js` checks that portfolio, order and auth URLs are refused before any
+buckets (Kalshi ≤ 10 rps). Kalshi trades are polled at the API's max page (`limit=1000`; 1001 is rejected); an HTTP 429
+pauses the Kalshi client for 2 s (Stage E: the first live run at `limit=200` drew 245 × 429 in ~10 min). Each poll loop
+runs one cycle at a time (a slow cycle skips its next tick instead of stacking, Stage D). Errors are counted by kind
+(HTTP status / timeout / network, no URLs or bodies) and shown on the card with rate-, cooldown- and busy-loop skips. `test/recorder.test.js` checks that portfolio, order and auth URLs are refused before any
 network call, and source-scans `server/recorder` + `server/kalshi-h2` for signing, POST, order or key code.
 
 **UI.** The "Market-data recorder" card shows markets tracked, rows/min, bytes, last write, disk vs cap, the per-day

@@ -58,6 +58,9 @@ function build(env = process.env) {
     },
     onepct: { symbols: list(env.ONEPCT_SYMBOLS, ['BTC', 'ETH', 'SOL']), targetNetPct: num(env.ONEPCT_TARGET_NET_PCT, 1), minScore: num(env.ONEPCT_MIN_SCORE, 80) },
     jupiter: { base: env.JUPITER_API_BASE || 'https://lite-api.jup.ag' },
+    gaps: { notionalUsd: num(env.GAP_NOTIONAL_USD, 1000), pSuccess: num(env.GAP_P_SUCCESS, 0.35), solTipLamports: num(env.GAP_SOL_TIP_LAMPORTS, 100000),
+      solPriorityMicroLamports: num(env.GAP_SOL_PRIORITY_MICROLAMPORTS, 50000), evmGasUnits: num(env.GAP_EVM_GAS_PER_SWAP, 180000), evmPoolFeeBps: num(env.GAP_EVM_POOL_FEE_BPS, 5),
+      minEvUsd: num(env.GAP_MIN_EV_USD, 0.5), solPollMs: num(env.GAP_SOL_POLL_MS, 30000), evmPollMs: num(env.GAP_EVM_POLL_MS, 60000) },
   };
   c.tradovate.configured = !!(c.tradovate.username && c.tradovate.password && c.tradovate.appId && c.tradovate.cid && c.tradovate.secret);
   return c;

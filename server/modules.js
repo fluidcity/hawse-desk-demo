@@ -4,6 +4,8 @@ const { SolanaWhaleFeed, EvmWhaleFeed, EVM } = require('./feeds/whales');
 const { WhaleFollow } = require('./strategies/whale-follow');
 const { CandleFeed } = require('./feeds/candles');
 const { OnePct } = require('./strategies/one-pct');
+const { DexFeed } = require('./feeds/dex');
+const { GapScanner } = require('./strategies/gaps');
 
 module.exports = {
   whales(engine) {
@@ -15,5 +17,10 @@ module.exports = {
   onepct(engine) {
     const feed = engine.addFeed('candles', new CandleFeed({ health: engine.health, symbols: engine.cfg.onepct.symbols }));
     engine.addStrategy(new OnePct(engine, feed));
+  },
+  gaps(engine) {
+    const c = engine.cfg;
+    const feed = engine.addFeed('dex', new DexFeed({ health: engine.health, cfg: { ...c.gaps, jupiterBase: c.jupiter.base }, evmCfg: c.evm, priceFn: (s) => engine.price(s) }));
+    engine.addStrategy(new GapScanner(engine, feed));
   },
 };

@@ -31,6 +31,7 @@ You need Node ≥ 22. There are no npm dependencies. One Node process proxies ev
 | 1 | Cross-venue perp funding arb | OKX, Hyperliquid, Binance, Bybit public REST | — | A venue that fails shows **NO DATA** and is excluded. Nothing is faked. |
 | 2 | Whale flow (large-tx monitor) | EVM via public RPC (publicnode) for Ethereum, Base and Arbitrum | `HELIUS_API_KEY` (Solana), `EVM_RPC_URL_*` / `ALCHEMY_API_KEY` / `INFURA_API_KEY` | With no key, Solana runs labeled **MOCK**. With `EVM_PUBLIC_RPC_FALLBACK=false` and no key, EVM runs MOCK. Trades on mock signals book to the SIM book. |
 | 3 | 1% mode | OKX spot candles (15m) and spot top-of-book | — | Coinbase, then Binance data-api candles. With no candles the strategy shows NO DATA and does not trade. |
+| 4 | DEX gap scanner | Jupiter lite-api per-DEX quotes (Solana), DexScreener pool prices, ParaSwap quotes, `eth_gasPrice` via public RPC (Ethereum, Base, Arbitrum) | optional `JUPITER_API_BASE`, EVM RPC vars | If Jupiter is down, Solana falls back to DexScreener mid prices, labeled **INDICATIVE**, which are never traded. EVM mid-price gaps are always indicative. |
 
 More stages are added below as they land.
 
@@ -67,6 +68,26 @@ This mode aims for about **1% net per completed cycle**, long spot only. It hold
 
 The take-profit is set from `grossMoveForNet()`, so that after a 0.1% taker fee and modeled slippage on **both** sides the fill nets exactly `ONEPCT_TARGET_NET_PCT`. Exits are the stop or a 24h time stop, both of which can lose money. When nothing qualifies, it logs which gates failed and waits. Nothing forces a profit.
 
+### 4. DEX gap scanner
+
+The scanner checks three kinds of gap:
+
+* **Solana cross-DEX.** Jupiter direct-route quotes for a `GAP_NOTIONAL_USD` buy (USDC→SOL) and sell (SOL→USDC) on Raydium, Raydium CLMM, Whirlpool and Meteora DLMM. Each quote returns the executable output amount with pool fees and price impact already included. The heatmap shows buying on the row DEX and selling on the column DEX, in bps. The diagonal is the round-trip cost on one DEX.
+* **Solana triangular.** USDC→SOL→USDT→USDC on chained Jupiter quotes.
+* **EVM (Ethereum, Base, Arbitrum).**
+  * DexScreener WETH/USD-stable pool mid prices form an **indicative** matrix. It excludes pool fees and price impact, and an assumed `GAP_EVM_POOL_FEE_BPS` per leg is deducted.
+  * A ParaSwap best-route round trip uses executable quote amounts.
+  * Gas is `GAP_EVM_GAS_PER_SWAP × eth_gasPrice` per leg. On L2s the L1 data fee is **not** included, and the row says so.
+
+The cost model is `EV = p·(gross − exec − tip) − (1−p)·exec`, with `p = GAP_P_SUCCESS` (default 0.35):
+
+* Failed attempts still pay execution cost (base and priority fee, or gas).
+* The Solana tip (`GAP_SOL_TIP_LAMPORTS`) is paid only when the attempt lands.
+* A paper attempt happens only when a row is built from executable quotes, its EV is above `GAP_MIN_EV_USD`, and the gap persists for 2 consecutive scans.
+* The landed or failed outcome is drawn with probability `p` and logged as *modeled*.
+
+In practice, gaps between public quotes almost never survive costs. Expect skip logs, not fills.
+
 ## Risk gate
 
 - **Daily loss halt** (`RISK_DAILY_LOSS_PCT`) blocks new entries until the next UTC day.
@@ -102,3 +123,4 @@ test/                     node:test suites
 
 - From some regions Binance returns HTTP 451 and Bybit returns 403. They then show NO DATA and the arb runs on the venues that answer.
 - Funding arb fills are modeled at the observed top of book plus impact. Real queue position, partial fills and venue downtime are not modeled.
+- Gap scanner: public Jupiter and ParaSwap quotes are rate-limited, so some cells can be blank (·) on a given scan. Mid prices from thinly traded or stale DexScreener pools can show large gaps that are not executable, which is why they are indicative only.

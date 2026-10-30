@@ -112,3 +112,4 @@ button{font:inherit;color:inherit}
   .tape-row{grid-template-columns:56px 1fr auto}.tape-row .s{display:none}
   .attr-row{grid-template-columns:86px 1fr 74px}
 }
+.badge.indicative,.badge.pending{color:#a98bff;border-color:rgba(169,139,255,.4)}

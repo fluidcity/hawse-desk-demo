@@ -8,6 +8,7 @@
 // from the rest of HAWSE. Uses host.cfg.betting, host ledger via BetBook, and the Strategy base API (arm/gate/log/view).
 const S = require('./scanner');
 const M = require('./math');
+const { explainStrategy, STRAT_RULES: R } = require('./explain');
 
 function defineStrategies(Strategy) {
 
@@ -33,7 +34,7 @@ class BetStrategy extends Strategy {
     return true;
   }
   tick(now) {
-    if (now - this.lastEval < 5000) return; this.lastEval = now;
+    if (now - this.lastEval < R.scanMs) return; this.lastEval = now;
     this.bk.settle(now);
     if (this.feed.mode === 'pending') { this.opps = []; return this.armed && this.skip('odds feed connecting'); }
     this.opps = this.scan();
@@ -41,6 +42,7 @@ class BetStrategy extends Strategy {
     if (!this.events().length) return this.skip('no upcoming events', `need > ${this.c.minMinutesToStart} min to start`);
     this.act(now);
   }
+  explain() { return explainStrategy(this); }
   view() { return { feed: this.feed.snapshot(), opps: this.opps.slice(0, 10), bets: this.bk.view(this.id), params: this.params(), liveBetting: 'disabled stub · alerts only' }; }
 }
 
@@ -54,7 +56,7 @@ class BetEV extends BetStrategy {
   act() {
     const hits = this.opps.filter((o) => o.evPct >= this.c.minEdgePct);
     if (!hits.length) { const t = this.opps[0]; return this.skip('no +EV price above threshold', t ? `best ${t.label} @${t.book} EV ${t.evPct.toFixed(2)}% < ${this.c.minEdgePct}%` : 'no comparable markets'); }
-    let n = 0; for (const o of hits) { if (n >= 3) break; const ev = this.feed.events.get(o.eventId); if (ev && this.takeSingle(ev, o, 'ev')) n++; }
+    let n = 0; for (const o of hits) { if (n >= R.evMaxPerScan) break; const ev = this.feed.events.get(o.eventId); if (ev && this.takeSingle(ev, o, 'ev')) n++; }
   }
 }
 
@@ -68,7 +70,7 @@ class BetSpread extends BetStrategy {
   act() {
     const hits = this.opps.filter((o) => o.evPct >= this.c.minEdgePct);
     if (!hits.length) return this.skip('no off-consensus spread with edge', this.opps[0] ? `best ${this.opps[0].label} ${this.opps[0].pointEdge}pt, EV ${this.opps[0].evPct.toFixed(2)}%` : `no line ≥ ${this.c.minPointEdge}pt off consensus`);
-    let n = 0; for (const o of hits) { if (n >= 2) break; const ev = this.feed.events.get(o.eventId); if (ev && this.takeSingle(ev, o, 'spread')) n++; }
+    let n = 0; for (const o of hits) { if (n >= R.spreadMaxPerScan) break; const ev = this.feed.events.get(o.eventId); if (ev && this.takeSingle(ev, o, 'spread')) n++; }
   }
 }
 
@@ -81,13 +83,13 @@ class BetArb extends BetStrategy {
     return evs.flatMap((ev) => S.arbOpportunities(ev, { minMarginPct: -2 }).map((a) => ({ ...a, event: this.evName(ev), commence: ev.commence, simulated: !!ev.simulated }))).sort((a, b) => b.marginPct - a.marginPct);
   }
   act(now) {
-    for (const m of this.middles) { // alerts only: never staked, deduped for 10 min
+    for (const m of this.middles) { // alerts only: never staked, deduped for R.middleDedupMin
       const k = m.eventId + m.legs.map((l) => l.book + l.name + l.point).join();
-      if (!this.alerted.has(k) || now - this.alerted.get(k) > 600e3) { this.alerted.set(k, now); this.e.tape.push({ kind: 'info', strategy: this.id, simulated: m.simulated, msg: `${m.simulated ? '[SIM] ' : ''}ALERT middle ${m.event} · ${m.legs.map((l) => `${l.label} @${l.book} ${l.dec}`).join(' + ')} · width ${m.width} · ${m.ifOneWins >= 0 ? 'NO-LOSE (cross-line arb) ' : ''}if one wins ${m.ifOneWins.toFixed(2)}% · both ${m.ifBothWin.toFixed(1)}% (alert only, not placed)` }); }
+      if (!this.alerted.has(k) || now - this.alerted.get(k) > R.middleDedupMin * 60e3) { this.alerted.set(k, now); this.e.tape.push({ kind: 'info', strategy: this.id, simulated: m.simulated, msg: `${m.simulated ? '[SIM] ' : ''}ALERT middle ${m.event} · ${m.legs.map((l) => `${l.label} @${l.book} ${l.dec}`).join(' + ')} · width ${m.width} · ${m.ifOneWins >= 0 ? 'NO-LOSE (cross-line arb) ' : ''}if one wins ${m.ifOneWins.toFixed(2)}% · both ${m.ifBothWin.toFixed(1)}% (alert only, not placed)` }); }
     }
     const hits = this.opps.filter((a) => a.marginPct >= this.c.minArbPct);
     if (!hits.length) return this.skip('no arb at quoted prices', this.opps[0] ? `best ${this.opps[0].event} ${this.opps[0].market} Σimplied ${this.opps[0].sumImplied.toFixed(4)} (margin ${this.opps[0].marginPct.toFixed(2)}% < ${this.c.minArbPct}%)` : 'no overlapping markets');
-    for (const a of hits.slice(0, 2)) {
+    for (const a of hits.slice(0, R.arbMaxPerScan)) {
       const ev = this.feed.events.get(a.eventId); if (!ev) continue;
       const k = `${ev.id}|arb|${a.market}|${a.line}`; if (this.taken.has(k)) continue;
       const sim = !!ev.simulated, bankroll = this.sleeve(sim), total = Math.floor(bankroll * this.c.arbStakePct) / 100;

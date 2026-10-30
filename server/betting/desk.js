@@ -11,6 +11,7 @@ const { SignalBook } = require('./signals');
 const { LineHistory } = require('./data/lines');
 const { MockStatsProvider, NullStatsProvider } = require('./data/stats');
 const { buildSlip, slipText } = require('./slip');
+const { explainRule } = require('./explain');
 const { VENUES } = require('./venues');
 const { clone } = require('./util');
 
@@ -81,7 +82,7 @@ class RuleDesk {
   snapshot() {
     const sig = this.signals.list();
     return { mode: this.feed.mode, oddsSimulated: !!this.feed.simulated, stats: { mode: this.stats.mode, label: this.stats.label, simulated: !!this.stats.simulated }, lastScan: this.lastScan,
-      rules: this.listRules().map((r) => ({ id: r.id, name: r.name, enabled: r.enabled, version: r.version, match: r.match, conditions: r.conditions, source: r.source, description: r.description, signals: sig.filter((s) => s.ruleId === r.id).length })),
+      rules: this.listRules().map((r) => ({ id: r.id, name: r.name, enabled: r.enabled, version: r.version, match: r.match, conditions: r.conditions, source: r.source, description: r.description, cooldownMin: r.cooldownMin, explain: explainRule(r, this.reg), signals: sig.filter((s) => s.ruleId === r.id).length })),
       signals: sig.slice(0, 80), counts: this.signals.counts(), customTypes: this.reg.list().filter((t) => !t.builtin).length, builtinTypes: this.reg.list().filter((t) => t.builtin).length, venues: this.venues() };
   }
 }

@@ -42,6 +42,7 @@ function createServer(engine, flags) {
     const p = url.pathname;
     try {
       if (p === '/api/state' && req.method === 'GET') return send(res, 200, engine.snapshot(flags));
+      if (p === '/api/explain' && req.method === 'GET') return send(res, 200, { strategies: engine.explainAll() });
       if (p === '/api/providers' && req.method === 'GET') return send(res, 200, engine.providers.list());
       if (p === '/schema/strategy.schema.json') { res.writeHead(200, { 'content-type': 'application/json' }); return fs.createReadStream(path.join(__dirname, '..', 'schema', 'strategy.schema.json')).pipe(res); }
       for (const r of engine.routes || []) if (p.startsWith(r.prefix)) { // module-owned routes (e.g. server/betting/routes.js)

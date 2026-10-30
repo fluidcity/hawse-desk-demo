@@ -9,6 +9,7 @@ const bt = require('./backtest');
 const T = require('./templates');
 const { textToConfig } = require('./text-import');
 const data = require('./data');
+const { explainConfig } = require('./explain');
 
 const clone = (o) => JSON.parse(JSON.stringify(o));
 const slug = (s) => String(s || 'strategy').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 36) || 'strategy';
@@ -83,10 +84,10 @@ class Lab {
   start() { this.timer = setInterval(() => { for (const id of Object.keys(this.db.runs)) this.refreshRun(id).catch(() => {}); }, 60000); for (const id of Object.keys(this.db.runs)) this.refreshRun(id).catch(() => {}); }
   stop() { clearInterval(this.timer); }
   list() {
-    const configs = Object.values(this.db.configs).map((vs) => { const c = vs[vs.length - 1]; return { id: c.id, name: c.name, kind: c.kind, version: c.version, versions: vs.map((v) => ({ version: v.version, status: v.status, savedAt: v.savedAt })), status: c.status, source: c.source, market: c.market, lastBacktest: c.lastBacktest || null, running: !!this.db.runs[c.id] }; });
+    const configs = Object.values(this.db.configs).map((vs) => { const c = vs[vs.length - 1]; return { id: c.id, name: c.name, kind: c.kind, version: c.version, versions: vs.map((v) => ({ version: v.version, status: v.status, savedAt: v.savedAt })), status: c.status, source: c.source, market: c.market, lastBacktest: c.lastBacktest || null, running: !!this.db.runs[c.id], explain: explainConfig(c) }; });
     const runs = Object.values(this.db.runs).map((r) => { const x = this.results[r.id]; const c = this.get(r.id, r.version) || {}; return { id: r.id, name: c.name, version: r.version, startedAt: r.startedAt, status: c.status,
       result: x ? { supported: x.supported, reason: x.reason, trades: x.trades, netUsd: x.netUsd, returnPct: x.returnPct, maxDrawdownPct: x.maxDrawdownPct, feesUsd: x.feesUsd, updatedAt: x.updatedAt, source: x.source, equity: (x.equity || []).filter((e) => e.t >= r.startedAt) } : null }; });
-    return { templates: T.TEMPLATES, configs, runs, schema: '/schema/strategy.schema.json' };
+    return { templates: T.TEMPLATES.map((t) => ({ ...t, explain: explainConfig(t) })), configs, runs, schema: '/schema/strategy.schema.json' };
   }
 }
 module.exports = { Lab };

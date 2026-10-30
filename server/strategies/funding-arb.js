@@ -6,6 +6,7 @@
 // mark-to-market of both legs (basis risk shows up in PnL), and exit costs inside unrealized.
 const { Strategy } = require('./base');
 const F = require('../lib/fees');
+const X = require('../lib/explain');
 
 const H = 3600e3;
 const DEPTH = { BTC: 5e6, ETH: 3e6, SOL: 1.5e6 }; // conservative top-of-book depth proxy (USD)
@@ -13,8 +14,12 @@ const DEPTH = { BTC: 5e6, ETH: 3e6, SOL: 1.5e6 }; // conservative top-of-book de
 class FundingArb extends Strategy {
   constructor(engine) {
     super(engine, { id: 'funding', name: 'Funding Arb', desc: 'Cross-venue perp funding (Binance · Bybit · OKX · Hyperliquid)', allocPct: 0.22, chains: ['CEX', 'Hyperliquid'] });
-    this.cfg = engine.cfg.funding; this.maxPositions = 2; this.maxHoldH = 72; this.best = [];
+    this.cfg = engine.cfg.funding; this.best = [];
+    // Fixed rules (read by the logic below AND by explain(), so the explainer cannot drift).
+    this.rules = { maxPositions: 2, maxHoldH: 72, sizePct: 0.45, evalMs: 15000, freshMs: 3 * 60e3, staleMs: 10 * 60e3, basisBufferFrac: 0.5, basisBufferBps: 2 };
   }
+  get maxPositions() { return this.rules.maxPositions; }
+  get maxHoldH() { return this.rules.maxHoldH; }
   feed() { return this.e.feeds.funding; }
   dataMode() {
     const venues = new Set(this.feed().fresh().map((r) => r.venue));
@@ -22,7 +27,7 @@ class FundingArb extends Strategy {
   }
   slip(r, notional) { return F.slippageBps({ halfSpreadBps: r.halfSpreadBps, notional, depthUsd: r.dayNtlVlm ? r.dayNtlVlm * 0.0005 : DEPTH[r.symbol] || 5e5 }); }
   evaluate(symbol, notional) {
-    const rows = this.feed().bySymbol(symbol, 3 * 60e3);
+    const rows = this.feed().bySymbol(symbol, this.rules.freshMs);
     if (rows.length < 2) return { symbol, ok: false, reason: `${symbol}: need 2+ live venues (have ${rows.length})` };
     let best = null;
     for (const lo of rows) for (const hi of rows) {
@@ -31,7 +36,7 @@ class FundingArb extends Strategy {
       const basisBps = Math.abs(hi.mark - lo.mark) / mid * 1e4;
       const edge = F.fundingArbEdge({ shortHourly: hi.hourly, longHourly: lo.hourly, holdHours: this.cfg.holdHours, notional,
         shortFee: F.TAKER_FEES[hi.venue], longFee: F.TAKER_FEES[lo.venue], shortSlipBps: this.slip(hi, notional), longSlipBps: this.slip(lo, notional),
-        basisBufferBps: basisBps * 0.5 + 2 });
+        basisBufferBps: basisBps * this.rules.basisBufferFrac + this.rules.basisBufferBps });
       if (!best || edge.net > best.edge.net) best = { symbol, long: lo, short: hi, edge, basisBps, spreadApr: F.annualizedPct(hi.hourly - lo.hourly) };
     }
     best.ok = best.edge.netBps >= this.cfg.minNetBps;
@@ -40,8 +45,8 @@ class FundingArb extends Strategy {
   }
   tick(now) {
     this.manage(now);
-    if (now - this.lastEval < 15000) return; this.lastEval = now;
-    const notional = Math.max(0, this.sleeve() * 0.45);
+    if (now - this.lastEval < this.rules.evalMs) return; this.lastEval = now;
+    const notional = Math.max(0, this.sleeve() * this.rules.sizePct);
     this.best = this.cfg.symbols.map((s) => this.evaluate(s, notional || 1000)).filter(Boolean).sort((a, b) => (b.edge ? b.edge.netBps : -1e9) - (a.edge ? a.edge.netBps : -1e9));
     if (!this.armed) return;
     if (this.positions.length >= this.maxPositions) return this.skip('max concurrent pairs reached', `${this.maxPositions}`);
@@ -67,7 +72,7 @@ class FundingArb extends Strategy {
       let fresh = true, mtm = 0, exitCost = 0;
       for (const l of p.legs) {
         const r = this.feed().get(l.venue, p.symbol);
-        if (!r || now - r.ts > 10 * 60e3) { fresh = false; continue; }
+        if (!r || now - r.ts > this.rules.staleMs) { fresh = false; continue; }
         // Discrete funding settlement at the venue's own schedule, using the last rate known before settlement.
         if (l.nextFT && now >= l.nextFT && now - p.openedAt > 0 && l.nextFT > p.openedAt) {
           const pay = F.fundingPayment({ side: l.side, notional: l.qty * r.mark, rate: l.rate });
@@ -113,6 +118,21 @@ class FundingArb extends Strategy {
     return { best: this.best.slice(0, 8).map((b) => ({ symbol: b.symbol, ok: !!b.ok, reason: b.reason || null,
       long: b.long && b.long.venue, short: b.short && b.short.venue, netBps: b.edge ? b.edge.netBps : null, spreadApr: b.spreadApr ?? null, basisBps: b.basisBps ?? null,
       gross: b.edge ? b.edge.grossFunding : null, costs: b.edge ? b.edge.fees + b.edge.slippage + b.edge.basisBuffer : null })), holdHours: this.cfg.holdHours, minNetBps: this.cfg.minNetBps };
+  }
+  explain() {
+    const c = this.cfg, r = this.rules;
+    return X.explanation(`Holds two opposite positions in the same coin's perpetual future on two different venues: long where funding is
+      cheapest and short where it is richest. Price moves roughly cancel out, and the pair earns the difference in funding payments.
+      It only opens a pair when the funding it expects to collect over ${X.hours(c.holdHours)} beats every fee, slippage and a basis buffer.`, {
+      Markets: [`Perpetual futures on ${X.list(Object.keys(F.TAKER_FEES).filter((v) => !/spot/i.test(v)))}`, `Coins: ${X.list(c.symbols)}`],
+      Signal: [`Every ${X.num(r.evalMs / 1000, 0)} s, each coin with fresh funding (< ${X.num(r.freshMs / 60e3, 0)} min old) on 2+ venues is scored for every venue pair`,
+        `Net edge = funding spread over ${X.hours(c.holdHours)} − 4 taker fees − slippage on both legs − basis buffer (${X.num(r.basisBufferFrac * 100, 0)}% of the price gap + ${X.num(r.basisBufferBps)} bp)`],
+      Entry: [`Open the best pair when net edge ≥ ${X.num(c.minNetBps)} bp per ${X.hours(c.holdHours)}`, `Equal size on both legs: ${X.pct(r.sizePct * 100, 0)} of the sleeve per leg`,
+        `One pair per coin, at most ${r.maxPositions} pairs open`],
+      Exit: ['Close both legs when the funding spread flips (short leg no longer earns more than the long leg pays)', `Close after ${X.hours(r.maxHoldH)} at the latest`,
+        'Funding is credited at each venue\'s own settlement time'],
+      Risk: X.deskRisk(this),
+      Data: [`A leg whose quote is older than ${X.num(r.staleMs / 60e3, 0)} min is marked stale and not closed on old prices`] });
   }
 }
 module.exports = { FundingArb };

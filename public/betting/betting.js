@@ -35,6 +35,8 @@ window.HAWSE = window.HAWSE || { onState: [] };
       rows.map((b) => `<div class="row betrow" style="${L}"><span class="sm">${esc(b.sid.replace('bet_', ''))}${b.group ? ' (arb)' : ''}</span><span class="sm">${b.simulated ? '<span class="badge sim">SIM</span> ' : ''}${esc(b.event)}${b.score ? ` <span class="dim">${esc(b.score)}</span>` : ''}</span><span class="sm">${esc(b.label)} @${esc(b.book)}</span><span>${odd(b.dec)}</span><span>${money(b.stake)}</span><span class="${b.status === 'open' ? 'dim' : b.pnl > 0 ? 'pos' : b.pnl < 0 ? 'neg' : ''}">${b.status === 'open' ? 'open' : esc(b.result) + ' ' + money(b.pnl)}</span><span class="${b.clvPct > 0 ? 'pos' : b.clvPct < 0 ? 'neg' : 'dim'}" title="${esc(b.closeNote || '')}">${b.clvPct != null ? pct(b.clvPct, 1) : b.closeNote ? 'n/a' : '—'}</span></div>`).join('') || '<div class="dim mono sm">no paper bets yet (arm a betting strategy in the Strategies panel)</div>';
   }
   // ---------- rules → signals → slips desk ----------
+  const XH = (x, id) => (window.HAWSE.explain ? window.HAWSE.explain.html(x, id) : '');
+  const XS = (el, html) => (window.HAWSE.explain ? window.HAWSE.explain.swap(el, html) : (el.innerHTML = html));
   let D = null, tab = 'signals', filter = 'new', editing = null, reg = null, lastResult = '';
   const params = (p) => Object.entries(p || {}).map(([k, v]) => `${k}=${Array.isArray(v) ? v.join('/') : v}`).join(' ');
   const SAMPLE_PACK = { schema: 'hawse.signalTypes/1', source: { type: 'reelripper', note: 'example pack; replace with types extracted from transcripts' }, types: [
@@ -48,7 +50,7 @@ window.HAWSE = window.HAWSE || { onState: [] };
     for (const b of el.querySelectorAll('[data-bdtab]')) b.classList.toggle('on', b.dataset.bdtab === tab);
     const body = $('bdBody');
     if (tab === 'signals') body.innerHTML = signalsHtml();
-    else if (tab === 'rules') body.innerHTML = rulesHtml();
+    else if (tab === 'rules') XS(body, rulesHtml());
     else if (tab === 'import') { if (!$('bdImportText')) body.innerHTML = importHtml(); $('bdImportOut').innerHTML = lastResult; }
     else if (tab === 'venues') body.innerHTML = venuesHtml();
   }
@@ -64,7 +66,7 @@ window.HAWSE = window.HAWSE || { onState: [] };
   function rulesHtml() {
     return `<div class="bd-chips"><select id="bdTpl" class="inp" aria-label="Rule template"><option value="">Add from template…</option>${(D.templates || []).map((t, i) => `<option value="${i}">${esc(t.name)}</option>`).join('')}</select><button type="button" class="btn sm" data-bdnew>New rule (JSON)</button><a class="btn sm ghost" href="/api/betting/registry" target="_blank" rel="noopener">Signal types (${D.builtinTypes} built-in, ${D.customTypes} custom)</a></div>` +
       (D.rules.map((r) => `<div class="bd-rule ${r.enabled ? 'on' : ''}"><div class="bd-rule-h"><button type="button" class="toggle ${r.enabled ? 'on' : ''}" data-bdon="${esc(r.id)}" aria-pressed="${r.enabled}">${r.enabled ? 'ON' : 'OFF'}</button><b>${esc(r.name)}</b><span class="dim sm">v${r.version} · ${esc(r.match)} · ${esc(r.source && r.source.type)} · ${r.signals} signals</span><span class="bd-act"><button type="button" class="btn sm ghost" data-bdedit="${esc(r.id)}">Edit</button><a class="btn sm ghost" href="/api/betting/rules/${esc(r.id)}/export">Export</a><button type="button" class="btn sm ghost" data-bddel="${esc(r.id)}">Delete</button></span></div>
-        ${r.description ? `<div class="dim sm">${esc(r.description)}</div>` : ''}<div class="bd-conds">${r.conditions.map((c) => `<span class="cond">${c.negate ? 'NOT ' : ''}<b>${esc(c.type)}</b> ${esc(params(c.params))}</span>`).join('')}</div></div>`).join('') || '<div class="dim mono sm">No rules yet.</div>') +
+        ${r.description ? `<div class="dim sm">${esc(r.description)}</div>` : ''}<div class="bd-conds">${r.conditions.map((c) => `<span class="cond">${c.negate ? 'NOT ' : ''}<b>${esc(c.type)}</b> ${esc(params(c.params))}</span>`).join('')}</div>${XH(r.explain, 'rule:' + r.id + ':' + r.version)}</div>`).join('') || '<div class="dim mono sm">No rules yet.</div>') +
       (editing ? `<div class="bd-editor"><div class="subh">${editing.id ? 'Edit rule ' + esc(editing.id) : 'New rule'} · JSON (hawse.betRule/1)</div><textarea id="bdJson" class="inp mono" rows="14" spellcheck="false">${esc(JSON.stringify(editing.rule, null, 2))}</textarea><div class="bd-chips"><button type="button" class="btn sm" data-bdsave>Save rule</button><button type="button" class="btn sm ghost" data-bdcancel>Cancel</button></div><div id="bdErr" class="sm"></div></div>` : '');
   }
   function importHtml() {

@@ -347,6 +347,19 @@ Limits:
 
 Screenshots: `docs/screenshots/stage10-{signals,rules,import,venues,slip}-{desktop,mobile}.png` and `stage10-slip-print-preview.png` (print media). For the element crops the sticky top bar was unpinned so it doesn't cover the panel.
 
+## Strategy explainers: "How it works" boxes (Stage 11)
+
+Every strategy has an expandable **How it works** box. That covers all ten desk cards (funding arb, whale flow, 1% mode, DEX gap scanner, ORB, perp momentum, perp basis, and the three sports-betting strategies), every strategy-lab template, every saved or imported lab config (one box per version), and every betting rule card. Opened, the box shows a short plain-English paragraph first, then a compact rules list: **Markets, Signal, Entry, Exit, Risk, Costs, Data**.
+
+- **Generated, not hand-written.** The text is built at request time from the same values the logic reads. Literals that used to be inline are now frozen `RULES` / `SETUP` / `*_DEFAULTS` objects in each strategy file, and both the code and `explain()` use them. Configurable values come from the live config (e.g. `FUNDING_MIN_NET_BPS`, `ORB_TARGET_R`), and the risk-gate line comes from the current gate settings. Change a parameter and the description changes with it.
+  - Generators: `server/lib/explain.js` (shared helpers), `explain()` on each strategy class, `server/lab/explain.js` (`explainConfig`, any lab config by `kind`) and `server/betting/explain.js`. The betting generator is kept inside the betting module boundary and covers strategies plus `explainRule` for rule cards.
+- **Honest about limits.** For example, a lab config's `risk.maxDrawdownPct` is labelled *declared, not enforced* (the backtest reports drawdown but does not stop on it). Lab betting configs are labelled *spec only*, because the desk's betting strategies run on the server betting config. MOCK and SIM data paths say so.
+- **No secrets.** Explainers only read non-secret parameters. A test injects fake secret env values (Helius, Alchemy, Infura, RPC URL, Tradovate, Odds API) and asserts that none of them appear in any explainer output.
+- **Serving.** `GET /api/explain` returns the desk strategies. It is fetched once by the client and refreshed every 5 min or after a risk-gate change, and is kept out of the 1.5 s SSE payload. Lab explainers ride on `GET /api/lab`, and rule explainers on the betting snapshot.
+- **Accessibility.** Native `<details>`/`<summary>`: Tab to focus; Enter or Space toggles; touch works; visible `:focus-visible` ring; 44 px tap target on small screens; reduced-motion respected. The desk re-renders every tick, so cards are now keyed: an open box stays open and keeps keyboard focus across re-renders. A headless check verified this over 4 s of live SSE ticks on desktop and mobile viewports.
+- Tests: `test/explain.test.js` (coverage of every strategy/template/rule, section order, config-change propagation, constants shared with logic, ET clock helper, NOT/any/cooldown rule text, secret absence).
+- Screenshots: `docs/screenshots/stage11-*.png` (desk ORB / funding / sports-arb cards and full grid, a lab template, a saved lab config, and a betting rule; desktop and mobile).
+
 ## Risk gate
 
 - **Daily loss halt** (`RISK_DAILY_LOSS_PCT`) blocks new entries until the next UTC day.

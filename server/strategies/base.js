@@ -1,5 +1,7 @@
 'use strict';
 // Strategy base: arm/disarm, sleeve accounting, skip-reason logging, risk gate access.
+const X = require('../lib/explain');
+
 class Strategy {
   constructor(engine, { id, name, desc, allocPct, chains = [] }) {
     this.e = engine; this.id = id; this.name = name; this.desc = desc; this.allocPct = allocPct; this.chains = chains;
@@ -26,5 +28,7 @@ class Strategy {
       skipCounts: this.e.tape.skipCounts(this.id), view: this.view() };
   }
   posView(p) { return p; }
+  /** Plain-English explainer generated from live params (see server/lib/explain.js). Subclasses override. */
+  explain() { return X.explanation(this.desc, { Risk: X.deskRisk(this) }); }
 }
 module.exports = { Strategy };

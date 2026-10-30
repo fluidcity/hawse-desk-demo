@@ -26,6 +26,10 @@ class Engine {
   addFeed(name, feed) { this.feeds[name] = feed; return feed; }
   addStrategy(s) { this.strategies.push(s); return s; }
   strategy(id) { return this.strategies.find((s) => s.id === id); }
+  /** Plain-English "what it does" + rules for every strategy, generated from the same constants/cfg the logic reads (served once via /api/explain, not per tick). */
+  explainAll() {
+    return this.strategies.map((s) => { let x; try { x = s.explain(); } catch (e) { x = { what: s.desc || s.name, rules: [], error: 'explainer failed: ' + e.message }; } return { id: s.id, name: s.name, ...x }; });
+  }
   /** Freshest real perp quote for a symbol (Hyperliquid preferred, then OKX/Binance/Bybit). null if none fresh. */
   quote(symbol, maxAgeMs = 3 * 60e3) {
     const rows = this.feeds.funding.bySymbol(symbol, maxAgeMs); if (!rows.length) return null;

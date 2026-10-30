@@ -17,6 +17,9 @@ function openingRange(bars, minutes) {
 /** Pure: breakout signal on the latest closed bar after the OR. */
 function breakout(bar, or) { if (!or || !bar) return null; if (bar.c > or.high) return 'long'; if (bar.c < or.low) return 'short'; return null; }
 
+const X = require('../lib/explain');
+const RULES = Object.freeze({ slipTicks: 1 }); // per side; read by the logic AND explain()
+
 class OpeningRangeBreakout extends Strategy {
   constructor(engine, feed) {
     super(engine, { id: 'orb', name: 'ORB · MES/MNQ', desc: 'Opening-range breakout on CME micros via Tradovate demo API (simulated fallback, labeled)', allocPct: 0.13, chains: ['CME', 'Tradovate demo'] });
@@ -37,9 +40,9 @@ class OpeningRangeBreakout extends Strategy {
           const hitStop = pos.side === 'long' ? last.l <= pos.stop : last.h >= pos.stop, hitTgt = pos.side === 'long' ? last.h >= pos.target : last.l <= pos.target;
           if (hitStop) { this.closePos(pos, pos.stop, 'stop'); continue; }
           if (hitTgt) { this.closePos(pos, pos.target, 'target'); continue; }
-          if (last.m >= this.c.flatMinute) { this.closePos(pos, last.c, 'flat 15:55 ET'); continue; }
+          if (last.m >= this.c.flatMinute) { this.closePos(pos, last.c, 'flat ' + X.etFromOpen(this.c.flatMinute)); continue; }
         }
-        const r = F.futuresRoundTrip({ side: pos.side, entry: pos.entry, exit: pos.mark, contracts: pos.qty, pointValue: sp.pointValue, tickSize: sp.tickSize, slipTicks: 1, feePerSide: this.c.feePerSide });
+        const r = F.futuresRoundTrip({ side: pos.side, entry: pos.entry, exit: pos.mark, contracts: pos.qty, pointValue: sp.pointValue, tickSize: sp.tickSize, slipTicks: RULES.slipTicks, feePerSide: this.c.feePerSide });
         pos.upnl = r.net + this.c.feePerSide * pos.qty; // entry fee already charged
         if (pos.simulated) us += pos.upnl; else ur += pos.upnl;
         this.state[root] = `${pos.side.toUpperCase()} ${pos.qty} @ ${pos.entry.toFixed(2)} · stop ${pos.stop.toFixed(2)} · tgt ${pos.target.toFixed(2)}`;
@@ -57,7 +60,7 @@ class OpeningRangeBreakout extends Strategy {
       if (!this.armed) continue;
       if (wPct < this.c.minWidthPct || wPct > this.c.maxWidthPct) { this.done[key] = true; this.skip(`${root}: OR width ${wPct.toFixed(2)}% outside ${this.c.minWidthPct}–${this.c.maxWidthPct}%`); continue; }
       const entry = last.c, stop = side === 'long' ? or.low : or.high, risk = Math.abs(entry - stop);
-      const riskUsd = (risk + 2 * sp.tickSize) * sp.pointValue + 2 * this.c.feePerSide;
+      const riskUsd = (risk + 2 * RULES.slipTicks * sp.tickSize) * sp.pointValue + 2 * this.c.feePerSide;
       const qty = Math.floor(this.sleeve(sim) * this.c.maxRiskPct / 100 / riskUsd);
       if (qty < 1) { this.done[key] = true; this.skip(`${root}: 1 contract risks $${riskUsd.toFixed(0)} > ${this.c.maxRiskPct}% of sleeve`); continue; }
       const g = this.gate(sim); if (!g.ok) { this.skip('risk gate: ' + g.reason); continue; }
@@ -72,7 +75,7 @@ class OpeningRangeBreakout extends Strategy {
   }
   closePos(p, exit, why) {
     const sp = this.feed.spec(p.symbol);
-    const r = F.futuresRoundTrip({ side: p.side, entry: p.entry, exit, contracts: p.qty, pointValue: sp.pointValue, tickSize: sp.tickSize, slipTicks: 1, feePerSide: this.c.feePerSide });
+    const r = F.futuresRoundTrip({ side: p.side, entry: p.entry, exit, contracts: p.qty, pointValue: sp.pointValue, tickSize: sp.tickSize, slipTicks: RULES.slipTicks, feePerSide: this.c.feePerSide });
     const booked = r.net + this.c.feePerSide * p.qty; // entry fee was charged at open
     this.positions.splice(this.positions.indexOf(p), 1);
     const rec = this.e.ledger.close(this.id, { pnl: booked, total: r.net, fees: r.fees, slippage: r.slippage, simulated: p.simulated, meta: { symbol: p.contract, side: p.side, why } });
@@ -85,5 +88,21 @@ class OpeningRangeBreakout extends Strategy {
     }) };
   }
   posView(p) { return { ...p, entry: p.entry }; }
+  explain() {
+    const c = this.c;
+    return X.explanation(`Trades the classic opening-range breakout on CME micro index futures. It records the high and low of the first
+      ${c.minutes} minutes after the 9:30 ET open, then takes the first decisive 1-minute close outside that range, with the stop on the far side
+      of the range and a fixed reward multiple as the target. At most one trade per contract per day, and it is always flat before the close.`, {
+      Markets: [`CME micros: ${X.list(this.feed.roots)} (front month)`, 'Data: Tradovate demo API; without it a clearly labeled SIMULATED replay'],
+      Signal: [`Opening range = high/low of the first ${c.minutes} one-minute bars after 9:30 ET`,
+        `Range width must be ${X.pct(c.minWidthPct)}–${X.pct(c.maxWidthPct)} of price, otherwise the day is skipped`],
+      Entry: ['Long on the first 1-min close above the range high; short on the first close below the low', 'One trade per contract per session',
+        `No new entries after ${X.etFromOpen(c.lastEntryMinute)}`],
+      Exit: ['Stop: the opposite side of the opening range', `Target: ${c.targetR}× the risk (entry to stop)`, `Flat at ${X.etFromOpen(c.flatMinute)} regardless`,
+        'If stop and target are both touched in one bar, the stop is assumed (conservative)'],
+      Risk: [`Contracts = floor(${X.pct(c.maxRiskPct, 1)} of the sleeve ÷ risk per contract incl. slippage and fees); skipped if 1 contract is too much`, ...X.deskRisk(this)],
+      Costs: [`$${X.num(c.feePerSide)} per contract per side + ${RULES.slipTicks} tick slippage each side`],
+      Data: ['Trades on SIMULATED data book to the SIM ledger only, never blended with real results'] });
+  }
 }
 module.exports = { OpeningRangeBreakout, openingRange, breakout };

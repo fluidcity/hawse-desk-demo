@@ -1,5 +1,27 @@
 /* HAWSE paper desk client. Renders server state (SSE). Holds no secrets and places no orders. */
 window.HAWSE = window.HAWSE || { onState: [] }; // tiny host hook for module UIs
+
+// Strategy explainer boxes ("How it works"): native <details>/<summary>, so they are keyboard (Tab + Enter/Space), screen-reader
+// and touch friendly with no JS needed to open them. Text comes from the server explainers (generated from the strategy code's own
+// constants/config). Open state and focus survive the desk's periodic innerHTML re-renders.
+window.HAWSE.explain = (() => {
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const open = new Set();
+  document.addEventListener('toggle', (e) => { const d = e.target; if (d && d.classList && d.classList.contains('explain') && d.dataset.xid) d.open ? open.add(d.dataset.xid) : open.delete(d.dataset.xid); }, true);
+  function html(x, id, label = 'How it works') {
+    if (!x || !x.what) return '';
+    const rules = (x.rules || []).map((r) => `<div class="x-row"><dt>${esc(r.k)}</dt><dd><ul>${r.items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul></dd></div>`).join('');
+    return `<details class="explain" data-xid="${esc(id)}"${open.has(id) ? ' open' : ''}><summary><span class="x-caret" aria-hidden="true"></span>${esc(label)}</summary>` +
+      `<div class="x-body"><p class="x-what">${esc(x.what)}</p>${rules ? `<dl class="x-rules">${rules}</dl>` : ''}</div></details>`;
+  }
+  /** Replace el.innerHTML, then put keyboard focus back on the same explainer summary if it had it. */
+  function swap(el, markup) {
+    const a = document.activeElement, d = a && a.tagName === 'SUMMARY' && el.contains(a) && a.parentElement.dataset.xid;
+    el.innerHTML = markup;
+    if (d) { const s = el.querySelector(`details.explain[data-xid="${CSS.escape(d)}"] > summary`); if (s) s.focus({ preventScroll: true }); }
+  }
+  return { html, swap, isOpen: (id) => open.has(id) };
+})();
 (() => {
   'use strict';
   const $ = (id) => document.getElementById(id);
@@ -38,7 +60,7 @@ window.HAWSE = window.HAWSE || { onState: [] }; // tiny host hook for module UIs
   $('haltBtn').onclick = () => post('/api/halt');
   $('resumeBtn').onclick = () => post('/api/resume');
   $('resetBrk').onclick = () => post('/api/reset-breaker');
-  $('riskForm').onsubmit = (e) => { e.preventDefault(); post('/api/risk', { dailyLossPct: +$('dailyIn').value, maxDrawdownPct: +$('ddIn').value }); };
+  $('riskForm').onsubmit = (e) => { e.preventDefault(); post('/api/risk', { dailyLossPct: +$('dailyIn').value, maxDrawdownPct: +$('ddIn').value }).then(loadExplain); }; // explainers quote the risk gate
   $('tapeChips').onclick = (e) => { const b = e.target.closest('.chip'); if (!b) return; tapeFilter = b.dataset.f; document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === b)); renderTape(true); };
   $('strats').onclick = (e) => {
     const b = e.target.closest('[data-arm]'); if (!b) return;
@@ -141,21 +163,34 @@ window.HAWSE = window.HAWSE || { onState: [] }; // tiny host hook for module UIs
   }
 
   // ---------- strategies ----------
+  // Explainers are fetched once (they derive from server config, not ticks) and re-fetched rarely.
+  let XP = {}, xpAt = 0;
+  const loadExplain = () => { xpAt = Date.now(); fetch('/api/explain').then((r) => r.json()).then((j) => { XP = Object.fromEntries((j.strategies || []).map((x) => [x.id, x])); renderStrats(); }).catch(() => { xpAt = 0; }); };
   function renderStrats() {
+    if (!xpAt || Date.now() - xpAt > 300e3) loadExplain();
     const attr = Object.fromEntries(S.attribution.map((a) => [a.id, a]));
-    $('strats').innerHTML = S.strategies.map((s) => {
+    const root = $('strats');
+    // Keyed cards: the live part re-renders each tick; the explainer <details> is only rebuilt when its text changes,
+    // so an open box stays open and keeps keyboard focus.
+    const want = S.strategies.map((s) => s.id);
+    for (const el of [...root.children]) if (!want.includes(el.dataset.sid)) el.remove();
+    S.strategies.forEach((s, i) => {
+      let card = root.querySelector(`:scope > .strat[data-sid="${CSS.escape(s.id)}"]`);
+      if (!card) { card = document.createElement('div'); card.className = 'strat'; card.dataset.sid = s.id; card.innerHTML = '<div class="strat-live"></div><div class="strat-x"></div><div class="strat-skip"></div>'; }
+      if (root.children[i] !== card) root.insertBefore(card, root.children[i] || null);
       const a = attr[s.id] || { real: 0, sim: 0, realStats: {}, simStats: {} };
       const st = s.dataMode === 'mock' || s.dataMode === 'sim' ? a.simStats : a.realStats;
       const tr = (st.trades || 0); const wr = tr ? Math.round((st.wins || 0) / tr * 100) + '%' : '—';
       const skip = s.lastSkip ? `<div class="skip">⟂ ${esc(s.lastSkip.reason)}${s.lastSkip.detail ? ' — ' + esc(s.lastSkip.detail) : ''}</div>` : `<div class="skip" style="border-color:var(--line2)">${s.armed ? 'evaluating…' : 'disarmed · scanning only, no paper entries'}</div>`;
-      return `<div class="strat ${s.armed ? 'armed' : ''}">
-        <div class="strat-top"><span class="strat-name">${esc(s.name)}</span><button type="button" class="toggle ${s.armed ? 'on' : ''}" data-arm="${esc(s.id)}" aria-pressed="${s.armed}">${s.armed ? 'ARMED' : 'DISARMED'}</button></div>
+      card.classList.toggle('armed', !!s.armed);
+      const live = `<div class="strat-top"><span class="strat-name">${esc(s.name)}</span><button type="button" class="toggle ${s.armed ? 'on' : ''}" data-arm="${esc(s.id)}" aria-pressed="${s.armed}">${s.armed ? 'ARMED' : 'DISARMED'}</button></div>
         <div class="badges">${badge(s.dataMode)}${(s.chains || []).map((c) => `<span class="badge">${esc(c)}</span>`).join('')}</div>
         <div class="strat-desc">${esc(s.desc)}</div>
-        <div class="stats"><div><small>real PnL</small>${signed(a.real)}</div><div><small>sim PnL</small>${signed(a.sim)}</div><div><small>trades · win</small>${tr} · ${wr}</div></div>
-        ${skip}
-      </div>`;
-    }).join('');
+        <div class="stats"><div><small>real PnL</small>${signed(a.real)}</div><div><small>sim PnL</small>${signed(a.sim)}</div><div><small>trades · win</small>${tr} · ${wr}</div></div>`;
+      const L = card.children[0]; if (L.dataset.h !== live) { L.innerHTML = live; L.dataset.h = live; }
+      const xh = window.HAWSE.explain.html(XP[s.id], 'desk:' + s.id); const XE = card.children[1]; if (XE.dataset.h !== xh) { window.HAWSE.explain.swap(XE, xh); XE.dataset.h = xh; }
+      const K = card.children[2]; if (K.dataset.h !== skip) { K.innerHTML = skip; K.dataset.h = skip; }
+    });
   }
 
   // ---------- risk ----------

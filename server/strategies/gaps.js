@@ -8,6 +8,10 @@
 const { Strategy } = require('./base');
 const F = require('../lib/fees');
 
+const X = require('../lib/explain');
+// Fixed rules, read by the logic AND by explain() so the explainer cannot drift.
+const RULES = Object.freeze({ scanMs: 5000, persistScans: 2 /* structural: this scan + the previous one (this.prev) */, cooldownMs: 60000, solSwapCU: 400000, solTriCU: 600000 });
+
 function evaluate({ label, grossUsd, execCostUsd, tipUsd = 0, pSuccess, notional, exec, note, minEvUsd }) {
   const evUsd = F.atomicArbEV({ grossUsd, execCostUsd, tipUsd, pSuccess, mode: 'tx' });
   return { label, grossBps: (grossUsd / notional) * 1e4, grossUsd, costUsd: execCostUsd + tipUsd, execCostUsd, tipUsd, evUsd, exec, ok: exec && evUsd > minEvUsd, note };
@@ -27,9 +31,9 @@ class GapScanner extends Strategy {
     const s = this.feed.sol, solPx = this.e.price('SOL') || (s && s.solPx);
     if (s && s.bps && solPx) {
       const exec = s.mode === 'live';
-      const ex2 = F.solanaTxCostSol({ computeUnits: 400000, microLamportsPerCU: c.solPriorityMicroLamports }) * solPx, tip = c.solTipLamports / 1e9 * solPx;
+      const ex2 = F.solanaTxCostSol({ computeUnits: RULES.solSwapCU, microLamportsPerCU: c.solPriorityMicroLamports }) * solPx, tip = c.solTipLamports / 1e9 * solPx;
       s.bps.forEach((row, i) => row.forEach((b, j) => { if (i !== j && b != null) out.push(evaluate({ label: `SOL buy ${s.labels[i]} → sell ${s.labels[j]}`, grossUsd: (b / 1e4) * N - (exec ? 0 : 2 * N * c.evmPoolFeeBps / 1e4), execCostUsd: ex2, tipUsd: tip, pSuccess: p, notional: N, exec, minEvUsd: c.minEvUsd, note: exec ? 'Jupiter executable quotes' : 'indicative mids − assumed pool fees' })); }));
-      if (s.tri) out.push(evaluate({ label: `Triangular ${s.tri.label}`, grossUsd: s.tri.grossUsd, execCostUsd: F.solanaTxCostSol({ computeUnits: 600000, microLamportsPerCU: c.solPriorityMicroLamports }) * solPx, tipUsd: tip, pSuccess: p, notional: N, exec: true, minEvUsd: c.minEvUsd, note: s.tri.route }));
+      if (s.tri) out.push(evaluate({ label: `Triangular ${s.tri.label}`, grossUsd: s.tri.grossUsd, execCostUsd: F.solanaTxCostSol({ computeUnits: RULES.solTriCU, microLamportsPerCU: c.solPriorityMicroLamports }) * solPx, tipUsd: tip, pSuccess: p, notional: N, exec: true, minEvUsd: c.minEvUsd, note: s.tri.route }));
     }
     const ethPx = this.e.price('ETH');
     for (const ch of this.feed.chains) {
@@ -42,7 +46,7 @@ class GapScanner extends Strategy {
     return out.sort((a, b) => b.evUsd - a.evUsd);
   }
   tick(now) {
-    if (now - this.lastEval < 5000) return; this.lastEval = now;
+    if (now - this.lastEval < RULES.scanMs) return; this.lastEval = now;
     this.best = this.scan();
     const okNow = new Set(this.best.filter((b) => b.ok).map((b) => b.label));
     const persisted = this.best.filter((b) => b.ok && this.prev.has(b.label)); this.prev = okNow;
@@ -50,7 +54,7 @@ class GapScanner extends Strategy {
     if (!this.best.length) return this.skip('no DEX quotes yet');
     if (!persisted.length) { const t = this.best.find((b) => b.exec) || this.best[0]; return this.skip('no executable gap after costs', `best ${t.label}: gross ${t.grossBps.toFixed(1)}bp, cost $${t.costUsd.toFixed(2)}, EV ${t.evUsd.toFixed(2)}${okNow.size ? ' (needs to persist 2 scans)' : ''}`); }
     const o = persisted[0];
-    if (this.cool[o.label] && now - this.cool[o.label] < 60000) return;
+    if (this.cool[o.label] && now - this.cool[o.label] < RULES.cooldownMs) return;
     const g = this.gate(false); if (!g.ok) return this.skip('risk gate: ' + g.reason);
     this.cool[o.label] = now;
     const landed = this.rng() < this.c.pSuccess; // modeled landing; never assumed
@@ -64,6 +68,22 @@ class GapScanner extends Strategy {
     if (f.sol && f.sol.bps) matrices.push({ title: `Solana SOL/USDC · $${f.sol.notional} size`, source: f.sol.source, labels: f.sol.labels, bps: f.sol.bps });
     for (const ch of f.chains) { const e = f.evm[ch]; if (e && e.labels.length > 1) matrices.push({ title: `${ch} WETH/USD-stable mid gap`, source: 'DexScreener · before pool fees & impact · USD stables at $1', labels: e.labels, bps: e.bps }); }
     return { modes, matrices, best: this.best.slice(0, 8), pSuccess: this.c.pSuccess, notionalUsd: this.c.notionalUsd };
+  }
+  explain() {
+    const c = this.c, r = RULES;
+    return X.explanation(`Looks for the same token priced differently across decentralized exchanges (and triangular loops on Solana), then asks whether
+      the gap still pays after gas, priority tips, pool fees and the real chance the transaction fails or gets beaten. It only "attempts"
+      gaps built from executable swap quotes that survive two scans in a row, and models whether each attempt lands.`, {
+      Markets: ['Solana: SOL/USDC via Jupiter swap quotes, plus a triangular loop', 'Ethereum, Base, Arbitrum: WETH across DEX pools (mid prices) and a ParaSwap round trip (executable amounts)'],
+      Signal: [`Scans every ${X.num(r.scanMs / 1000, 0)} s at ${X.usd(c.notionalUsd)} notional`,
+        `Costs: Solana compute (${r.solSwapCU.toLocaleString('en-US')} CU per swap at ${c.solPriorityMicroLamports.toLocaleString('en-US')} µlamports/CU) + ${c.solTipLamports.toLocaleString('en-US')}-lamport tip; EVM gas = ${c.evmGasUnits.toLocaleString('en-US')} units × live gas price per swap; ${c.evmPoolFeeBps} bp assumed pool fee per leg on mid-price gaps`,
+        `Expected value = ${c.pSuccess} × (gross − costs − tip) − ${+(1 - c.pSuccess).toFixed(2)} × costs`],
+      Entry: ['Only rows built from executable quotes can be attempted; mid-price rows are shown as indicative only',
+        `Expected value must exceed $${(+c.minEvUsd).toFixed(2)}`, `The gap must persist across ${r.persistScans} consecutive scans`, `${X.num(r.cooldownMs / 1000, 0)} s cooldown per route`],
+      Exit: ['Atomic: nothing is held. Each attempt is booked immediately',
+        `Landing is modeled with probability ${c.pSuccess}: landed books gross minus costs; failed books the lost gas/fees`],
+      Risk: X.deskRisk(this),
+      Data: ['L2 L1-data fees are not included (flagged on the desk); outcomes are modeled, never assumed'] });
   }
 }
 module.exports = { GapScanner, evaluate };

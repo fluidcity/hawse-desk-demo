@@ -150,3 +150,27 @@ canvas.eq{width:100%;height:160px;display:block;border:1px solid var(--line);bor
 .bet-stats b{color:#e6edf3;font-weight:600}
 @media (max-width:820px){.bet-grid{grid-template-columns:1fr}.betrow{grid-template-columns:1.2fr 1fr 52px 64px 46px!important}.betrow>span:nth-child(1),.betrow>span:nth-child(4){display:none}.bet-stats{flex-direction:column;gap:4px}}
 #dataSources{grid-column:1/-1}
+/* ---------- strategy explainers ("How it works"): native <details>, keyboard + touch friendly ---------- */
+.explain{border:1px solid var(--line2);border-radius:8px;background:rgba(79,216,255,.03);margin-top:2px}
+.explain>summary{list-style:none;cursor:pointer;display:flex;align-items:center;gap:8px;min-height:36px;padding:6px 10px;font-family:var(--mono);font-size:10.5px;font-weight:600;letter-spacing:.06em;text-transform:uppercase;color:var(--cyan);border-radius:8px;user-select:none;-webkit-tap-highlight-color:transparent}
+.explain>summary::-webkit-details-marker{display:none}
+.explain>summary:hover{background:rgba(79,216,255,.06)}
+.explain>summary:focus-visible{outline:2px solid var(--cyan);outline-offset:2px}
+.x-caret{width:0;height:0;border-left:5px solid currentColor;border-top:4px solid transparent;border-bottom:4px solid transparent;transition:transform .15s}
+.explain[open]>summary .x-caret{transform:rotate(90deg)}
+.explain[open]>summary{border-bottom:1px solid var(--line);border-radius:8px 8px 0 0}
+.x-body{padding:8px 10px 10px;font-size:12px;line-height:1.45;color:#c9d4de}
+.x-what{margin:0 0 8px;font-family:var(--sans);font-size:12.5px}
+.x-rules{margin:0;display:grid;gap:5px}
+.x-row{display:grid;grid-template-columns:1fr;gap:2px}
+.lab-grid .x-row,.bd-rule .x-row,.x-under .x-row{grid-template-columns:72px 1fr;gap:8px}
+.x-rules dt{font-family:var(--mono);font-size:9.5px;letter-spacing:.08em;text-transform:uppercase;color:var(--dim);padding-top:2px}
+.x-rules dd{margin:0}
+.x-rules ul{margin:0;padding-left:14px;font-family:var(--mono);font-size:11px;line-height:1.4}
+.x-rules li{margin:1px 0;word-break:break-word}
+.x-rules li::marker{color:var(--dim)}
+.row.x-under{display:block;padding:0;border:0;background:transparent;position:sticky;left:0;max-width:calc(100vw - 48px)} /* stays readable inside the horizontally scrolling table */
+.tpl .explain{margin:6px 0}
+.strats{align-items:start}
+@media (max-width:600px){.lab-grid .x-row,.bd-rule .x-row,.x-under .x-row{grid-template-columns:1fr;gap:2px}.explain>summary{min-height:44px}.x-body{font-size:12.5px}}
+@media (prefers-reduced-motion:reduce){.x-caret{transition:none}}

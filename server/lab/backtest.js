@@ -12,7 +12,18 @@ const stdArr = (xs, n) => xs.map((_, i) => { const m = sma(xs, n, i); if (m == n
 const atrArr = (bars, n) => { const tr = bars.map((b, i) => (i ? Math.max(b.h - b.l, Math.abs(b.h - bars[i - 1].c), Math.abs(b.l - bars[i - 1].c)) : b.h - b.l)); return smaArr(tr, n); };
 const BAR_MS = { '1m': 60e3, '5m': 300e3, '15m': 900e3, '1H': 3600e3, '4H': 14400e3, '1D': 86400e3 };
 
+const isBetting = (k) => /^betting_/.test(k);
 function semanticErrors(cfg) {
+  if (isBetting(cfg.kind)) {
+    const e = [], m = cfg.market || {}, r = cfg.risk || {};
+    for (const k of ['symbol', 'bar', 'venue', 'instrument']) if (k in m) e.push(`betting kinds use market.sport, not market.${k}`);
+    if (r.maxStakePct > (r.maxEventPct ?? Infinity)) e.push('risk.maxStakePct cannot exceed risk.maxEventPct');
+    if ((r.maxEventPct ?? 0) > (r.maxOpenPct ?? Infinity)) e.push('risk.maxEventPct cannot exceed risk.maxOpenPct');
+    if (cfg.kind === 'betting_spread' && m.betMarkets && !m.betMarkets.includes('spreads')) e.push('betting_spread needs "spreads" in market.betMarkets');
+    if (cfg.exit || cfg.costs) e.push('betting kinds have no exit/costs block (the vig is inside the price)');
+    return e;
+  }
+  if (cfg.market && 'sport' in cfg.market) return ['market.sport is only for betting_* kinds'];
   const e = []; const p = cfg.params || {};
   if (cfg.kind === 'ma_cross' && p.fast >= p.slow) e.push('params.fast must be smaller than params.slow');
   if (cfg.kind === 'orb' && !['1m', '5m', '15m'].includes(cfg.market.bar)) e.push('orb needs an intraday bar (1m, 5m or 15m)');
@@ -47,6 +58,7 @@ function run(cfg, data, { entryFrom = 0 } = {}) {
   const bars = (data.bars || []).filter((b) => b.closed !== false);
   const notes = [];
   const res = (extra) => ({ kind: cfg.kind, symbol: cfg.market.symbol, bar: cfg.market.bar, bars: bars.length, from: bars[0] && bars[0].t, to: bars.length ? bars[bars.length - 1].t : null, notes, ...extra });
+  if (isBetting(cfg.kind)) return { kind: cfg.kind, sport: cfg.market && cfg.market.sport, bars: 0, notes, supported: false, reason: 'Betting configs cannot be backtested here: no free historical odds feed (The Odds API documents historical odds snapshots as paid-plan only; check current pricing with the provider). Evaluate them as live paper runs on the desk (Sports +EV / spread / arb strategies) and judge by closing-line value, not short-run PnL.' };
   if (cfg.kind === 'funding_arb') return res({ supported: false, reason: 'Historical replay of cross-venue funding arb is not supported: there is no single public multi-venue funding history. Evaluate it as a live paper run (Funding Arb strategy on the desk).' });
   const se = semanticErrors(cfg); if (se.length) return res({ supported: false, reason: se.join('; ') });
   if (bars.length < 30) return res({ supported: false, reason: `not enough closed bars (${bars.length})` });
@@ -173,4 +185,4 @@ function summary({ cap0, cash, trades, equity, maxDD, fees, slipCost, fundingPnl
     equity: equity.filter((_, i) => i % step === 0 || i === equity.length - 1), tradeLog: trades.slice(-50) };
 }
 
-module.exports = { run, signals, semanticErrors, BAR_MS };
+module.exports = { run, signals, semanticErrors, isBetting, BAR_MS };

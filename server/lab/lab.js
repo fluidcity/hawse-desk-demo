@@ -60,12 +60,14 @@ class Lab {
   }
   async backtest(id, version, { limit = 1000 } = {}) {
     const c = this.get(id, version); if (!c) return { ok: false, errors: ['not found'] };
+    if (bt.isBetting(c.kind)) { const r = bt.run(c, {}); r.at = this.now(); return { ok: true, result: r, config: c }; } // stays unverified
     const d = await this.fetchHistory(c, { limit, health: this.health });
     const r = bt.run(c, d); r.source = d.source; if (d.fundingError) r.notes.push(d.fundingError); r.at = this.now(); r.simulated = false;
     if (r.supported) { c.status = 'backtested'; c.lastBacktest = { at: r.at, version: c.version, trades: r.trades, returnPct: r.returnPct, maxDrawdownPct: r.maxDrawdownPct, buyHoldPct: r.buyHoldPct, from: r.from, to: r.to, bars: r.bars }; this.persist(); }
     return { ok: true, result: r, config: c };
   }
-  startRun(id, version) { const c = this.get(id, version); if (!c) return { ok: false, errors: ['not found'] }; this.db.runs[id] = { id, version: c.version, startedAt: this.now() }; this.persist(); this.refreshRun(id).catch(() => {}); return { ok: true }; }
+  startRun(id, version) { const c = this.get(id, version); if (!c) return { ok: false, errors: ['not found'] };
+    if (bt.isBetting(c.kind)) return { ok: false, errors: ['Betting configs are evaluated by the desk\'s live paper betting strategies (Sports +EV / spread signal / arb), which use the server betting settings (BET_* env vars). Per-config side-by-side betting runs are not implemented yet.'] }; this.db.runs[id] = { id, version: c.version, startedAt: this.now() }; this.persist(); this.refreshRun(id).catch(() => {}); return { ok: true }; }
   stopRun(id) { delete this.db.runs[id]; delete this.results[id]; this.persist(); return { ok: true }; }
   /** Forward paper run = the same replay engine applied to fresh closed bars, entries only after startedAt. */
   async refreshRun(id) {

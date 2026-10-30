@@ -35,6 +35,7 @@ You need Node ≥ 22. There are no npm dependencies. One Node process proxies ev
 | 5 | ORB · MES/MNQ | Tradovate **demo** API (auth + md websocket), used only when all `TRADOVATE_*` vars are set | `TRADOVATE_USERNAME`, `TRADOVATE_PASSWORD`, `TRADOVATE_APP_ID`, `TRADOVATE_CID`, `TRADOVATE_SECRET` | The default is a **SIMULATED** accelerated session replay, labeled in the UI. All of its PnL goes to the SIM book. |
 | 6 | Perp momentum | OKX swap candles (REST, closed bars only); execution on the freshest perp quote (Hyperliquid / Binance / Bybit / OKX websockets, REST fallback) | — | With no closed bars or no fresh quote it skips and logs why. It never trades on mock data. |
 | 7 | Perp basis (cash and carry) | Spot books from OKX, Binance and Bybit spot websockets, plus perp books from all four venues | — | It needs a fresh spot book **and** a fresh perp book (15 s or less), otherwise it skips. |
+| 8–10 | Sports betting: +EV line shopping, spread signal, arbs (middles are alerts only) | — (there is no free keyless odds feed) | `ODDS_API_KEY` (The Odds API) | With no key, or if the first request fails, a labeled **MOCK** odds market runs (synthetic teams and books named `mockbook_*`). Every bet on it is tagged SIMULATED and booked to the SIM book. |
 
 More stages are added below as they land.
 
@@ -127,6 +128,31 @@ In practice, gaps between public quotes almost never survive costs. Expect skip 
   - Long spot / short perp only. No spot shorting or borrow is modeled.
   - Cross-venue carry is shown, but it ignores transfer time and the fact that collateral sits on two venues.
 
+### 8–10. Sports betting (paper only, alerts only)
+
+> **Real-money bet placement does not exist in this app.** `server/betting/live.js` is a stub whose `placeBet` / `cancelBet` / `login` always throw `LIVE_BETTING_DISABLED`, and a test checks that. The desk only shows opportunities and records **paper** bets.
+>
+> **Sportsbook terms of service and state laws vary.** Sports betting is not legal everywhere, and many books restrict or close accounts that line-shop, arb or consistently beat the close. Check your jurisdiction and each book's terms yourself.
+>
+> **Paper results are optimistic.** They ignore stake limits, account restrictions or bans, bet rejections, and line movement between the quote and placement (odds are polled, so a quoted price may already be gone). Treat paper PnL as an upper bound, and judge the strategies mainly by closing-line value (CLV).
+
+**Data.** The Odds API (`ODDS_API_KEY`, https://the-odds-api.com) gives `/v4/sports/{sport}/odds` for `ODDS_SPORTS` × `ODDS_REGIONS` × `ODDS_MARKETS` (h2h, spreads, totals), plus `/scores` for settlement. The provider's docs say a live odds request costs **markets × regions** credits, and the remaining quota comes back in `x-requests-remaining` / `x-requests-used` / `x-requests-last` headers, which the panel shows. So the default poll is slow (`ODDS_POLL_SEC=900`); check current plan quotas and pricing with the provider before shortening it. The key is read only on the server and is redacted from every error message and log line. With no key, a **MOCK** market runs instead. It has 6 synthetic books with 4–6.5% vig, about 12% stale or lagging quotes, a random walk before kickoff and a simulated final score. It is there to exercise the pipeline, and its arb and +EV frequency is **much higher than in real markets**.
+
+**Math** (`server/betting/math.js`, unit tested):
+- **No-vig fair price:** multiplicative (divide each implied probability by the overround) or power (`BET_FAIR_METHOD=power`, which shifts more of the margin onto longshots).
+- **Consensus:** the median no-vig probability across books. For +EV, each book's price is compared with the consensus of the **other** books, so a book never confirms its own price. At least `BET_MIN_BOOKS` books are required.
+- **EV** per unit = p·(d−1) − (1−p). A bet is taken when EV ≥ `BET_MIN_EDGE_PCT` (and odds ≤ `BET_MAX_ODDS_DEC`).
+- **Fractional Kelly:** f* = (p·d − 1)/(d − 1), times `BET_KELLY_FRACTION` (¼ by default), capped at `BET_MAX_STAKE_PCT` of the sleeve bankroll.
+- **Exposure caps:** per bet `BET_MAX_STAKE_PCT`, per event `BET_MAX_EVENT_PCT`, and total open `BET_MAX_OPEN_PCT`. Every refusal is logged as a skip with its reason.
+- **Arbs:** take the best price per outcome across ≥2 different books. If Σ 1/dᵢ < 1 and the margin is ≥ `BET_MIN_ARB_PCT`, the legs are staked for an equal payout (`BET_ARB_STAKE_PCT` of the bankroll in total) and booked as **one** grouped ledger entry once every leg settles.
+- **Middles:** Over L at one book plus Under H > L at another, or opposite spreads whose lines overlap. They are shown as **alerts only and never staked**, with "cost if only one side wins" and "profit if both win".
+- **Spread signal:** a book hanging a number ≥ `BET_MIN_POINT_EDGE` points better than the most-quoted line. Its win probability is assumed to be the consensus fair probability plus `BET_POINT_VALUE_PCT` percentage points per point. **That is an assumption, not a measured value** (real values depend on the sport and on key numbers), and the UI says so.
+- **CLV:** at kickoff the last quote of the same book, market and line is de-vigged across books. CLV % = taken decimal / closing fair decimal − 1. If the line moved and no close was quoted, the bet shows "n/a". Average CLV and the share of bets that beat the close are reported separately for real and simulated bets.
+
+**Ledger.** Bets are graded from scores (pushes return the stake) and booked to the strategy's own PnL, the attribution table and the unified equity curve, with real and simulated bets in separate books. No commissions are charged; the vig is already in the prices.
+
+**Lab.** There are templates for +EV, spread signal and arb (each with ToS, limits and line-movement risk notes). The JSON schema has `betting_ev`, `betting_spread` and `betting_arb` kinds with `market.sport`, `betMarkets`, `regions`, `kellyFraction`, `maxStakePct`, `maxEventPct` and `maxOpenPct`. Text import recognizes "+EV", "line shopping", "no-vig", "sure bets", "middles", "stale spreads", sport names, "quarter Kelly" / "N% Kelly", edge %, min books and per-bet / per-game caps. It reports parlays, teasers, props, live betting, futures, bonuses and automated real-money betting as **not mappable**. Betting configs **cannot be backtested here**: The Odds API documents historical odds snapshots as paid-plan only (check current pricing with the provider), and no free source exists. So they stay `unverified`, and you should judge them by live paper CLV on the desk.
+
 ## Data path: websockets first, REST as the labelled fallback
 
 | Venue / source | Transport | What it carries | Health row |
@@ -161,6 +187,7 @@ only names, a set/unset boolean, status and latency (`GET /api/providers`); valu
 | Pyth (Hermes) | `PYTH_API_KEY` | https://pyth.network | oracle cross-check of venue marks (Hermes requires a key since 2026-08-26) |
 | Jupiter | none (`JUPITER_API_BASE` optional) | https://jup.ag | Solana executable quotes for the gap scanner |
 | Binance / Bybit / OKX / Hyperliquid | none | exchange sites | perps, funding, spot books |
+| The Odds API | `ODDS_API_KEY` (`ODDS_SPORTS`, `ODDS_REGIONS` optional) | https://the-odds-api.com | live multi-book odds + scores for the betting strategies |
 | Tradovate | `TRADOVATE_USERNAME`, `_PASSWORD`, `_APP_ID`, `_CID`, `_SECRET` | https://www.tradovate.com | real MES/MNQ bars for ORB |
 | Kaiko / Amberdata / CoinAPI / Tardis.dev | `KAIKO_API_KEY` / `AMBERDATA_API_KEY` / `COINAPI_KEY` / `TARDIS_API_KEY` | vendor sites | placeholders (no adapter yet) |
 
@@ -203,6 +230,7 @@ every registry entry (unique id, https signup URL, adapter file loads) and that 
 | Whale flow | Sees transactions soon after they land | Helius WS `logsSubscribe` (Solana) and EVM `newHeads` WS, with REST/RPC polling as fallback | **WS is needed.** Polling public RPC is seconds late, and public endpoints rate-limit. |
 | DEX gap / triangular scanning | Sub-second or same-block data and execution | Public quote APIs polled every ~20 s | **No, not for real edge.** Real gaps close in milliseconds to one block, and competitors run co-located nodes and private order flow. A paper scanner on public data **overstates** the edge. That is why this one models gas, tips and failure risk, and labels mid-price gaps INDICATIVE. Its PnL should be read as an upper bound. |
 | ORB (MES/MNQ) | One-minute bars and a market-data WS during the cash open | Tradovate demo WS when configured, otherwise a SIMULATED replay | Real data needs a Tradovate API key (not provided here). |
+| Sports betting | Odds that are current when the bet is placed | The Odds API REST, polled every 15 min by default to save quota | **No for stale-line or arb edges.** Those windows often last seconds to minutes, so a 15-min poll mostly sees lines that already moved. Paper results overstate them. +EV vs consensus and CLV tracking are fine at this cadence. A faster or streaming odds feed is a paid upgrade (check current pricing with the provider). |
 
 **What you would need to upgrade** (check current pricing with each provider; prices change, so none are listed here):
 
@@ -224,12 +252,12 @@ The **Strategy lab** card (below the desk) lets you write strategies as data, te
 |---|---|
 | `schemaVersion` | always `1` |
 | `name`, `description` | free text |
-| `kind` | `funding_arb`, `basis_carry`, `ma_cross`, `bollinger_revert`, `orb`, `dca_grid` or `volatility_breakout` |
-| `market` | `{symbol, bar: 1m\|5m\|15m\|1H\|4H\|1D, venue: okx, instrument: swap\|spot}` |
+| `kind` | `funding_arb`, `basis_carry`, `ma_cross`, `bollinger_revert`, `orb`, `dca_grid`, `volatility_breakout`, or the paper-only betting kinds `betting_ev`, `betting_spread`, `betting_arb` |
+| `market` | trading: `{symbol, bar: 1m\|5m\|15m\|1H\|4H\|1D, venue: okx, instrument: swap\|spot}`; betting: `{sport, betMarkets: [h2h\|spreads\|totals], regions, books}` |
 | `params` | per-kind fields; the schema's `$defs` list them (for example `ma_cross`: `fast`, `slow`, `maType`) |
 | `entry` | `{allowShort}` |
 | `exit` | `{stopPct, takePct, maxHoldBars}` |
-| `risk` | `{positionPct, capitalUsd, maxDrawdownPct}` |
+| `risk` | trading: `{positionPct, capitalUsd, maxDrawdownPct}`; betting: `{kellyFraction, maxStakePct, maxEventPct, maxOpenPct, capitalUsd}` (no `exit` / `costs`) |
 | `costs` | `{feeRate, slippageBps}`, charged on every fill |
 | `riskNotes`, `source`, `status`, `id`, `version` | managed by the lab; `status` is `unverified` or `backtested` |
 
@@ -237,7 +265,7 @@ The validator (`server/lab/validate.js`) has zero dependencies. It implements on
 
 **Versioning.** Saving an existing id creates the next version, and every earlier version is kept. Any edit resets the status to `unverified`. *Duplicate* forks a version into a new id. Configs are stored in `data/lab/strategies.json`, which is gitignored and written atomically.
 
-**Templates (7).** Funding-rate arbitrage, cash-and-carry basis, MA crossover, Bollinger mean reversion, opening-range breakout, DCA/grid and volatility breakout. Each comes with a plain-language description and risk notes. None of them makes a performance claim.
+**Templates (10).** Funding-rate arbitrage, cash-and-carry basis, MA crossover, Bollinger mean reversion, opening-range breakout, DCA/grid, volatility breakout, and the betting templates +EV line shopping, spread signal and sports arb. Each comes with a plain-language description and risk notes. None of them makes a performance claim.
 
 **Backtest semantics** (`server/lab/backtest.js`, deterministic):
 - Data is public OKX candles: `history-candles`, about 1000 closed bars.
@@ -250,6 +278,7 @@ The validator (`server/lab/validate.js`) has zero dependencies. It implements on
 Limits:
 - No order book, partial fills, liquidation or funding-interval changes.
 - Grid lots are equal-sized spot buys.
+- Betting kinds return **"not supported"** (no free historical odds) and cannot start a lab paper run; the desk's live betting strategies are their paper run.
 - `funding_arb` returns **"not supported"**, because there is no single public multi-venue funding history. Evaluate it as a live paper run on the desk instead.
 - Past bars are not a forecast.
 
@@ -299,12 +328,17 @@ server/lib/risk.js        RiskGate (unit tested)
 server/lib/broker.js      PaperBroker + disabled LiveBroker stub
 server/feeds/*.js         upstream adapters, each reports into the health registry
 server/strategies/*.js    one module per strategy (arm/disarm, own PnL, skip log)
+server/betting/           odds math, scanner, paper bet book, disabled live-bet stub
+server/feeds/odds.js      The Odds API adapter + labeled MOCK odds market
+server/lab/               strategy lab: schema validator, templates, backtester, text import
 public/                   terminal UI (vanilla JS, canvas charts)
 public/demo/              original simulator (Demo mode only)
 test/                     node:test suites
 ```
 
 ## Known limits
+
+- Sports betting: The Odds API live path has been written against the documented v4 API and unit tested with fixtures, but it has **not** been exercised against the live API: no `ODDS_API_KEY` was set on the build box. Mock-market arb and +EV frequency is unrealistically high.
 
 - Binance perp funding interval is assumed to be 8 h because REST `fundingInfo` is geo-blocked from the test box. Symbols with 4 h intervals would show a halved hourly rate.
 - Pyth Hermes requires an API key (since 2026-08). The Pyth adapter is idle without `PYTH_API_KEY`, and it has not been tested with a key.

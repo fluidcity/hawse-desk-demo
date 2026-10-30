@@ -19,7 +19,7 @@ function breakout(bar, or) { if (!or || !bar) return null; if (bar.c > or.high) 
 
 class OpeningRangeBreakout extends Strategy {
   constructor(engine, feed) {
-    super(engine, { id: 'orb', name: 'ORB · MES/MNQ', desc: 'Opening-range breakout on CME micros via Tradovate demo API (simulated fallback, labeled)', allocPct: 0.15, chains: ['CME', 'Tradovate demo'] });
+    super(engine, { id: 'orb', name: 'ORB · MES/MNQ', desc: 'Opening-range breakout on CME micros via Tradovate demo API (simulated fallback, labeled)', allocPct: 0.13, chains: ['CME', 'Tradovate demo'] });
     this.feed = feed; this.c = engine.cfg.orb; this.done = {}; this.state = {};
   }
   dataMode() { return this.feed.mode === 'live' ? 'live' : this.feed.mode === 'pending' ? 'pending' : 'sim'; }

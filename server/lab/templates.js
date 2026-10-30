@@ -3,6 +3,8 @@
 // performance claim. Every template starts 'unverified' until you backtest it on this desk.
 const base = (o) => ({ schemaVersion: 1, status: 'unverified', source: { type: 'template' }, entry: { allowShort: false }, exit: {}, risk: { capitalUsd: 10000, positionPct: 50, maxDrawdownPct: 25 }, costs: { feeRate: 0.0005, slippageBps: 2 }, ...o });
 
+const bet = (o) => ({ schemaVersion: 1, status: 'unverified', source: { type: 'template' }, risk: { capitalUsd: 10000, kellyFraction: 0.25, maxStakePct: 2, maxEventPct: 4, maxOpenPct: 25 }, ...o });
+
 const TEMPLATES = [
   base({ id: 'tpl-funding-arb', name: 'Funding-rate arbitrage', kind: 'funding_arb', market: { symbol: 'BTC', venue: 'okx', instrument: 'swap', bar: '1H' },
     params: { minNetBps: 2, venues: ['binance', 'bybit', 'okx', 'hyperliquid'] }, costs: { feeRate: 0.0005, slippageBps: 2 },
@@ -32,6 +34,20 @@ const TEMPLATES = [
     params: { lookback: 20, atrPeriod: 14, atrMult: 1, expansion: 1.2 }, exit: { stopPct: 3, takePct: 6, maxHoldBars: 24 }, entry: { allowShort: true },
     description: 'Enter when a bar closes beyond the prior 20-bar high/low with a move larger than 1×ATR while volatility is expanding, betting that the burst continues.',
     riskNotes: ['Breakouts often fail and reverse; expect a low win rate offset (hopefully) by larger winners.', 'Entries happen after big candles, so slippage in real fast markets is worse than modeled.', 'Funding on perps can be expensive exactly when momentum is crowded.'] }),
+  // ---- sports betting (paper only; alerts only; real-money placement is a disabled stub) ----
+  bet({ id: 'tpl-bet-ev', name: 'Sports +EV · line shopping vs no-vig consensus', kind: 'betting_ev', market: { sport: 'basketball_nba', betMarkets: ['h2h', 'spreads', 'totals'], regions: ['us'] },
+    params: { minEdgePct: 2, minBooks: 4, maxDecimalOdds: 4, fairMethod: 'multiplicative', minMinutesToStart: 10 },
+    description: 'Remove the bookmaker margin (vig) from several books to estimate a fair probability, then bet only where one book pays more than that fair price. Stakes are a fraction of the Kelly stake, capped per bet, per game and in total. Runs live on the desk as "Sports +EV".',
+    riskNotes: ['The consensus of soft books can itself be wrong; a sharp-book reference is not included in the free feed defaults.', 'Books limit or close accounts that consistently win; paper results ignore stake limits, account restrictions and voided bets.', 'Prices move between seeing a line and getting a bet accepted; paper fills assume the quoted price.', 'Even a real +2% edge has a long losing streak risk: variance dominates over hundreds of bets.', 'Sportsbook terms and state laws vary; this tool never places real bets.'] }),
+  bet({ id: 'tpl-bet-spread', name: 'Sports spread signal · off-consensus numbers', kind: 'betting_spread', market: { sport: 'americanfootball_nfl', betMarkets: ['spreads'], regions: ['us'] },
+    params: { minPointEdge: 1, pointValuePct: 2.5, minEdgePct: 1.5, minBooks: 4, minMinutesToStart: 10 },
+    description: 'Look for a book hanging a better point spread than the market consensus (a stale or soft number, e.g. +4 when everyone else is +3) and bet the better number.',
+    riskNotes: ['The value of half a point is an ASSUMPTION (pointValuePct) that differs by sport and around key numbers (3 and 7 in NFL); the app does not estimate it.', 'Off-consensus numbers often mean news (injury, weather) the other books already priced: the stale book may be the right one.', 'Paper results ignore limits, account restrictions and line moves before acceptance.', 'Sportsbook terms and state laws vary; this tool never places real bets.'] }),
+  bet({ id: 'tpl-bet-arb', name: 'Sports arbitrage + middles (alerts)', kind: 'betting_arb', market: { sport: 'basketball_nba', betMarkets: ['h2h', 'spreads', 'totals'], regions: ['us', 'us2'] },
+    params: { minMarginPct: 0.5, includeMiddles: true, maxMiddleCostPct: 3, minMinutesToStart: 10 },
+    risk: { capitalUsd: 10000, kellyFraction: 1, maxStakePct: 6, maxEventPct: 6, maxOpenPct: 25 },
+    description: 'Back every outcome of the same market at different books when the best prices together imply less than 100%, locking a small margin at quoted prices. Middles (two lines with a gap that can win both) are surfaced as alerts only.',
+    riskNotes: ['Arbs exist mostly because one price is stale; it is often gone or voided ("palpable error") before the second leg is placed.', 'Books restrict arbers quickly; paper results ignore limits, account restrictions and line moves between legs.', 'A partially filled arb is an open directional bet.', 'Middles usually cost the vig on both sides when they miss; they are alerts only here.', 'Sportsbook terms and state laws vary; this tool never places real bets.'] }),
 ];
 const get = (id) => TEMPLATES.find((t) => t.id === id || t.kind === id);
 module.exports = { TEMPLATES, get };

@@ -12,6 +12,10 @@ const { PerpBars } = require('./feeds/perp-bars');
 const { Lab } = require('./lab/lab');
 const path = require('path');
 const { PerpMomentum, PerpBasis } = require('./strategies/perps');
+const { OddsFeed } = require('./feeds/odds');
+const { BetBook } = require('./betting/book');
+const { LiveBetPlacer } = require('./betting/live');
+const { BetEV, BetSpread, BetArb } = require('./strategies/betting');
 
 module.exports = {
   whales(engine) {
@@ -37,6 +41,12 @@ module.exports = {
     const bars = engine.addFeed('perpbars', new PerpBars({ health: engine.health, symbols: engine.cfg.perps.symbols, bar: engine.cfg.perps.momentum.bar }));
     engine.addStrategy(new PerpMomentum(engine, bars));
     engine.addStrategy(new PerpBasis(engine));
+  },
+  betting(engine) {
+    const feed = engine.addFeed('odds', new OddsFeed({ health: engine.health, cfg: engine.cfg.betting }));
+    const book = engine.bets = engine.addFeed('bets', new BetBook(engine, feed, engine.cfg.betting));
+    engine.liveBets = new LiveBetPlacer(); engine.placeLiveBet = () => engine.liveBets.placeBet(); // always throws
+    for (const S of [BetEV, BetSpread, BetArb]) engine.addStrategy(new S(engine, feed, book));
   },
   lab(engine) {
     const file = engine.cfg.lab && engine.cfg.lab.file !== undefined ? engine.cfg.lab.file : path.join(__dirname, '..', 'data', 'lab', 'strategies.json');

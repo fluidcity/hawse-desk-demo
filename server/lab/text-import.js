@@ -4,6 +4,40 @@
 // spacing) and reports every clause it could NOT map, so nothing is silently guessed.
 const T = require('./templates');
 
+const BET_CONTEXT = /\b(bet|bets|betting|wager\w*|sportsbooks?|bookmakers?|books|odds|moneyline|point spread|over\/under|totals?|NBA|NFL|NHL|MLB|NCAA[FB]?|EPL|premier league|soccer|parlay|vig|juice)\b/i;
+const BET_RULES = [
+  ['betting_arb', /\b(sure[- ]?bets?|arb(?:itrage)?s?|middl(?:e|es|ing))\b/i],
+  ['betting_spread', /\b(point spreads?|spread (?:bet\w*|signal|value)|stale (?:lines?|numbers?)|off[- ](?:market|consensus) (?:lines?|numbers?|spreads?)|key numbers?|better number)\b/i],
+  ['betting_ev', /(\+\s?EV\b|\b(positive EV|expected value|value bet\w*|line[- ]shopping|no[- ]vig|de-?vig\w*|fair (?:odds|price|line)|sharp (?:books?|lines?)|beat the closing line|CLV))\b/i],
+];
+const SPORTS = [['basketball_nba', /\bNBA\b/i], ['americanfootball_nfl', /\bNFL\b/i], ['icehockey_nhl', /\bNHL\b/i], ['baseball_mlb', /\bMLB\b|\bbaseball\b/i], ['americanfootball_ncaaf', /\bNCAAF\b|college football/i], ['basketball_ncaab', /\bNCAAB\b|college basketball/i], ['soccer_epl', /\bEPL\b|premier league/i]];
+const BET_UNSUPPORTED = [/\bparlays?\b/i, /\bteasers?\b/i, /\bplayer props?\b|\bprops\b/i, /\blive betting|in[- ]play\b/i, /\bfutures?\b|\boutrights?\b/i, /\bmartingale\b/i, /\bfollow (?:a )?tipster|picks? from\b/i, /\bbonus(?:es)?|promos?\b/i];
+
+/** Betting clauses: sport, markets, edge %, Kelly fraction, caps. Same honesty rules as the trading mapper. */
+function bettingClause(c, kind, cfg, mapped, unmapped) {
+  let hit = BET_RULES.some(([k, re]) => k === kind && re.test(c)) || BET_CONTEXT.test(c);
+  for (const [k, re] of SPORTS) if (re.test(c)) { cfg.market.sport = k; mapped.push(`market.sport = ${k}`); hit = true; break; }
+  const mk = []; if (/\b(moneylines?|money lines?|h2h|to win|winners?)\b/i.test(c)) mk.push('h2h'); if (/\bspreads?\b|\bhandicap\b|\bATS\b/i.test(c)) mk.push('spreads'); if (/\btotals?\b|over\/under|\bO\/U\b/i.test(c)) mk.push('totals');
+  if (mk.length && kind !== 'betting_spread') { cfg.market.betMarkets = [...new Set(mk)]; mapped.push(`market.betMarkets = ${cfg.market.betMarkets.join(',')}`); hit = true; }
+  const kf = c.match(/\b(quarter|half|third|full|eighth|tenth)[- ]kelly\b/i) || c.match(/\b(\d+(?:\.\d+)?)\s*%\s*(?:of\s*)?kelly\b/i) || c.match(/\bkelly\s*(?:fraction|multiplier)?\s*(?:of|=|:)?\s*(0?\.\d+)/i);
+  if (kf) { const w = { quarter: 0.25, half: 0.5, third: 1 / 3, full: 1, eighth: 0.125, tenth: 0.1 }[String(kf[1]).toLowerCase()]; const f = w ?? (+kf[1] > 1 ? +kf[1] / 100 : +kf[1]); if (f > 0 && f <= 1) { cfg.risk.kellyFraction = +f.toFixed(4); mapped.push(`risk.kellyFraction = ${cfg.risk.kellyFraction}`); hit = true; } }
+  else if (/\bkelly\b/i.test(c)) { mapped.push(`risk.kellyFraction = ${cfg.risk.kellyFraction} (Kelly mentioned without a fraction; template default kept)`); hit = true; }
+  const ed = c.match(/\b(?:edge|EV|expected value|value)\s*(?:is\s*|must be\s*)?(?:of|>=?|≥|above|over|at least|=|:)?\s*(\d+(?:\.\d+)?)\s*%/i) || c.match(/\b(\d+(?:\.\d+)?)\s*%\s*(?:\+?EV|edge)\b/i);
+  if (ed && kind !== 'betting_arb') { cfg.params.minEdgePct = +ed[1]; mapped.push(`params.minEdgePct = ${ed[1]}`); hit = true; }
+  const am = c.match(/\b(?:arb|margin|profit)\s*(?:of|>=?|≥|above|over|at least)\s*(\d+(?:\.\d+)?)\s*%/i) || c.match(/\b(\d+(?:\.\d+)?)\s*%\s*(?:arb|margin)\b/i);
+  if (am && kind === 'betting_arb') { cfg.params.minMarginPct = +am[1]; mapped.push(`params.minMarginPct = ${am[1]}`); hit = true; }
+  const pe = c.match(/\b(\d+(?:\.\d+)?)\s*(?:points?|pts?)\s*(?:better|off|above|from)/i) || c.match(/\b(half|one|two)[- ]points?\s*(?:better|off)/i);
+  if (pe && kind === 'betting_spread') { const v = { half: 0.5, one: 1, two: 2 }[String(pe[1]).toLowerCase()] ?? +pe[1]; cfg.params.minPointEdge = Math.max(0.5, v); mapped.push(`params.minPointEdge = ${cfg.params.minPointEdge}`); hit = true; }
+  const mb = c.match(/\b(?:at least|min(?:imum)?|across)\s*(\d{1,2})\s*(?:books|sportsbooks|bookmakers)\b/i); if (mb && kind !== 'betting_arb') { cfg.params.minBooks = Math.max(2, +mb[1]); mapped.push(`params.minBooks = ${cfg.params.minBooks}`); hit = true; }
+  const ms = c.match(/\b(?:max(?:imum)?|never (?:bet|risk|stake)(?: more than)?|cap(?:ped)?(?: at)?)\s*(?:bet|stake)?\s*(?:of|at)?\s*(\d+(?:\.\d+)?)\s*%\s*(?:of\s*(?:the\s*)?(?:bankroll|roll|account))?\s*(per (game|event|match)|a (game|match))?/i);
+  if (ms) { const v = +ms[1]; if (ms[2]) { cfg.risk.maxEventPct = Math.min(25, v); mapped.push(`risk.maxEventPct = ${cfg.risk.maxEventPct}`); } else { cfg.risk.maxStakePct = Math.min(10, v); mapped.push(`risk.maxStakePct = ${cfg.risk.maxStakePct}`); } hit = true; }
+  if (/\bmiddl/i.test(c) && kind === 'betting_arb') { cfg.params.includeMiddles = true; mapped.push('params.includeMiddles = true (alerts only)'); hit = true; }
+  const bk = c.match(/\$\s?(\d[\d,]*(?:\.\d+)?)\s*(k)?\s*(?:bank\s?roll|roll)?/i); if (bk) { const v = +bk[1].replace(/,/g, '') * (bk[2] ? 1000 : 1); if (v >= 100) { cfg.risk.capitalUsd = v; mapped.push(`risk.capitalUsd = ${v}`); hit = true; } }
+  for (const re of BET_UNSUPPORTED) { const m = c.match(re); if (m) { unmapped.push(`"${m[0]}" is not supported (${kind} covers h2h/spreads/totals pre-game singles only)`); hit = true; } }
+  if (/\b(auto(?:matically)?[- ]?(?:place|bet)|place (?:real|the) bets?|real money|bot that bets)\b/i.test(c)) { unmapped.push(`"${c}": automated real-money betting is not available (paper + alerts only)`); hit = true; }
+  return hit;
+}
+
 const KIND_RULES = [
   ['basis_carry', /\b(cash[- ]and[- ]carry|basis (trade|arb|carry)|spot[- ]?(vs|versus|and)[- ]?perp|perp(etual)? premium)\b/i],
   ['funding_arb', /\bfunding[- ]?(rate)?[- ]?(arb|arbitrage|harvest|spread)\b|\bfunding rates?\b/i],
@@ -29,12 +63,26 @@ function barFrom(s) {
 function textToConfig(text) {
   const src = String(text || '').slice(0, 5000); const mapped = [], unmapped = [], warnings = [];
   if (!src.trim()) return { ok: false, error: 'empty description', mapped, unmapped };
-  const kind = (KIND_RULES.find(([, re]) => re.test(src)) || [])[0];
-  if (!kind) return { ok: false, error: 'could not determine the strategy type. Mention one of: moving-average crossover / trend following, Bollinger / mean reversion, opening-range breakout, volatility breakout, DCA / grid, funding-rate arbitrage, cash-and-carry basis.', mapped, unmapped: [src.trim()] };
+  const betCtx = BET_CONTEXT.test(src) && !/\bfunding\b/i.test(src);
+  let kind = betCtx ? (BET_RULES.find(([, re]) => re.test(src)) || [])[0] : null;
+  if (!kind) kind = (KIND_RULES.find(([, re]) => re.test(src)) || [])[0];
+  if (!kind && betCtx) kind = 'betting_ev';
+  if (!kind) return { ok: false, error: 'could not determine the strategy type. Mention one of: +EV / value betting, sports arbitrage / middles, spread signal (betting), moving-average crossover / trend following, Bollinger / mean reversion, opening-range breakout, volatility breakout, DCA / grid, funding-rate arbitrage, cash-and-carry basis.', mapped, unmapped: [src.trim()] };
   const cfg = JSON.parse(JSON.stringify(T.get(kind)));
   delete cfg.id; cfg.name = 'Imported: ' + cfg.name; cfg.status = 'unverified'; cfg.source = { type: 'import-text', note: src.slice(0, 500) }; cfg.description = src.slice(0, 2000);
   cfg.riskNotes = [...cfg.riskNotes, 'Imported from a plain-text description by deterministic heuristics; review every field before trusting it.'];
   mapped.push(`kind = ${kind}`);
+  if (/^betting_/.test(kind)) {
+    if (!BET_RULES.some(([k, re]) => k === kind && re.test(src))) warnings.push('betting context found but no specific approach (+EV, spread signal, arb); defaulted to betting_ev');
+    for (const c of src.split(/(?<=[.;!?\n])\s+|,\s+(?=[a-z])/i).map((x) => x.trim()).filter(Boolean)) {
+      let hit = bettingClause(c, kind, cfg, mapped, unmapped);
+      const claim = /\b(guaranteed|can'?t lose|risk[- ]free|lock of the|100% win|always wins?|sure thing)\b/i.test(c) && !/sure[- ]?bets?/i.test(c) || /\b(made|won|gained|returned|returns?|earned|profited|profits|win ?rate|hit rate|roi|yield)\b[^.]*\d+(?:\.\d+)?\s*%|\d+(?:\.\d+)?\s*%\s*(?:returns?|roi|yield|win ?rate|hit rate|per (?:month|year|week|season)|(?:last|this) (?:month|year|week|season))|\b\d+\s*-\s*\d+\s*(?:record|run|streak)\b|\b\d+(?:\.\d+)?\s*units?\s*(?:up|profit|won)\b/i.test(c);
+      if (claim) { warnings.push(`ignored performance claim: "${c}" — imports carry no performance; betting configs stay unverified (no historical odds backtest) until judged by paper CLV`); hit = true; }
+      if (!hit) unmapped.push(c);
+    }
+    if (cfg.risk.maxStakePct > cfg.risk.maxEventPct) { cfg.risk.maxEventPct = cfg.risk.maxStakePct; mapped.push(`risk.maxEventPct raised to ${cfg.risk.maxEventPct} (must be ≥ maxStakePct)`); }
+    return { ok: true, config: cfg, mapped: [...new Set(mapped)], unmapped: [...new Set(unmapped)], warnings };
+  }
   const clauses = src.split(/(?<=[.;!?\n])\s+|,\s+(?=[a-z])/i).map((c) => c.trim()).filter(Boolean);
   for (const c of clauses) {
     let hit = KIND_RULES.some(([k, re]) => k === kind && re.test(c));

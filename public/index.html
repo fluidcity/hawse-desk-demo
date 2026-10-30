@@ -114,6 +114,16 @@
         <div id="futBody"></div>
       </section>
 
+      <section class="card a-bet" id="betCard" hidden>
+        <div class="card-h"><h2>Sports betting · line shopping, +EV, arbs, CLV</h2><span class="dim mono sm" id="betMode"></span></div>
+        <div class="bet-warn" id="betWarn"></div>
+        <div class="bet-grid">
+          <div><div id="betEv" class="tbl"></div><div id="betSpread" class="tbl"></div></div>
+          <div><div id="betArb" class="tbl"></div><div id="betMid" class="tbl"></div></div>
+        </div>
+        <div id="betLedger" class="tbl"></div>
+      </section>
+
       <section class="card a-health" id="dataSources">
         <div class="card-h"><h2>Settings · Data sources</h2><span class="dim mono sm" id="healthSum"></span></div>
         <div class="tabs" role="tablist"><button type="button" class="tab on" data-dtab="providers">Providers</button><button type="button" class="tab" data-dtab="feeds">Feeds · latency · staleness</button></div>

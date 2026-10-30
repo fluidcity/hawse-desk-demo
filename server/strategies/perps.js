@@ -42,7 +42,7 @@ function settleFunding(s, p, row, now) {
 
 class PerpMomentum extends Strategy {
   constructor(engine, bars) {
-    super(engine, { id: 'perpmom', name: 'Perp Momentum', desc: 'Donchian breakout + EMA trend on BTC/ETH/SOL perps · executes on freshest WS quote · fees, slippage & funding modeled', allocPct: 0.15, chains: ['BTC', 'ETH', 'SOL'] });
+    super(engine, { id: 'perpmom', name: 'Perp Momentum', desc: 'Donchian breakout + EMA trend on BTC/ETH/SOL perps · executes on freshest WS quote · fees, slippage & funding modeled', allocPct: 0.13, chains: ['BTC', 'ETH', 'SOL'] });
     this.bars = bars; this.c = engine.cfg.perps; this.signals = {}; this.lastBar = {};
   }
   dataMode() { const any = this.c.symbols.some((s) => this.bars.closed(s)); return any && this.c.symbols.some((s) => this.e.quote(s, 15000)) ? 'live' : 'down'; }

@@ -20,7 +20,7 @@ function bars(n, { start = Date.UTC(2026, 0, 5, 0, 0), ms = 3600e3, base = 100, 
 }
 
 test('schema: every template validates', () => {
-  assert.equal(T.TEMPLATES.length, 7);
+  assert.equal(T.TEMPLATES.length, 10);
   for (const t of T.TEMPLATES) { const r = validate(t); assert.ok(r.ok, t.id + ': ' + r.errors.join('; ')); assert.ok(t.riskNotes.length >= 2); assert.ok(!/\b\d+% (?:return|win)/i.test(t.description), 'no performance claims'); }
 });
 
@@ -123,4 +123,25 @@ test('forward run: only enters on bars after the run started', async () => {
   const res = lab.results[s.config.id]; assert.ok(res.supported);
   for (const t of res.tradeLog) assert.ok(t.entryT > startedAt);
   const L = lab.list(); assert.equal(L.runs.length, 1); lab.stopRun(s.config.id); assert.equal(lab.list().runs.length, 0);
+});
+
+test('betting configs: schema, semantics, no backtest, no lab run, text import', async () => {
+  for (const id of ['tpl-bet-ev', 'tpl-bet-spread', 'tpl-bet-arb']) { const c = tpl(id); assert.ok(validate(c).ok, id); assert.equal(bt.semanticErrors(c).length, 0, id); }
+  const noKelly = tpl('tpl-bet-ev'); delete noKelly.risk.kellyFraction; assert.equal(validate(noKelly).ok, false);
+  const withSym = tpl('tpl-bet-ev'); withSym.market.symbol = 'BTC-USDT'; assert.ok(bt.semanticErrors(withSym).length, 'betting config with a trading symbol is rejected');
+  const caps = tpl('tpl-bet-ev'); caps.risk.maxStakePct = 5; caps.risk.maxEventPct = 3; assert.ok(bt.semanticErrors(caps).length, 'per-bet cap above per-event cap');
+  const sp = tpl('tpl-bet-spread'); sp.market.betMarkets = ['h2h']; assert.ok(bt.semanticErrors(sp).length, 'spread signal needs spreads');
+  const tr = tpl('ma_cross'); tr.market.sport = 'basketball_nba'; assert.ok(bt.semanticErrors(tr).length, 'trading config cannot carry a sport');
+  const { lab } = tmpLab(async () => { throw new Error('must not fetch'); });
+  const s = lab.fromTemplate('tpl-bet-arb'); assert.ok(s.ok);
+  const r = (await lab.backtest(s.config.id)).result; assert.equal(r.supported, false); assert.match(r.reason, /historical odds/i); assert.equal(lab.get(s.config.id).status, 'unverified');
+  const run = lab.startRun(s.config.id); assert.equal(run.ok, false); assert.match(run.errors.join(' '), /betting/i);
+  const t = textToConfig('Quarter Kelly +EV line shopping on NFL spreads and totals, edge at least 2.5% across at least 4 books. Max 1% per bet. Also teasers. Went 60-40 last season with 12% ROI.');
+  assert.ok(t.ok); assert.equal(t.config.kind, 'betting_ev'); assert.equal(t.config.market.sport, 'americanfootball_nfl'); assert.deepEqual(t.config.market.betMarkets, ['spreads', 'totals']);
+  assert.equal(t.config.risk.kellyFraction, 0.25); assert.equal(t.config.params.minEdgePct, 2.5); assert.equal(t.config.params.minBooks, 4); assert.equal(t.config.risk.maxStakePct, 1);
+  assert.ok(t.unmapped.some((u) => /teasers/.test(u))); assert.ok(t.warnings.some((w) => /performance claim/.test(w))); assert.ok(validate(t.config).ok);
+  const arbT = textToConfig('Sure bets across sportsbooks on NBA moneylines, min 0.8% arb, include middles. Auto place real money bets.');
+  assert.equal(arbT.config.kind, 'betting_arb'); assert.equal(arbT.config.params.minMarginPct, 0.8); assert.equal(arbT.config.params.includeMiddles, true); assert.ok(arbT.unmapped.some((u) => /real-money/.test(u)));
+  const imp = lab.importAny({ text: 'NHL value bets, half Kelly, 3% edge' }); assert.ok(imp.ok); assert.equal(lab.get(imp.config.id).status, 'unverified');
+  assert.equal(textToConfig('20/50 EMA crossover on BTC 4h').config.kind, 'ma_cross', 'trading text unaffected');
 });

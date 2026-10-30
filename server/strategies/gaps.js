@@ -15,7 +15,7 @@ function evaluate({ label, grossUsd, execCostUsd, tipUsd = 0, pSuccess, notional
 
 class GapScanner extends Strategy {
   constructor(engine, feed, { rng = Math.random } = {}) {
-    super(engine, { id: 'gaps', name: 'DEX Gap Scanner', desc: 'Cross-DEX + triangular gaps · Solana (Jupiter) · Ethereum · Base · Arbitrum · after gas, tips & failure risk', allocPct: 0.1, chains: ['Solana', 'Ethereum', 'Base', 'Arbitrum'] });
+    super(engine, { id: 'gaps', name: 'DEX Gap Scanner', desc: 'Cross-DEX + triangular gaps · Solana (Jupiter) · Ethereum · Base · Arbitrum · after gas, tips & failure risk', allocPct: 0.09, chains: ['Solana', 'Ethereum', 'Base', 'Arbitrum'] });
     this.feed = feed; this.c = engine.cfg.gaps; this.rng = rng; this.best = []; this.prev = new Set(); this.cool = {};
   }
   dataMode() {

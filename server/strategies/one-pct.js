@@ -47,7 +47,7 @@ function scoreSetup(bars, { feeRate = 0.001, slipBps = 2, netTarget = 0.01 } = {
 
 class OnePct extends Strategy {
   constructor(engine, feed) {
-    super(engine, { id: 'onepct', name: '1% Mode', desc: 'Disciplined ~1% net per completed cycle · top-quality trend pullbacks only · skips when nothing qualifies', allocPct: 0.15, chains: ['BTC', 'ETH', 'SOL'] });
+    super(engine, { id: 'onepct', name: '1% Mode', desc: 'Disciplined ~1% net per completed cycle · top-quality trend pullbacks only · skips when nothing qualifies', allocPct: 0.13, chains: ['BTC', 'ETH', 'SOL'] });
     this.feed = feed; this.c = engine.cfg.onepct; this.setups = [];
   }
   dataMode() { return this.c.symbols.some((s) => this.feed.closed(s)) ? 'live' : 'down'; }

@@ -50,6 +50,12 @@ module.exports = [
   { id: 'tradovate', name: 'Tradovate (CME micro futures)', category: 'futures',
     env: ['TRADOVATE_USERNAME', 'TRADOVATE_PASSWORD', 'TRADOVATE_APP_ID', 'TRADOVATE_CID', 'TRADOVATE_SECRET'].map((name) => ({ name, required: true })),
     health: ['tradovate.auth', 'tradovate.md', 'futures.sim'], signup: 'https://www.tradovate.com', unlocks: ['ORB on real MES/MNQ bars'], fallback: 'SIMULATED MES/MNQ session (labelled; PnL booked as simulated)' },
+  // ---- sports ----
+  { id: 'theoddsapi', name: 'The Odds API (sportsbook odds + scores)', category: 'sports',
+    env: [{ name: 'ODDS_API_KEY', required: true }, { name: 'ODDS_SPORTS', required: false }, { name: 'ODDS_REGIONS', required: false }],
+    health: ['odds.theoddsapi', 'odds.scores', 'odds.mock'], signup: 'https://the-odds-api.com',
+    unlocks: ['Real multi-book odds for +EV line shopping, spread signals, arb/middle alerts', 'Final scores to grade paper bets', 'Closing-line value on real lines'],
+    fallback: 'MOCK odds (synthetic books, labelled; bets booked as SIMULATED)' },
   // ---- premium vendors: placeholders (no adapter yet) ----
   { id: 'kaiko', name: 'Kaiko (institutional market data)', category: 'premium', placeholder: true, env: [{ name: 'KAIKO_API_KEY', required: true }], signup: 'https://www.kaiko.com',
     unlocks: ['Consolidated order books / trades across venues (future adapter)'] },

@@ -43,6 +43,17 @@ function build(env = process.env) {
       pollMs: num(env.FUNDING_POLL_MS, 30000),
       holdHours: num(env.FUNDING_HOLD_HOURS, 24),
       minNetBps: num(env.FUNDING_MIN_NET_BPS, 8),
+      // v2 (batch-1 H2): persistence filter, predicted funding, APR + basis gates, 2-print flip exit, basis stop, carry mode.
+      persistPrints: num(env.FUNDING_PERSIST_PRINTS, 3),
+      flipPrints: num(env.FUNDING_FLIP_PRINTS, 2),
+      minApr: num(env.FUNDING_MIN_APR, 10),
+      maxEntryBasisBps: num(env.FUNDING_MAX_ENTRY_BASIS_BPS, 15),
+      basisStopBps: num(env.FUNDING_BASIS_STOP_BPS, 40),
+      usePredicted: bool(env.FUNDING_USE_PREDICTED, true),
+      obsSec: Math.max(30, num(env.FUNDING_OBS_SEC, 900)), // one persistence observation per pair at most every obsSec
+      hlTopOi: num(env.FUNDING_HL_TOP_OI, 20), // also watch the top-N Hyperliquid perps by open interest (0 = only FUNDING_SYMBOLS)
+      shadowV1: bool(env.FUNDING_SHADOW_V1, true),
+      carry: { enabled: bool(env.CARRY_ENABLED, true), minNetBps: num(env.CARRY_MIN_NET_BPS, 15), holdHours: num(env.CARRY_HOLD_HOURS, 72), spotPollMs: num(env.SPOT_POLL_MS, 30000) },
     },
     helius: {
       // Only the configured whale wallets are watched: HELIUS_WATCH_ADDRESSES, else FOLLOW_WALLETS_SOL. No busy-pool default for live modes.

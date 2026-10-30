@@ -148,6 +148,7 @@ class PerpBasis extends Strategy {
     if (best.netBps < this.c.minNetBps) return this.skip(`best net ${best.netBps.toFixed(1)}bp < ${this.c.minNetBps}bp`, `${best.symbol} ${best.spotVenue}/${best.perpVenue} basis ${best.basisBps.toFixed(1)}bp − costs ${best.costsBps.toFixed(1)}bp + funding ${best.fundingBps.toFixed(1)}bp`);
     if (this.positions.length >= this.c.maxPositions) return this.skip('max basis positions open');
     if (this.positions.some((p) => p.symbol === best.symbol)) return this.skip('already carrying ' + best.symbol);
+    if (this.e.symbolHeld && this.e.symbolHeld(best.symbol, this.id)) return this.skip('symbol held by Funding Arb', `${best.symbol}: one carry-style trade per symbol across Funding Arb and Perp Basis`);
     const g = this.gate(false); if (!g.ok) return this.skip('risk gate: ' + g.reason);
     const spotEntry = F.applySlippage(best.spot.ask, 'buy', best.slipBps), perpEntry = F.applySlippage(best.perp.bid, 'sell', best.slipBps), qty = best.notional / spotEntry;
     const entryFees = F.fee(spotEntry * qty, F.TAKER_FEES.spot) + F.fee(perpEntry * qty, best.perpFee);

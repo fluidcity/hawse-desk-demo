@@ -55,6 +55,30 @@ function parseOkx(fundingBySym, tickers, marks, symbols) {
   }
   return out;
 }
+// Hyperliquid `predictedFundings`: [[asset, [[venueKey, {fundingRate, nextFundingTime, fundingIntervalHours} | null], ...]], ...]
+// One call returns the NEXT predicted rate for HL, Binance and Bybit (OKX's funding-rate endpoint is itself the current-period forecast).
+const PRED_VENUE = { HlPerp: 'hyperliquid', BinPerp: 'binance', BybitPerp: 'bybit' };
+function parsePredicted(resp, symbols, now = Date.now()) {
+  const out = []; if (!Array.isArray(resp)) return out;
+  const want = new Set(symbols);
+  for (const row of resp) {
+    if (!Array.isArray(row) || !want.has(row[0]) || !Array.isArray(row[1])) continue;
+    for (const [vk, d] of row[1]) {
+      const venue = PRED_VENUE[vk]; if (!venue || !d) continue;
+      const rate = +d.fundingRate, intervalH = +d.fundingIntervalHours || (venue === 'hyperliquid' ? 1 : 8);
+      if (!isFinite(rate)) continue;
+      out.push({ venue, symbol: row[0], rate, intervalH, hourly: hourlyRate(rate, intervalH), nextFundingTime: +d.nextFundingTime || null, ts: now });
+    }
+  }
+  return out;
+}
+/** Top-N Hyperliquid perps by open interest (USD), from a metaAndAssetCtxs response. Delisted assets are skipped. */
+function topByOi(meta, n) {
+  if (!(n > 0) || !Array.isArray(meta) || meta.length < 2) return [];
+  const [m, ctxs] = meta;
+  return m.universe.map((u, i) => ({ name: u.name, delisted: u.isDelisted, oi: +(ctxs[i] || {}).openInterest * +(ctxs[i] || {}).markPx }))
+    .filter((x) => !x.delisted && x.oi > 0 && /^[A-Z0-9]+$/.test(x.name)).sort((a, b) => b.oi - a.oi).slice(0, n).map((x) => x.name);
+}
 function parseHyperliquid(meta, symbols, now = Date.now()) {
   if (!Array.isArray(meta) || meta.length < 2) return [];
   const [m, ctxs] = meta; const out = [];
@@ -69,13 +93,25 @@ function parseHyperliquid(meta, symbols, now = Date.now()) {
 }
 
 class FundingFeed {
-  constructor({ health, symbols, pollMs }) {
-    this.health = health; this.symbols = symbols; this.pollMs = pollMs;
+  constructor({ health, symbols, pollMs, usePredicted = true, hlTopOi = 0, obsMs = 15 * 60e3, histLen = 6 }) {
+    this.health = health; this.baseSymbols = [...symbols]; this.symbols = [...symbols]; this.pollMs = pollMs;
+    this.usePredicted = usePredicted; this.hlTopOi = hlTopOi; this.obsMs = obsMs; this.histLen = histLen;
     this.data = new Map(); // key venue|symbol -> rec
+    this.pred = new Map(); // key venue|symbol -> predicted next-funding row (HL predictedFundings)
+    this.hist = new Map(); // key venue|symbol -> last `histLen` observations [{ts, hourly}], one per obsMs at most
     this.cache = { binanceInfo: null, bybitInst: null, cacheT: 0 };
     for (const v of VENUES) health.register('funding.' + v, { label: LABEL[v] + ' funding', group: 'Perp funding', kind: 'live', note: 'public REST, no key' });
+    if (usePredicted) health.register('funding.predicted', { label: 'Hyperliquid predictedFundings', group: 'Perp funding', kind: 'live', note: 'next-rate forecast for HL · Binance · Bybit, public, no key' });
   }
   get(venue, symbol) { return this.data.get(venue + '|' + symbol); }
+  predicted(venue, symbol, maxAgeMs = 10 * 60e3) { const r = this.pred.get(venue + '|' + symbol); return r && Date.now() - r.ts < maxAgeMs ? r : null; }
+  /** Rolling observation history (persistence filter input). An observation is a sample of the venue's current rate, at most one per obsMs. */
+  history(venue, symbol) { return this.hist.get(venue + '|' + symbol) || []; }
+  observe(r, now = r.ts || Date.now()) {
+    const k = r.venue + '|' + r.symbol, h = this.hist.get(k) || [];
+    if (h.length && now - h[h.length - 1].ts < this.obsMs) return false;
+    h.push({ ts: now, hourly: r.hourly }); while (h.length > this.histLen) h.shift(); this.hist.set(k, h); return true;
+  }
   fresh(maxAgeMs = 3 * 60e3) { return [...this.data.values()].filter((r) => Date.now() - r.ts < maxAgeMs); }
   bySymbol(symbol, maxAgeMs) { return this.fresh(maxAgeMs).filter((r) => r.symbol === symbol); }
   /** REST rows never overwrite a fresher websocket row (WS rows carry transport:'ws'). */
@@ -84,6 +120,7 @@ class FundingFeed {
       const k = r.venue + '|' + r.symbol, cur = this.data.get(k);
       if (cur && cur.transport === 'ws' && Date.now() - cur.ts < 15000) { cur.restRate = r.rate; cur.intervalH = r.intervalH || cur.intervalH; continue; }
       this.data.set(k, { transport: 'rest', ...r });
+      this.observe(r);
     }
   }
   async pollBinance() {
@@ -112,14 +149,21 @@ class FundingFeed {
   }
   async pollHyperliquid() {
     const meta = await fetchJson('https://api.hyperliquid.xyz/info', { method: 'POST', body: { type: 'metaAndAssetCtxs' }, health: this.health, id: 'funding.hyperliquid' });
+    if (this.hlTopOi > 0) { const top = topByOi(meta, this.hlTopOi); if (top.length) this.symbols = [...new Set([...this.baseSymbols, ...top])]; }
     this.put(parseHyperliquid(meta, this.symbols));
   }
+  /** ONE POST /info {type:'predictedFundings'} per poll (public, no key). */
+  async pollPredicted() {
+    if (!this.usePredicted) return;
+    const resp = await fetchJson('https://api.hyperliquid.xyz/info', { method: 'POST', body: { type: 'predictedFundings' }, health: this.health, id: 'funding.predicted' });
+    for (const r of parsePredicted(resp, this.symbols)) this.pred.set(r.venue + '|' + r.symbol, r);
+  }
   async pollAll() {
-    await Promise.allSettled([this.pollBinance(), this.pollBybit(), this.pollOkx(), this.pollHyperliquid()]);
+    await Promise.allSettled([this.pollBinance(), this.pollBybit(), this.pollOkx(), this.pollHyperliquid().then(() => this.pollPredicted())]);
   }
   start() { const run = () => this.pollAll().catch(() => {}); run(); this.timer = setInterval(run, this.pollMs); }
   stop() { clearInterval(this.timer); }
-  snapshot() { return { venues: VENUES, labels: LABEL, symbols: this.symbols, rows: this.fresh(10 * 60e3) }; }
+  snapshot() { return { venues: VENUES, labels: LABEL, symbols: this.symbols, rows: this.fresh(10 * 60e3), predicted: [...this.pred.values()].filter((r) => Date.now() - r.ts < 10 * 60e3).map(({ venue, symbol, hourly, nextFundingTime }) => ({ venue, symbol, hourly, nextFundingTime })) }; }
 }
 
-module.exports = { rec, FundingFeed, VENUES, parseBinance, parseBybit, parseOkx, parseHyperliquid };
+module.exports = { rec, FundingFeed, VENUES, parseBinance, parseBybit, parseOkx, parseHyperliquid, parsePredicted, topByOi, PRED_VENUE };

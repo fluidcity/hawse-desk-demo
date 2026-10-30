@@ -228,9 +228,24 @@ window.HAWSE.explain = (() => {
     $('fundHeat').innerHTML = h + '</div>';
     void cols;
     const fs = S.strategies.find((x) => x.id === 'funding');
-    const best = (fs && fs.view.best) || [];
-    $('fundBest').innerHTML = `<div class="row head" style="grid-template-columns:50px 1fr 70px 70px 70px"><span>sym</span><span>long / short</span><span>spread APR</span><span>net/${fs ? fs.view.holdHours : 24}h</span><span>status</span></div>` +
-      best.map((b) => `<div class="row ${b.ok ? 'ok' : ''}" style="grid-template-columns:50px 1fr 70px 70px 70px"><span>${esc(b.symbol)}</span><span>${b.long ? esc(b.long) + ' / ' + esc(b.short) : '<span class="dim">' + esc(b.reason) + '</span>'}</span><span>${b.spreadApr == null ? '—' : b.spreadApr.toFixed(1) + '%'}</span><span class="${b.netBps > 0 ? 'pos' : 'neg'}">${b.netBps == null ? '—' : b.netBps.toFixed(1) + 'bp'}</span><span class="${b.ok ? 'pos' : 'dim'}">${b.ok ? 'QUALIFIES' : 'skip'}</span></div>`).join('');
+    const v = (fs && fs.view) || {}, best = v.best || [], g = v.gates || {};
+    const G = 'grid-template-columns:44px 1fr 58px 50px 62px 62px 62px 66px';
+    const pct = (x, d = 1) => (x == null ? '—' : x.toFixed(d) + '%');
+    const fundRow = (b) => `<div class="row ${b.ok ? 'ok' : ''}" style="${G}" title="${esc(b.reason || 'passes every v2 gate')}${b.predSrc ? ' · forecast: ' + esc(b.predSrc) : ''}${b.liqCapped ? ' · size cut by liquidity rule' : ''}"><span>${esc(b.symbol)}</span><span>${b.long ? esc(b.long) + ' / ' + esc(b.short) : '<span class="dim">' + esc(b.reason) + '</span>'}</span><span>${pct(b.spreadApr)}</span><span class="${b.persistCount >= (g.persistPrints || 3) ? 'pos' : 'dim'}">${b.persistCount == null ? '—' : b.persistCount + '/' + (g.persistPrints || 3)}</span><span class="${b.predictedApr > 0 ? 'pos' : b.predictedApr == null ? 'dim' : 'neg'}">${pct(b.predictedApr)}</span><span class="${b.netBps > 0 ? 'pos' : 'neg'}">${b.netBps == null ? '—' : b.netBps.toFixed(1) + 'bp'}</span><span class="${b.aprPct > 0 ? 'pos' : 'neg'}">${pct(b.aprPct)}</span><span class="${b.ok ? 'pos' : 'dim'}">${b.ok ? 'QUALIFIES' : 'skip'}</span></div>`;
+    const head = (first) => `<div class="row head" style="${G}"><span>sym</span><span>${first}</span><span>spread APR</span><span>persist</span><span>pred APR</span><span>net</span><span>net APR</span><span>status</span></div>`;
+    $('fundGates').textContent = `Perp↔perp v2 · net ≥ ${v.minNetBps ?? 8}bp/${v.holdHours ?? 24}h · APR ≥ ${g.minApr ?? 10}% · basis ≤ ${g.maxEntryBasisBps ?? 15}bp · ${g.persistPrints ?? 3} positive obs (1 per ${Math.round((g.obsSec || 900) / 60)} min) · forecast ${g.usePredicted === false ? 'off' : 'on'}`;
+    $('fundBest').innerHTML = head('long / short') + (best.map(fundRow).join('') || '<div class="dim mono sm">waiting for 2+ live venues…</div>');
+    const carry = v.carry || [];
+    $('fundCarry').innerHTML = g.carry && g.carry.enabled ? `<div class="subh">Cash &amp; carry v2 · long spot / short perp on one venue · net ≥ ${g.carry.minNetBps}bp/${g.carry.holdHours}h</div>` + head('spot / perp') + (carry.map(fundRow).join('') || '<div class="dim mono sm">no fresh spot + perp book on the same venue yet</div>') : '<div class="dim mono sm">carry mode off (CARRY_ENABLED=false)</div>';
+    const sc = v.score;
+    if (sc) {
+      const P = sc.plan, cell = (m, k, f) => (m && m[k] != null ? f(m[k]) : '—');
+      const line = (label, m, tag) => !m ? '' : `<div class="row" style="grid-template-columns:1.4fr .6fr .8fr .8fr .8fr .8fr .7fr 1fr"><span>${label} ${tag}</span><span>${m.n}</span><span>${(m.n ? signed(m.realized) : '—')}</span><span>${cell(m, 'ratio', (x) => x.toFixed(2))}</span><span>${cell(m, 'netApr', (x) => x.toFixed(1) + '%')}</span><span>${cell(m, 'maxDdPct', (x) => x.toFixed(2) + '%')}</span><span>${cell(m, 'stopPct', (x) => x.toFixed(0) + '%')}</span><span class="${m.verdict === 'pass' ? 'pos' : m.verdict === 'fail' ? 'neg' : 'dim'}">${esc(m.verdict)}<br><span class="dim sm">${esc(m.progress)}</span></span></div>`;
+      $('fundScore').innerHTML = `<div class="subh">Realized vs expected scoreboard · pass: ratio ≥ ${P.passRatio}, APR ≥ ${P.passApr}%, pair loss ≤ ${P.maxPairLossPct}%, DD &lt; ${P.maxDdPct}% after ${P.minClosed} pairs / ${P.minDays} days</div>` +
+        `<div class="row head" style="grid-template-columns:1.4fr .6fr .8fr .8fr .8fr .8fr .7fr 1fr"><span>book</span><span>closed</span><span>realized</span><span>real/exp</span><span>net APR</span><span>max DD</span><span>stops</span><span>verdict</span></div>` +
+        line('v2 booked', sc.booked, '<span class="badge live">LIVE DATA · PAPER</span>') + line('v2 shadow', sc.shadowV2, '<span class="badge">not booked</span>') + line('naive v1 shadow', sc.shadowV1, '<span class="badge">control · not booked</span>') +
+        `<div class="dim sm">Shadows open now: v2 ${sc.shadowOpen.v2} · v1 ${sc.shadowOpen.v1}. Shadows use the same real quotes and accrue funding continuously (an approximation); they never touch desk equity.</div>`;
+    }
     const live = S.health.filter((x) => x.id.startsWith('funding.') && x.status === 'live').length;
     $('fundTs').textContent = `${live}/${f.venues.length} venues live`;
   }

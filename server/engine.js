@@ -6,6 +6,7 @@ const { RiskGate } = require('./lib/risk');
 const { PaperBroker, LiveBroker } = require('./lib/broker');
 const { Tape } = require('./lib/tape');
 const { FundingFeed } = require('./feeds/funding');
+const { SpotFeed } = require('./feeds/spot');
 const { FundingArb } = require('./strategies/funding-arb');
 const { MarketStream } = require('./feeds/market-ws');
 const { Providers } = require('./providers');
@@ -17,7 +18,9 @@ class Engine {
     this.health = new Health(); this.tape = new Tape(); this.broker = new PaperBroker(); this.live = new LiveBroker();
     this.ledger = new Ledger({ startEquity: cfg.paperStartEquity });
     this.gates = { real: new RiskGate({ startEquity: cfg.paperStartEquity, ...cfg.risk }), sim: new RiskGate({ startEquity: cfg.paperStartEquity, ...cfg.risk }) };
-    this.feeds = { funding: new FundingFeed({ health: this.health, symbols: cfg.funding.symbols, pollMs: cfg.funding.pollMs }) };
+    const fc = cfg.funding;
+    this.feeds = { funding: new FundingFeed({ health: this.health, symbols: fc.symbols, pollMs: fc.pollMs, usePredicted: fc.usePredicted !== false, hlTopOi: fc.hlTopOi || 0, obsMs: (fc.obsSec || 900) * 1000 }) };
+    if (fc.carry && fc.carry.enabled) this.feeds.spot = new SpotFeed({ health: this.health, symbols: () => this.feeds.funding.symbols, pollMs: fc.carry.spotPollMs });
     if (cfg.ws && cfg.ws.enabled) this.feeds.ws = new MarketStream({ health: this.health, funding: this.feeds.funding, symbols: cfg.funding.symbols, spotSymbols: cfg.ws.spotSymbols });
     this.strategies = [new FundingArb(this)];
     for (const [name, mod] of Object.entries(modules)) mod(this, name);
@@ -36,11 +39,17 @@ class Engine {
     const order = ['hyperliquid', 'okx', 'binance', 'bybit'];
     return rows.sort((a, b) => order.indexOf(a.venue) - order.indexOf(b.venue))[0];
   }
-  /** Freshest real spot top-of-book (WS only). Preference OKX > Binance > Bybit unless a venue is given. */
-  spotQuote(symbol, venue, maxAgeMs = 10000) {
-    const ws = this.feeds.ws; if (!ws) return null;
-    for (const v of venue ? [venue] : ['okx', 'binance', 'bybit']) { const q = ws.spotQuote(v, symbol, maxAgeMs); if (q) return q; }
+  /** Freshest real spot top-of-book: WS first, then (if restMaxAgeMs > 0) the REST spot feed. Preference OKX > Binance > Bybit unless a venue is given. */
+  spotQuote(symbol, venue, maxAgeMs = 10000, restMaxAgeMs = 0) {
+    const ws = this.feeds.ws, rest = this.feeds.spot;
+    for (const v of venue ? [venue] : ['okx', 'binance', 'bybit']) {
+      const q = (ws && ws.spotQuote(v, symbol, maxAgeMs)) || (restMaxAgeMs > 0 && rest && rest.get(v, symbol, restMaxAgeMs)); if (q) return q;
+    }
     return null;
+  }
+  /** Cross-strategy exclusivity: true if another carry-style strategy (funding arb, perp basis) already holds `symbol`. */
+  symbolHeld(symbol, exceptId, ids = ['funding', 'basis']) {
+    return this.strategies.some((s) => s.id !== exceptId && ids.includes(s.id) && (s.positions || []).some((p) => p.symbol === symbol));
   }
   price(symbol) { const q = this.quote(symbol); return q ? q.mark : null; }
   canOpen(simulated) { return this.gates[simulated ? 'sim' : 'real'].canOpen(); }

@@ -62,7 +62,7 @@ class MarketStream {
     if (r.rate === undefined || !r.mark) return;
     const row = rec(venue, symbol, r); if (!row) return;
     row.transport = 'ws'; if (r.dayNtlVlm) row.dayNtlVlm = r.dayNtlVlm;
-    this.funding.data.set(k, row);
+    this.funding.data.set(k, row); if (this.funding.observe) this.funding.observe(row);
   }
   putSpot(venue, symbol, bid, ask, exTs) { if (!(bid > 0 && ask > 0)) return; this.spot[venue + '|' + symbol] = { venue, symbol, bid, ask, mid: (bid + ask) / 2, halfSpreadBps: ((ask - bid) / 2 / ((ask + bid) / 2)) * 1e4, ts: Date.now(), exTs }; }
   spotQuote(venue, symbol, maxAgeMs = 10000) { const q = this.spot[venue + '|' + symbol]; return q && Date.now() - q.ts < maxAgeMs ? q : null; }

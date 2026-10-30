@@ -48,7 +48,21 @@ A pair qualifies only if the funding spread over `FUNDING_HOLD_HOURS` beats all 
 - 4 slippage fills (half-spread plus square-root impact against depth)
 - a basis-risk buffer (½ of the current mark-price basis plus 2 bp)
 
-While a position is open, funding settles discretely at each venue's next settlement time. Legs are marked to market, so basis moves show up as PnL. The pair closes when the spread flips or after 72h.
+While a position is open, funding settles discretely at each venue's next settlement time. Legs are marked to market, so basis moves show up as PnL. 
+
+**v2 rules (batch-1 H2).** On top of the cost check above, v2 adds:
+- **Persistence.** A "funding observation" is one sampled rate per venue, at most one per `FUNDING_OBS_SEC` (default 900 s), fed from both REST polls and websockets. The spread must have been positive for the last `FUNDING_PERSIST_PRINTS` (3) observations.
+- **Forecast.** Hyperliquid's public `predictedFundings` endpoint (one POST per poll, no key) gives the next predicted rate for Hyperliquid, Binance and Bybit. OKX uses its current (next-period) rate. A predicted spread ≤ 0 blocks entry; a missing forecast fails closed when `FUNDING_USE_PREDICTED=true`.
+- **APR and basis gates.** Net APR (after all costs, on 2× notional capital) must be ≥ `FUNDING_MIN_APR` (10%). The entry mark-price basis between the legs must be ≤ `FUNDING_MAX_ENTRY_BASIS_BPS` (15 bp).
+- **Liquidity cap.** Size per leg ≤ 0.05% of the thinner venue's 24h notional volume, split over two legs.
+- **Universe.** The configured symbols plus the top `FUNDING_HL_TOP_OI` (20) Hyperliquid perps by open interest × mark (delisted and wrapped names skipped).
+- **Cash & carry mode** (`CARRY_ENABLED`, default on). Long spot / short perp on the same venue (OKX, Binance, Bybit; Hyperliquid spot is skipped because of its wrapped names). Spot books come from the spot websockets, else public REST (`server/feeds/spot.js`, every `SPOT_POLL_MS`). Spot taker fees apply. It must clear `CARRY_MIN_NET_BPS` (15) over `CARRY_HOLD_HOURS` (72). No entry-basis gate, but the basis stop applies.
+- **Exits.** Spread negative for `FUNDING_FLIP_PRINTS` (2) consecutive observations; predicted next spread negative; mark-basis move beyond `FUNDING_BASIS_STOP_BPS` (40) against the pair (counted as a stop); max hold 72 h (carry: `CARRY_HOLD_HOURS`). A pair whose quotes stay stale for 30 min is force-closed at the last mark with 2× slippage.
+- **One owner per symbol.** Funding Arb and Perp Basis never hold the same symbol at the same time.
+- **Scoreboard.** Every closed pair records expected vs realized net. The card shows realized/expected ratio, time-weighted net APR, max drawdown, worst pair loss, stop rate and the batch-1 verdict (pass after ≥ 30 pairs and ≥ 21 days if ratio ≥ 0.6, APR ≥ 8%, worst pair ≤ 0.5%, DD < 1.5%; fail if ratio < 0.3 or APR < 3%). It persists in `data/funding/scoreboard.json` (gitignored).
+- **Shadows (not booked).** A v2 shadow and a naive v1 control (`FUNDING_SHADOW_V1`) run on the same real quotes whether or not the strategy is armed. They accrue funding continuously (an approximation, labeled as such) and never touch desk equity.
+
+Real-data run (2026-10-29, public endpoints only): 22 symbols, OKX + Hyperliquid by REST and Binance + Bybit by websocket (their REST hosts return 451/403 from the build box). No pair or carry candidate cleared costs; the best perp pair was −21.9 bp over 24 h. The scoreboard is empty until real paper pairs close. Screenshots: `docs/screenshots/h2-funding-*.png`.
 
 ### 2. Whale flow
 

@@ -1,18 +1,31 @@
-// SKELETON: not deployed. No secrets in this file. Bucket name is a placeholder; create it yourself (see docs/cloudflare-recorder.md).
+// Deployed config for the always-on recorder (H7 Stage L). No secrets in this file.
+// Secrets (Worker secrets, never committed): READ_TOKEN_SHA256 and ADMIN_TOKEN_SHA256 = SHA-256 hex of the bearer tokens;
+// the tokens themselves live only in /home/box/secrets/hawse-cf-recorder.env (mode 600) on the desk box.
 {
   "name": "hawse-recorder",
   "main": "src/index.js",
   "compatibility_date": "2026-10-01",
+  "workers_dev": true,
   "durable_objects": { "bindings": [{ "name": "RECORDER", "class_name": "Recorder" }] },
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Recorder"] }],
-  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "hawse-recorder" }],
+  // Optional R2 mirror (R2 is not enabled on the account yet). After enabling R2 in the dashboard and creating the bucket
+  // with a lifecycle rule (delete after 30 days), add:  "r2_buckets": [{ "binding": "BUCKET", "bucket_name": "hawse-recorder" }]
   "vars": {
     "KALSHI_BASE": "https://api.elections.kalshi.com/trade-api/v2",
     "SERIES": "KXBTC15M,KXETH15M,KXSOL15M,KXXRP15M",
+    "EXTRA_SERIES": "KXNFLGAME,KXNBAGAME,KXNHLGAME,KXBTCD",
+    "EXTRA_TOP": "12",
+    "POLY_ASSETS": "btc,eth,sol,xrp",
     "POLL_MS": "1000",
     "DISCOVER_MS": "60000",
+    "EXTRA_DISCOVER_MS": "300000",
     "FLUSH_MS": "60000",
-    "DEPTH": "10"
+    "DEPTH": "10",
+    "RETAIN_DAYS": "14",
+    "MAX_BYTES": "2147483648",
+    "GAP_MS": "5000",
+    "TRADE_PAGES": "3",
+    "MAX_BUF_ROWS": "40000",
+    "STALE_MS": "180000"
   }
-  // Secret (set with `wrangler secret put STATUS_TOKEN`, never committed): STATUS_TOKEN guards /status, /start and /stop.
 }

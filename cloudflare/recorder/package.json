@@ -2,9 +2,10 @@
   "name": "hawse-cf-recorder",
   "private": true,
   "type": "module",
-  "description": "SKELETON (not deployed): always-on Kalshi public market-data recorder on a Durable Object, batches to R2.",
+  "description": "Always-on record-only recorder (Kalshi + Polymarket public market data) on a Durable Object with SQLite chunk storage.",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "echo 'Not deployed by GrokBot. Read docs/cloudflare-recorder.md, then run: npx wrangler deploy' && exit 1"
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail hawse-recorder"
   }
 }

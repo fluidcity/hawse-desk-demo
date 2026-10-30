@@ -25,6 +25,7 @@
       <span class="conn" id="conn"><i></i><b>connecting</b></span>
       <span class="gatechip" id="gateChip">GATE —</span>
       <span class="clock mono" id="clock">--:--:--</span>
+      <button type="button" class="btn sm" id="settingsBtn" title="Settings · Data sources">⚙ Sources</button>
       <button type="button" class="btn hot sm" id="haltBtn">HALT</button>
     </div>
   </header>
@@ -107,9 +108,12 @@
         <div id="futBody"></div>
       </section>
 
-      <section class="card a-health">
-        <div class="card-h"><h2>Data sources</h2><span class="dim mono sm" id="healthSum"></span></div>
-        <div id="health" class="tbl"></div>
+      <section class="card a-health" id="dataSources">
+        <div class="card-h"><h2>Settings · Data sources</h2><span class="dim mono sm" id="healthSum"></span></div>
+        <div class="tabs" role="tablist"><button type="button" class="tab on" data-dtab="providers">Providers</button><button type="button" class="tab" data-dtab="feeds">Feeds · latency · staleness</button></div>
+        <p class="dim sm keynote">Keys are read server-side from env vars only. This panel shows env var <b>names</b> and whether they are set, never values. Set them in <code>.env</code> and restart <code>npm start</code>.</p>
+        <div id="providers" class="tbl"></div>
+        <div id="health" class="tbl" hidden></div>
       </section>
 
       <section class="card a-tape">

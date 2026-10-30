@@ -10,7 +10,8 @@
   const ago = (ms) => ms == null ? '—' : ms < 1000 ? 'now' : ms < 60e3 ? Math.round(ms / 1000) + 's' : ms < 3600e3 ? Math.round(ms / 60e3) + 'm' : Math.round(ms / 3600e3) + 'h';
   const compact = (n) => Math.abs(n) >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : Math.abs(n) >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : n.toFixed(0);
   const pxFmt = (p) => p >= 1000 ? p.toLocaleString('en-US', { maximumFractionDigits: 1 }) : p >= 1 ? p.toFixed(3) : p.toFixed(5);
-  const badge = (mode) => `<span class="badge ${esc(mode)}">${esc({ live: 'LIVE', mock: 'MOCK', sim: 'SIMULATED', mixed: 'MIXED', down: 'NO DATA', indicative: 'INDICATIVE', pending: 'PENDING' }[mode] || mode)}</span>`;
+  const BADGE_CLASS = { 'missing key': 'missing', 'mocked (missing key)': 'mock', mocked: 'mock', stale: 'stale', 'not implemented': 'pending', idle: 'pending' };
+  const badge = (mode) => `<span class="badge ${esc(BADGE_CLASS[mode] || mode)}">${esc({ live: 'LIVE', mock: 'MOCK', sim: 'SIMULATED', mixed: 'MIXED', down: 'NO DATA', indicative: 'INDICATIVE', pending: 'PENDING', stale: 'STALE' }[mode] || String(mode).toUpperCase())}</span>`;
   const heatColor = (v, scale) => {
     if (v == null || !isFinite(v)) return 'transparent';
     const a = Math.min(1, Math.abs(v) / scale);
@@ -216,13 +217,36 @@
   }
 
   // ---------- health ----------
+  let dtab = 'providers';
+  document.querySelectorAll('[data-dtab]').forEach((b) => b.onclick = () => { dtab = b.dataset.dtab; document.querySelectorAll('[data-dtab]').forEach((x) => x.classList.toggle('on', x === b)); $('providers').hidden = dtab !== 'providers'; $('health').hidden = dtab !== 'feeds'; });
+  const sb = $('settingsBtn'); if (sb) sb.onclick = () => $('dataSources').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const openConnect = new Set();
   function renderHealth() {
-    const h = S.health; const live = h.filter((x) => x.status === 'live').length, mock = h.filter((x) => x.status === 'mock' || x.kind === 'mock').length, down = h.filter((x) => x.status === 'down').length;
-    $('healthSum').innerHTML = `<span class="pos">${live} live</span> · <span class="warn">${mock} mock</span> · <span class="neg">${down} down</span>`;
-    $('health').innerHTML = `<div class="row head" style="grid-template-columns:1.4fr 62px 56px 48px"><span>source</span><span>status</span><span>latency</span><span>age</span></div>` +
-      h.map((x) => { const st = x.kind === 'mock' ? 'mock' : x.status === 'live' ? 'live' : x.status === 'down' ? 'down' : 'pending';
-        return `<div class="row" style="grid-template-columns:1.4fr 62px 56px 48px" title="${esc(x.error || x.note || '')}"><span>${esc(x.label)}<br><span class="dim sm">${esc(x.error ? x.error.slice(0, 70) : x.note || x.group)}</span></span><span>${badge(st)}</span><span>${x.latencyMs == null ? '—' : x.latencyMs + 'ms'}</span><span>${ago(x.ageMs)}</span></div>`; }).join('');
+    const h = S.health; const cnt = (st) => h.filter((x) => x.status === st).length;
+    $('healthSum').innerHTML = `<span class="pos">${cnt('live')} live</span> · <span class="warn">${cnt('stale')} stale</span> · <span class="warn">${cnt('mock')} mock</span> · <span class="neg">${cnt('down')} down</span>`;
+    const cols = 'grid-template-columns:1.4fr 44px 62px 56px 48px';
+    $('health').innerHTML = `<div class="row head" style="${cols}"><span>feed</span><span>via</span><span>status</span><span>latency</span><span>age</span></div>` +
+      h.map((x) => { const st = x.status === 'stale' ? 'stale' : x.kind === 'mock' ? 'mock' : x.status === 'live' ? 'live' : x.status === 'down' ? 'down' : 'pending';
+        return `<div class="row" style="${cols}" title="${esc(x.error || x.note || '')}"><span>${esc(x.label)}<br><span class="dim sm">${esc(x.error ? x.error.slice(0, 70) : x.note || x.group)}</span></span><span class="dim">${esc(x.transport || 'rest')}</span><span>${badge(st)}</span><span>${x.latencyMs == null ? '—' : x.latencyMs + 'ms'}</span><span>${ago(x.ageMs)}</span></div>`; }).join('');
+    renderProviders();
   }
+  function renderProviders() {
+    const P = S.providers || []; if (!P.length) { $('providers').innerHTML = '<div class="dim">provider registry unavailable</div>'; return; }
+    const cols = 'grid-template-columns:1.5fr 92px 56px 1.6fr 78px';
+    $('providers').innerHTML = `<div class="row head" style="${cols}"><span>provider</span><span>status</span><span>latency</span><span>unlocks</span><span></span></div>` + P.map((p) => {
+      const vars = p.env.length ? p.env.map((v) => `<code class="${v.set ? 'pos' : v.required ? 'warn' : 'dim'}">${esc(v.name)}</code> ${v.set ? '✓ set' : v.required ? 'not set' : 'optional'}`).join('<br>') : '<span class="dim">no env vars</span>';
+      const how = p.keyless ? 'Works without a key.' : p.connect.anyOf ? 'Set any one of these env vars (server-side .env), then restart:' : 'Set these env vars (server-side .env), then restart:';
+      const open = openConnect.has(p.id);
+      return `<div class="row prov" style="${cols}"><span>${esc(p.name)}<br><span class="dim sm">${esc(p.category)}${p.fallback ? ' · fallback: ' + esc(p.fallback) : ''}</span></span><span>${badge(p.status)}</span><span>${p.latencyMs == null ? '—' : Math.round(p.latencyMs) + 'ms'}</span>
+        <span class="sm">${p.unlocks.map(esc).join(' · ')}${pythInfo(p)}</span><span><button type="button" class="btn sm" data-connect="${esc(p.id)}">${open ? 'Close' : p.keyless ? 'Details' : 'Connect'}</button></span>
+        ${open ? `<div class="connect sm" style="grid-column:1/-1"><div>${how}</div><div class="mono">${vars}</div>${p.connect.signup ? `<div>Sign up / docs: <a href="${esc(p.connect.signup)}" target="_blank" rel="noopener">${esc(p.connect.signup)}</a></div>` : ''}${p.placeholder ? '<div class="warn">Placeholder: no adapter yet. Add one file in server/providers/adapters/ (see README).</div>' : ''}<div class="dim">feeds: ${p.feeds.map((f) => esc(f.id) + ' ' + esc(f.status) + ' via ' + esc(f.transport || 'rest')).join(' · ') || 'none'}</div></div>` : ''}</div>`; }).join('');
+    $('providers').querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => { const id = b.dataset.connect; openConnect.has(id) ? openConnect.delete(id) : openConnect.add(id); renderProviders(); });
+  }
+  function pythInfo(p) {
+    if (!p.extra || !p.extra.checks) return '';
+    return '<br>' + p.extra.checks.map((c) => `<span class="dim mono">${esc(c.symbol)} ${fmtPx(c.pyth)}${c.devBps == null ? '' : ` · ${esc(c.venue)} ${c.devBps >= 0 ? '+' : ''}${c.devBps.toFixed(1)}bp`}</span>`).join(' ');
+  }
+  const fmtPx = (v) => (v >= 1000 ? v.toLocaleString('en-US', { maximumFractionDigits: 0 }) : v.toFixed(v >= 10 ? 2 : 4));
 
   // ---------- tape ----------
   function renderTape(force) {

@@ -5,6 +5,7 @@
 //    directional Uniswap v3 WETH/USDC swaps. RPC from env (explicit URL > Alchemy > Infura > public fallback).
 //  - Anything unconfigured runs a clearly labeled MOCK generator (every event tagged mock:true).
 const { fetchJson, redact } = require('../lib/net');
+const { WsClient } = require('../lib/ws');
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = { EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: 'USDC', Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: 'USDT' };
@@ -33,6 +34,17 @@ function resolveRpc(chain, evmCfg) {
   if (evmCfg.alchemyKey) return { url: `https://${c.alchemy}.g.alchemy.com/v2/${evmCfg.alchemyKey}`, source: 'Alchemy' };
   if (evmCfg.infuraKey) return { url: `https://${c.infura}.infura.io/v3/${evmCfg.infuraKey}`, source: 'Infura' };
   if (evmCfg.publicFallback) return { url: c.publicRpc, source: 'public RPC (publicnode)' };
+  return null;
+}
+
+/** Resolve a websocket RPC for push triggers (EVM_WS_URL_<CHAIN> > Alchemy > Infura > public wss). Never labelled with the URL. */
+const PUBLIC_WS = { ethereum: 'wss://ethereum-rpc.publicnode.com', base: 'wss://base-rpc.publicnode.com', arbitrum: 'wss://arbitrum-one-rpc.publicnode.com' };
+function resolveWs(chain, evmCfg) {
+  const c = EVM[chain]; if (!c) return null; const ws = evmCfg.ws || {};
+  if (ws[chain]) return { url: ws[chain], source: 'custom WS (env)' };
+  if (evmCfg.alchemyKey) return { url: `wss://${c.alchemy}.g.alchemy.com/v2/${evmCfg.alchemyKey}`, source: 'Alchemy' };
+  if (evmCfg.infuraKey) return { url: `wss://${c.infura}.infura.io/ws/v3/${evmCfg.infuraKey}`, source: 'Infura' };
+  if (evmCfg.publicFallback) return { url: PUBLIC_WS[chain], source: 'publicnode' };
   return null;
 }
 
@@ -72,10 +84,26 @@ class SolanaWhaleFeed {
     this.mode = apiKey ? 'live' : 'mock'; this.events = []; this.seen = new Set(); this.scanned = 0;
     health.register('whale.solana', { label: 'Solana large tx (Helius)', group: 'whales', kind: this.mode, note: apiKey ? `Helius enhanced tx · ${this.watch.length} accounts · sampled` : 'MOCK: set HELIUS_API_KEY for live data' });
   }
-  start() { this.poll(); this.timer = setInterval(() => this.poll(), this.pollMs); }
-  stop() { clearInterval(this.timer); }
+  start() {
+    this.poll(); this.timer = setInterval(() => this.poll(), this.pollMs);
+    if (this.mode === 'live') {
+      // Helius standard websocket (logsSubscribe on each watched account) → triggers an immediate enhanced-tx fetch.
+      // REST polling stays on as the fallback; the key is only used inside the server process.
+      this.health.register('ws.helius', { label: 'Helius websocket (logsSubscribe)', group: 'websocket', transport: 'ws', staleMs: 120000, note: 'push trigger for Solana whale scan; REST poll is the fallback' });
+      this.ws = new WsClient({ url: `wss://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(this.apiKey)}`, health: this.health, id: 'ws.helius', pingMs: 30000, ping: { jsonrpc: '2.0', id: 0, method: 'getHealth' },
+        onOpen: (c) => this.watch.forEach((w, i) => c.send({ jsonrpc: '2.0', id: i + 1, method: 'logsSubscribe', params: [{ mentions: [w.addr] }, { commitment: 'confirmed' }] })),
+        onMessage: (txt) => { const m = JSON.parse(txt); if (m.method === 'logsNotification') { this.wsEvents = (this.wsEvents || 0) + 1; this.trigger(); } return null; } });
+      this.ws.start();
+    }
+  }
+  trigger() { if (this.pending) return; this.pending = setTimeout(() => { this.pending = null; this.poll(); }, 3000); }
+  stop() { clearInterval(this.timer); this.ws && this.ws.stop(); clearTimeout(this.pending); }
   async poll() {
     if (this.mode === 'mock') return this.mockTick();
+    if (this.busy) return; this.busy = true;
+    try { await this.pollInner(); } finally { this.busy = false; }
+  }
+  async pollInner() {
     for (const w of this.watch) {
       try {
         const txs = await fetchJson(`https://api.helius.xyz/v0/addresses/${w.addr}/transactions?api-key=${encodeURIComponent(this.apiKey)}&limit=50`, { health: this.health, id: 'whale.solana', timeoutMs: 10000 });
@@ -97,13 +125,13 @@ class SolanaWhaleFeed {
       this.push({ t: Date.now(), chain: 'solana', asset: 'SOL', dir, usd, whale: usd >= this.minUsd, desc: `MOCK ${dir} ${(usd / px).toFixed(0)} SOL`, mock: true }); }
   }
   push(ev) { this.events.unshift(ev); if (this.events.length > 300) this.events.pop(); }
-  snapshot() { return { mode: this.mode, scanned: this.scanned, events: this.events.length }; }
+  snapshot() { return { mode: this.mode, scanned: this.scanned, events: this.events.length, transport: this.ws && this.ws.open ? 'ws-trigger + rest' : 'rest poll', wsEvents: this.wsEvents || 0 }; }
 }
 
 class EvmWhaleFeed {
   constructor({ health, chain, evmCfg, minUsd, priceFn }) {
     this.health = health; this.chain = chain; this.c = EVM[chain]; this.minUsd = minUsd; this.priceFn = priceFn;
-    const r = resolveRpc(chain, evmCfg); this.rpc = r && r.url; this.source = r ? r.source : 'none';
+    this.evmCfg = evmCfg; const r = resolveRpc(chain, evmCfg); this.rpc = r && r.url; this.source = r ? r.source : 'none';
     this.mode = r ? 'live' : 'mock'; this.events = []; this.last = 0; this.blocksScanned = 0; this.stableIs0 = null;
     this.hid = 'whale.' + chain;
     health.register(this.hid, { label: `${chain} large tx (${this.source})`, group: 'whales', kind: this.mode,
@@ -114,8 +142,20 @@ class EvmWhaleFeed {
     if (j.error) { const e = new Error(`RPC ${method}: ${j.error.message}`); this.health.fail(this.hid, redact(e.message)); throw e; }
     return j.result;
   }
-  start() { this.poll(); this.timer = setInterval(() => this.poll(), this.c.pollMs); }
-  stop() { clearInterval(this.timer); }
+  start() {
+    this.poll(); this.timer = setInterval(() => this.poll(), this.c.pollMs);
+    const w = this.mode === 'live' && resolveWs(this.chain, this.evmCfg);
+    if (w) {
+      // newHeads push → scan the new block immediately; the REST interval remains as the fallback.
+      const id = 'ws.' + this.chain; this.wsSource = w.source;
+      this.health.register(id, { label: `${this.chain} newHeads WS (${w.source})`, group: 'websocket', transport: 'ws', staleMs: this.chain === 'ethereum' ? 60000 : 30000, note: 'push trigger for EVM whale scan' });
+      this.ws = new WsClient({ url: w.url, health: this.health, id, pingMs: 0,
+        onOpen: (c) => c.send({ jsonrpc: '2.0', id: 1, method: 'eth_subscribe', params: ['newHeads'] }),
+        onMessage: (txt) => { const m = JSON.parse(txt); if (m.method === 'eth_subscription') { this.heads = (this.heads || 0) + 1; this.poll(); return parseInt(m.params.result.timestamp, 16) * 1000; } return null; } });
+      this.ws.start();
+    }
+  }
+  stop() { clearInterval(this.timer); this.ws && this.ws.stop(); }
   async poll() {
     if (this.mode === 'mock') return this.mockTick();
     if (this.busy) return; this.busy = true;
@@ -146,9 +186,9 @@ class EvmWhaleFeed {
       this.push({ t: Date.now(), chain: this.chain, asset: 'ETH', dir, usd, whale: usd >= this.minUsd, desc: `MOCK ${dir}`, mock: true }); }
   }
   push(ev) { this.events.unshift(ev); if (this.events.length > 300) this.events.pop(); }
-  snapshot() { return { mode: this.mode, source: this.source, blocksScanned: this.blocksScanned, head: this.last }; }
+  snapshot() { return { mode: this.mode, source: this.source, blocksScanned: this.blocksScanned, head: this.last, transport: this.ws && this.ws.open ? `newHeads WS (${this.wsSource}) + rest` : 'rest poll', heads: this.heads || 0 }; }
 }
 const short = (topic) => '0x' + topic.slice(-40, -36) + '…' + topic.slice(-4);
 function keep(map, hash, ev, isSwap) { const cur = map.get(hash); if (!cur || (isSwap && !cur.isSwap) || (!cur.isSwap && ev.usd > cur.usd)) map.set(hash, { ...ev, isSwap }); }
 
-module.exports = { SolanaWhaleFeed, EvmWhaleFeed, classifySolanaTx, decodeV3Swap, resolveRpc, EVM };
+module.exports = { SolanaWhaleFeed, EvmWhaleFeed, classifySolanaTx, decodeV3Swap, resolveRpc, resolveWs, EVM };

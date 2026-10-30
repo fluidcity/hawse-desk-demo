@@ -100,6 +100,71 @@ In practice, gaps between public quotes almost never survive costs. Expect skip 
 * **Default is SIMULATED.** The Tradovate adapter (`server/feeds/tradovate.js`) only authenticates against the *demo* environment, and only when username, password, app ID, CID and secret are all set. It has no order endpoint.
 * Without those vars, or if demo auth or market data fails within 60s, the module runs an accelerated random-walk session (one bar every `TRADOVATE_SIM_BAR_MS`). It is labeled **SIMULATED** everywhere and books only to the SIM book.
 
+## Data path: websockets first, REST as the labelled fallback
+
+| Venue / source | Transport | What it carries | Health row |
+|---|---|---|---|
+| Binance USD-M | WS `fstream.binance.com/public` + `/market` | book ticker, mark price, funding rate | `ws.binance` |
+| Bybit linear | WS `stream.bybit.com/v5/public/linear` | tickers incl. bid/ask, mark, funding | `ws.bybit` |
+| OKX | WS `ws.okx.com/ws/v5/public` | swap tickers, mark, funding, spot tickers | `ws.okx` |
+| Hyperliquid | WS `api.hyperliquid.xyz/ws` | `bbo` + `activeAssetCtx` (mark, funding) | `ws.hyperliquid` |
+| Binance / Bybit spot | WS (`data-stream.binance.vision`, `stream.bybit.com/v5/public/spot`) | top of book | `ws.binance-spot`, `ws.bybit-spot` |
+| Helius (Solana) | WS `logsSubscribe` on watched pools → triggers enhanced-tx fetch | push trigger | `ws.helius` |
+| EVM (ETH/Base/Arbitrum) | WS `newHeads` (env URL > Alchemy > Infura > publicnode) → triggers log scan | push trigger | `ws.<chain>` |
+| Funding / candles / DEX quotes | REST polling | fallback + data with no public stream | `funding.*`, `candles.*`, `dex.*` |
+
+Perp rows from websockets are merged into the same store as REST rows and tagged `transport: "ws"`; a REST poll never
+overwrites a WS row younger than 15 s. Every feed reports **latency** (exchange event time → this box when the venue
+stamps it, otherwise request round-trip) and **staleness**: a row with no update inside its `staleMs` turns `STALE`.
+The server fans everything out to the browser over SSE (`/api/stream`).
+
+## Providers: Settings → Data sources
+
+The **⚙ Sources** button jumps to the Settings · Data sources panel. Each provider shows status
+(`live`, `stale`, `mocked`, `missing key`, `down`, `not implemented`), median measured latency, what it unlocks, and a
+**Connect** action listing the env var *names* to set (server-side `.env`) and the provider's signup page. The client gets
+only names, a set/unset boolean, status and latency (`GET /api/providers`); values never leave the server process.
+
+| Provider | Env var(s) | Signup | Unlocks |
+|---|---|---|---|
+| Helius | `HELIUS_API_KEY` | https://www.helius.dev | live Solana whale flow + WS triggers |
+| Alchemy / Infura | `ALCHEMY_API_KEY` / `INFURA_API_KEY` | https://www.alchemy.com / https://www.infura.io | keyed EVM RPC + WS |
+| QuickNode (or any RPC) | `EVM_RPC_URL_<CHAIN>`, `EVM_WS_URL_<CHAIN>` | https://www.quicknode.com | per-chain endpoint, highest priority |
+| publicnode | none | https://www.publicnode.com | keyless EVM fallback (best effort) |
+| Pyth (Hermes) | `PYTH_API_KEY` | https://pyth.network | oracle cross-check of venue marks (Hermes requires a key since 2026-08-26) |
+| Jupiter | none (`JUPITER_API_BASE` optional) | https://jup.ag | Solana executable quotes for the gap scanner |
+| Binance / Bybit / OKX / Hyperliquid | none | exchange sites | perps, funding, spot books |
+| Tradovate | `TRADOVATE_USERNAME`, `_PASSWORD`, `_APP_ID`, `_CID`, `_SECRET` | https://www.tradovate.com | real MES/MNQ bars for ORB |
+| Kaiko / Amberdata / CoinAPI / Tardis.dev | `KAIKO_API_KEY` / `AMBERDATA_API_KEY` / `COINAPI_KEY` / `TARDIS_API_KEY` | vendor sites | placeholders (no adapter yet) |
+
+Pricing for paid tiers is not listed here: check current pricing on each provider's site.
+
+### Adding a provider = one adapter file + one registry entry
+
+1. Create `server/providers/adapters/<id>.js` that exports `create({ env, health, engine, entry })` and returns
+   `{ start(), stop(), snapshot(), publicInfo?() }` (or `null`). Read keys from `env` here, register a health row, and call
+   `health.ok(id, latencyMs)` / `health.fail(id, err)`.
+2. Add one object to `server/providers/registry.js`.
+
+```js
+// server/providers/adapters/acme.js
+module.exports.create = ({ env, health }) => {
+  const key = env.ACME_API_KEY; health.register('acme.book', { label: 'Acme order books', group: 'premium', transport: 'ws', staleMs: 15000 });
+  let ws;
+  return {
+    start() { if (!key) return; ws = new (require('../../lib/ws').WsClient)({ url: 'wss://stream.acme.example/v1?key=' + key, health, id: 'acme.book', onMessage: (t) => JSON.parse(t).ts }); ws.start(); },
+    stop() { ws && ws.stop(); },
+    snapshot: () => ({}),
+  };
+};
+// server/providers/registry.js
+{ id: 'acme', name: 'Acme Data', category: 'premium', adapter: 'acme', env: [{ name: 'ACME_API_KEY', required: true }],
+  health: ['acme.book'], signup: 'https://acme.example', unlocks: ['Consolidated books'] },
+```
+
+The engine starts the adapter as feed `provider.acme`; the Data sources panel picks it up automatically. `npm test` checks
+every registry entry (unique id, https signup URL, adapter file loads) and that no env value appears in the client view.
+
 ## Risk gate
 
 - **Daily loss halt** (`RISK_DAILY_LOSS_PCT`) blocks new entries until the next UTC day.

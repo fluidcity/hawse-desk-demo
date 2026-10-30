@@ -31,7 +31,7 @@ class TradovateFeed {
     this.mode = cfg.configured ? 'pending' : 'sim';
     this.note = cfg.configured ? 'authenticating (demo)' : 'TRADOVATE_APP_ID/CID/SECRET (+ username/password) not all set → SIMULATED';
     this.data = {}; for (const r of this.roots) this.data[r] = { bars: [], last: null, sessionId: 0 };
-    health.register('tradovate.auth', { label: 'Tradovate demo auth', group: 'futures', note: cfg.configured ? 'demo.tradovateapi.com' : 'not configured' });
+    health.register('tradovate.auth', { label: 'Tradovate demo auth', group: 'futures', staleMs: Infinity, note: cfg.configured ? 'demo.tradovateapi.com' : 'not configured' });
     health.register('tradovate.md', { label: 'Tradovate demo market data', group: 'futures', note: 'md-demo websocket' });
     health.register('futures.sim', { label: 'Simulated MES/MNQ session replay', group: 'futures', kind: 'mock', note: 'used when Tradovate is unavailable' });
   }

@@ -78,7 +78,14 @@ class FundingFeed {
   get(venue, symbol) { return this.data.get(venue + '|' + symbol); }
   fresh(maxAgeMs = 3 * 60e3) { return [...this.data.values()].filter((r) => Date.now() - r.ts < maxAgeMs); }
   bySymbol(symbol, maxAgeMs) { return this.fresh(maxAgeMs).filter((r) => r.symbol === symbol); }
-  put(list) { for (const r of list) this.data.set(r.venue + '|' + r.symbol, r); }
+  /** REST rows never overwrite a fresher websocket row (WS rows carry transport:'ws'). */
+  put(list) {
+    for (const r of list) {
+      const k = r.venue + '|' + r.symbol, cur = this.data.get(k);
+      if (cur && cur.transport === 'ws' && Date.now() - cur.ts < 15000) { cur.restRate = r.rate; cur.intervalH = r.intervalH || cur.intervalH; continue; }
+      this.data.set(k, { transport: 'rest', ...r });
+    }
+  }
   async pollBinance() {
     const id = 'funding.binance', base = 'https://fapi.binance.com';
     const premium = await fetchJson(base + '/fapi/v1/premiumIndex', { health: this.health, id });
@@ -115,4 +122,4 @@ class FundingFeed {
   snapshot() { return { venues: VENUES, labels: LABEL, symbols: this.symbols, rows: this.fresh(10 * 60e3) }; }
 }
 
-module.exports = { FundingFeed, VENUES, parseBinance, parseBybit, parseOkx, parseHyperliquid };
+module.exports = { rec, FundingFeed, VENUES, parseBinance, parseBybit, parseOkx, parseHyperliquid };

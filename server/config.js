@@ -37,7 +37,8 @@ function build(env = process.env) {
       dailyLossPct: num(env.RISK_DAILY_LOSS_PCT, 3),
       maxDrawdownPct: num(env.RISK_MAX_DRAWDOWN_PCT, 10),
     },
-    funding: {
+    ws: { enabled: bool(env.WS_ENABLED, true), spotSymbols: list(env.WS_SPOT_SYMBOLS, ['BTC', 'ETH', 'SOL']) },
+  funding: {
       symbols: list(env.FUNDING_SYMBOLS, ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'ARB', 'AVAX']),
       pollMs: num(env.FUNDING_POLL_MS, 30000),
       holdHours: num(env.FUNDING_HOLD_HOURS, 24),
@@ -48,6 +49,7 @@ function build(env = process.env) {
       alchemyKey: env.ALCHEMY_API_KEY || '',
       infuraKey: env.INFURA_API_KEY || '',
       rpc: { ethereum: env.EVM_RPC_URL_ETHEREUM || env.EVM_RPC_URL || '', base: env.EVM_RPC_URL_BASE || '', arbitrum: env.EVM_RPC_URL_ARBITRUM || '' },
+      ws: { ethereum: env.EVM_WS_URL_ETHEREUM || '', base: env.EVM_WS_URL_BASE || '', arbitrum: env.EVM_WS_URL_ARBITRUM || '' },
       publicFallback: bool(env.EVM_PUBLIC_RPC_FALLBACK, true),
       chains: list(env.EVM_CHAINS, ['ethereum', 'base', 'arbitrum']),
     },

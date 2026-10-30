@@ -7,6 +7,8 @@ const { PaperBroker, LiveBroker } = require('./lib/broker');
 const { Tape } = require('./lib/tape');
 const { FundingFeed } = require('./feeds/funding');
 const { FundingArb } = require('./strategies/funding-arb');
+const { MarketStream } = require('./feeds/market-ws');
+const { Providers } = require('./providers');
 
 class Engine {
   constructor(cfg, { modules = {} } = {}) {
@@ -16,8 +18,10 @@ class Engine {
     this.ledger = new Ledger({ startEquity: cfg.paperStartEquity });
     this.gates = { real: new RiskGate({ startEquity: cfg.paperStartEquity, ...cfg.risk }), sim: new RiskGate({ startEquity: cfg.paperStartEquity, ...cfg.risk }) };
     this.feeds = { funding: new FundingFeed({ health: this.health, symbols: cfg.funding.symbols, pollMs: cfg.funding.pollMs }) };
+    if (cfg.ws && cfg.ws.enabled) this.feeds.ws = new MarketStream({ health: this.health, funding: this.feeds.funding, symbols: cfg.funding.symbols, spotSymbols: cfg.ws.spotSymbols });
     this.strategies = [new FundingArb(this)];
     for (const [name, mod] of Object.entries(modules)) mod(this, name);
+    this.providers = new Providers(this, { env: cfg.env || process.env });
   }
   addFeed(name, feed) { this.feeds[name] = feed; return feed; }
   addStrategy(s) { this.strategies.push(s); return s; }
@@ -27,6 +31,12 @@ class Engine {
     const rows = this.feeds.funding.bySymbol(symbol, maxAgeMs); if (!rows.length) return null;
     const order = ['hyperliquid', 'okx', 'binance', 'bybit'];
     return rows.sort((a, b) => order.indexOf(a.venue) - order.indexOf(b.venue))[0];
+  }
+  /** Freshest real spot top-of-book (WS only). Preference OKX > Binance > Bybit unless a venue is given. */
+  spotQuote(symbol, venue, maxAgeMs = 10000) {
+    const ws = this.feeds.ws; if (!ws) return null;
+    for (const v of venue ? [venue] : ['okx', 'binance', 'bybit']) { const q = ws.spotQuote(v, symbol, maxAgeMs); if (q) return q; }
+    return null;
   }
   price(symbol) { const q = this.quote(symbol); return q ? q.mark : null; }
   canOpen(simulated) { return this.gates[simulated ? 'sim' : 'real'].canOpen(); }
@@ -69,7 +79,7 @@ class Engine {
       strategies: this.strategies.map((s) => s.snapshot()),
       funding: this.feeds.funding.snapshot(),
       feeds: Object.fromEntries(Object.entries(this.feeds).filter(([k]) => k !== 'funding').map(([k, f]) => [k, f.snapshot ? f.snapshot() : null])),
-      prices, health: this.health.list(), tape: this.tape.rows.slice(0, 150),
+      prices, health: this.health.list(), providers: this.providers.list(), tape: this.tape.rows.slice(0, 150),
     };
   }
 }

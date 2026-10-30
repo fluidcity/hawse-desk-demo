@@ -22,6 +22,7 @@ function createServer(engine, flags) {
     const p = url.pathname;
     try {
       if (p === '/api/state' && req.method === 'GET') return send(res, 200, engine.snapshot(flags));
+      if (p === '/api/providers' && req.method === 'GET') return send(res, 200, engine.providers.list());
       if (p === '/api/stream') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
         const push = () => res.write('data: ' + JSON.stringify(engine.snapshot(flags)) + '\n\n');

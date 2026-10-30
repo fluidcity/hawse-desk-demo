@@ -184,3 +184,15 @@ test('poll loops never stack: a slow cycle skips the next tick; request errors a
   assert.strictEqual(v.lastError.kind, 'HTTP 429'); assert.ok(!JSON.stringify(v.lastError).includes('http'));
   assert.ok(v.loopSkips >= 2);
 });
+
+test('kalshi: trades polled at the API max page (1000); an HTTP 429 pauses the client briefly instead of hammering', async () => {
+  const h = new Health(); const c = clock(); const urls = [];
+  let n = 0; const get = async (u) => { urls.push(u); n++; if (n === 1) { const e = new Error('HTTP 429'); e.status = 429; throw e; } return { trades: [] }; };
+  const k = new KalshiRecorder({ store: { write() {} }, health: h, log: () => {}, now: c.now, get, cfg: { series: [], extraSeries: [], maxRps: 1000, coolMs: 2000 } });
+  assert.equal(await k.call('rec.kalshi.trades', '/markets/trades', { ticker: 'X', limit: 1000 }), null);
+  assert.equal(await k.call('rec.kalshi.trades', '/markets/trades', { ticker: 'X' }), null, 'cooling down: no request sent');
+  assert.equal(urls.length, 1); c.adv(2100);
+  assert.deepStrictEqual(await k.call('rec.kalshi.trades', '/markets/trades', { ticker: 'X' }), { trades: [] }); assert.equal(urls.length, 2);
+  assert.equal(k.view().coolSkipped, 1);
+  const src = fs.readFileSync(path.join(__dirname, '../server/recorder/kalshi.js'), 'utf8'); assert.match(src, /ticker: m\.tk, limit: 1000/);
+});

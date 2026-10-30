@@ -44,8 +44,8 @@ class KalshiRecorder {
     H('rec.kalshi.extra', 'Recorder · Kalshi sports/other series', `${this.c.extraSeries.join(', ')} · top ${this.c.extraTop} by 24h volume · book every ${this.c.extraBookMs / 1000}s`, 300000);
   }
   url(p, q) { return this.c.base + p + (q ? '?' + new URLSearchParams(q).toString() : ''); }
-  async call(id, p, q) { if (!this.bucket.take()) return null; try { return await this.get(this.url(p, q), { health: this.health, id }); } catch (e) { this.noteErr(id, e); return null; } }
-  noteErr(id, e) { this.errors++; const k = e && e.status ? 'HTTP ' + e.status : (e && /timeout|abort/i.test(e.message) ? 'timeout' : 'network'); (this.errKinds = this.errKinds || {})[k] = (this.errKinds[k] || 0) + 1; this.lastError = { at: this.now(), id, kind: k }; }
+  async call(id, p, q) { if (this.coolUntil && this.now() < this.coolUntil) { this.coolSkipped = (this.coolSkipped || 0) + 1; return null; } if (!this.bucket.take()) return null; try { return await this.get(this.url(p, q), { health: this.health, id }); } catch (e) { this.noteErr(id, e); return null; } }
+  noteErr(id, e) { this.errors++; const k = e && e.status ? 'HTTP ' + e.status : (e && /timeout|abort/i.test(e.message) ? 'timeout' : 'network'); (this.errKinds = this.errKinds || {})[k] = (this.errKinds[k] || 0) + 1; this.lastError = { at: this.now(), id, kind: k }; if (e && e.status === 429) this.coolUntil = this.now() + (this.c.coolMs || 2000); } // 429 → whole client pauses briefly (missed polls surface as gap rows)
   on(kind, f) { this.listeners[kind].push(f); }
   emit(kind, x) { for (const f of this.listeners[kind]) { try { f(x); } catch (e) { this.log('[recorder] listener error: ' + e.message); } } }
   // One in-flight run per loop: a slow cycle is skipped (and later shows up as a measured gap), never stacked on itself.
@@ -99,14 +99,14 @@ class KalshiRecorder {
   }
   async pollTrades() {
     for (const m of this.live('crypto')) {
-      const q = { ticker: m.tk, limit: 200 }; if (m.lastTradeEx) q.min_ts = Math.floor(m.lastTradeEx / 1000) - 5;
+      const q = { ticker: m.tk, limit: 1000 }; // API max (1001 → HTTP 400); 200 forced 2-3 pages per BTC poll and drew HTTP 429s if (m.lastTradeEx) q.min_ts = Math.floor(m.lastTradeEx / 1000) - 5;
       let j = await this.call('rec.kalshi.trades', '/markets/trades', q); if (!j) continue;
       const rx = this.now(); this.polls.trades++;
       if (m.lastTradeOk != null && rx - m.lastTradeOk > this.c.gapMs * 2) this.gap('kalshi.trade', m.tk, m.lastTradeOk, rx);
       m.lastTradeOk = rx;
       let pages = 0; const all = [...(j.trades || [])];
-      while (j && j.cursor && (j.trades || []).length >= 200 && pages < 4) { pages++; j = await this.call('rec.kalshi.trades', '/markets/trades', { ...q, cursor: j.cursor }); if (j) all.push(...(j.trades || [])); }
-      if (pages >= 4 && j && j.cursor && m.lastTradeEx) this.gap('kalshi.trade', m.tk, rx, rx, 'trade-page-limit'); // (first poll = history backfill, capped at 1,000 prints; not a gap)
+      while (j && j.cursor && (j.trades || []).length >= 1000 && pages < 4) { pages++; j = await this.call('rec.kalshi.trades', '/markets/trades', { ...q, cursor: j.cursor }); if (j) all.push(...(j.trades || [])); }
+      if (pages >= 4 && j && j.cursor && m.lastTradeEx) this.gap('kalshi.trade', m.tk, rx, rx, 'trade-page-limit'); // (first poll = history backfill, capped at 5,000 prints; not a gap)
       for (const t of all.reverse()) {
         if (!t.trade_id || m.seen.has(t.trade_id)) continue;
         m.seen.add(t.trade_id); m.seenQ.push(t.trade_id); if (m.seenQ.length > 5000) m.seen.delete(m.seenQ.shift());
@@ -158,7 +158,7 @@ class KalshiRecorder {
   }
   view() {
     const now = this.now();
-    return { polls: this.polls, errors: this.errors, errKinds: this.errKinds || {}, lastError: this.lastError || null, loopSkips: this.skipped || 0, rateSkipped: this.bucket.skipped, maxRps: this.c.maxRps, series: this.series,
+    return { polls: this.polls, errors: this.errors, errKinds: this.errKinds || {}, lastError: this.lastError || null, loopSkips: this.skipped || 0, coolSkipped: this.coolSkipped || 0, rateSkipped: this.bucket.skipped, maxRps: this.c.maxRps, series: this.series,
       live: this.live('crypto').map((m) => ({ tk: m.tk, s: m.series, secLeft: m.close ? Math.round((m.close - now) / 1000) : null, strike: m.strike, books: m.books, bookRows: m.bookRows, trades: m.trades,
         ya: m.last && m.last.ya, yas: m.last && m.last.yas, yb: m.last && m.last.yb, bookAgeMs: m.lastBookOk ? now - m.lastBookOk : null })),
       extra: this.live('extra').length, tracked: this.markets.size, pendingSettle: [...this.markets.values()].filter((m) => !m.settled && m.close && now > m.close).length };

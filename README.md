@@ -32,6 +32,7 @@ You need Node ≥ 22. There are no npm dependencies. One Node process proxies ev
 | 2 | Whale flow (large-tx monitor) | EVM via public RPC (publicnode) for Ethereum, Base and Arbitrum | `HELIUS_API_KEY` (Solana), `EVM_RPC_URL_*` / `ALCHEMY_API_KEY` / `INFURA_API_KEY` | With no key, Solana runs labeled **MOCK**. With `EVM_PUBLIC_RPC_FALLBACK=false` and no key, EVM runs MOCK. Trades on mock signals book to the SIM book. |
 | 3 | 1% mode | OKX spot candles (15m) and spot top-of-book | — | Coinbase, then Binance data-api candles. With no candles the strategy shows NO DATA and does not trade. |
 | 4 | DEX gap scanner | Jupiter lite-api per-DEX quotes (Solana), DexScreener pool prices, ParaSwap quotes, `eth_gasPrice` via public RPC (Ethereum, Base, Arbitrum) | optional `JUPITER_API_BASE`, EVM RPC vars | If Jupiter is down, Solana falls back to DexScreener mid prices, labeled **INDICATIVE**, which are never traded. EVM mid-price gaps are always indicative. |
+| 5 | ORB · MES/MNQ | Tradovate **demo** API (auth + md websocket), used only when all `TRADOVATE_*` vars are set | `TRADOVATE_USERNAME`, `TRADOVATE_PASSWORD`, `TRADOVATE_APP_ID`, `TRADOVATE_CID`, `TRADOVATE_SECRET` | The default is a **SIMULATED** accelerated session replay, labeled in the UI. All of its PnL goes to the SIM book. |
 
 More stages are added below as they land.
 
@@ -87,6 +88,17 @@ The cost model is `EV = p·(gross − exec − tip) − (1−p)·exec`, with `p 
 * The landed or failed outcome is drawn with probability `p` and logged as *modeled*.
 
 In practice, gaps between public quotes almost never survive costs. Expect skip logs, not fills.
+
+### 5. Opening-range breakout (MES / MNQ)
+
+* The opening range is the first `ORB_MINUTES` (15) one-minute bars after 09:30 ET.
+* A 1-minute close outside the range enters long or short, at most one trade per symbol per session and none after 13:30 ET.
+* The stop is the opposite side of the range and the target is `ORB_TARGET_R` × risk. Positions go flat at 15:55 ET.
+* If the stop and the target both touch in one bar, the **stop** is assumed.
+* Costs per contract are `ORB_FEE_PER_SIDE` (default $0.72) on each side plus 1 tick of slippage each way. MES is $5/pt and MNQ is $2/pt, with a 0.25 tick.
+* The trade is skipped when one contract risks more than `ORB_MAX_RISK_PCT` of the sleeve, or when the range width is outside the configured band.
+* **Default is SIMULATED.** The Tradovate adapter (`server/feeds/tradovate.js`) only authenticates against the *demo* environment, and only when username, password, app ID, CID and secret are all set. It has no order endpoint.
+* Without those vars, or if demo auth or market data fails within 60s, the module runs an accelerated random-walk session (one bar every `TRADOVATE_SIM_BAR_MS`). It is labeled **SIMULATED** everywhere and books only to the SIM book.
 
 ## Risk gate
 

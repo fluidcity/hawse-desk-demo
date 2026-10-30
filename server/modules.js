@@ -6,6 +6,8 @@ const { CandleFeed } = require('./feeds/candles');
 const { OnePct } = require('./strategies/one-pct');
 const { DexFeed } = require('./feeds/dex');
 const { GapScanner } = require('./strategies/gaps');
+const { TradovateFeed } = require('./feeds/tradovate');
+const { OpeningRangeBreakout } = require('./strategies/orb');
 
 module.exports = {
   whales(engine) {
@@ -22,5 +24,9 @@ module.exports = {
     const c = engine.cfg;
     const feed = engine.addFeed('dex', new DexFeed({ health: engine.health, cfg: { ...c.gaps, jupiterBase: c.jupiter.base }, evmCfg: c.evm, priceFn: (s) => engine.price(s) }));
     engine.addStrategy(new GapScanner(engine, feed));
+  },
+  orb(engine) {
+    const feed = engine.addFeed('futures', new TradovateFeed({ health: engine.health, cfg: engine.cfg.tradovate }));
+    engine.addStrategy(new OpeningRangeBreakout(engine, feed));
   },
 };

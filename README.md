@@ -180,6 +180,34 @@ In practice, gaps between public quotes almost never survive costs. Expect skip 
 
 **Lab.** There are templates for +EV, spread signal and arb (each with ToS, limits and line-movement risk notes). The JSON schema has `betting_ev`, `betting_spread` and `betting_arb` kinds with `market.sport`, `betMarkets`, `regions`, `kellyFraction`, `maxStakePct`, `maxEventPct` and `maxOpenPct`. Text import recognizes "+EV", "line shopping", "no-vig", "sure bets", "middles", "stale spreads", sport names, "quarter Kelly" / "N% Kelly", edge %, min books and per-bet / per-game caps. It reports parlays, teasers, props, live betting, futures, bonuses and automated real-money betting as **not mappable**. Betting configs **cannot be backtested here**: The Odds API documents historical odds snapshots as paid-plan only (check current pricing with the provider), and no free source exists. So they stay `unverified`, and you should judge them by live paper CLV on the desk.
 
+### 11. Mempool lab (H4): measurement and simulation only
+
+**What it is.** A research tool, not a strategy that trades. It watches public Ethereum pending swaps sent to the Uniswap V2 Router02, SwapRouter02 and Universal Router, and decodes exact-in single-hop swaps. For each one at or above `MEMPOOL_MIN_USD` it reads pool state with `eth_call` and models what a sandwich (front-run plus back-run) and a plain back-run could have earned:
+- **Ceiling:** the gross before gas.
+- **Realistic:** gross minus gas (`MEV_GAS_UNITS_*` × (base fee + 1 gwei)), minus a builder bid of `MEV_BID_SHARE` of the gross.
+
+It then checks the real chain:
+- whether the tx was included, replaced (same nonce, different hash) or dropped;
+- whether the block holds a same-sender front/back pair around it (the heuristic sandwich truth). When it does, the attacker's gross is taken from the Swap logs in the receipts.
+- Optionally, a Dune CSV you exported yourself can be imported offline with `node scripts/mev-import-dune.js file.csv`.
+
+The card reports coverage (the share of heuristic victims and block txs that were seen pending), precision and recall of "model says profitable" against the truth, and a median error histogram. No verdict is shown before 500 large swaps have been observed and 50 confirmed sandwiches matched.
+
+**Safety.**
+- `MEMPOOL_ENABLED=false` by default. When it is off, no socket is opened and no call is made.
+- The feed's RPC is an allowlist of six read methods. Anything else, `eth_sendRawTransaction` included, throws before any network call.
+- There is no wallet, key, signing, bundle building or submission code anywhere. `test/mev-lab.test.js` scans the source and the exports to assert this.
+- When the lab is armed, positive realistic values are booked to the **SIM** book only, with zero real allocation.
+
+**Sources.** The public publicnode WS and HTTP endpoints are used by default; `ALCHEMY_API_KEY` is used when it is set; or set `MEMPOOL_WS_URL` / `MEMPOOL_RPC_URL`.
+
+**First real run** (Oct 30 2026, about 4.5 min, public node, `MEMPOOL_MIN_USD=5000`):
+- 2,110 pending txs were seen, 36 of them to the routers, and 35 of those were Uniswap **v4** Universal Router commands. v4 is not decoded, so 1 swap was decoded (a multi-hop) and 0 were simulated.
+- Of the heuristic victims in 21 blocks, 13 of 30 (43%) had been seen pending, against 37% of all block txs.
+- There were 21 RPC calls and 0 errors.
+
+So on today's public flow **the lab cannot yet produce a verdict**: most retail Uniswap flow is v4, and a large share of sandwiched flow never appears in the public mempool.
+
 ## Data path: websockets first, REST as the labelled fallback
 
 | Venue / source | Transport | What it carries | Health row |
@@ -438,6 +466,15 @@ test/                     node:test suites
 
 - Betting rules desk: team/player stats are MOCK (no provider wired), so stats-based signals are always SIM. Kalshi/Polymarket adapters are interface-only and refuse. Print and clipboard were checked only in headless Chromium (print media emulation); a real print dialog was not exercised.
 - Sports betting: The Odds API live path was smoke-tested once against the real API on 2026-10-29 (1 `/events` call = 0 credits, 1 `/odds` snapshot = 1 credit; headers parsed, 10 NBA games, Pinnacle on all). H1 real-data check on 2026-10-29: NBA + NFL, h2h/spreads/totals, 3 credits each (6 total). That returned 41 events, Pinnacle on 23, and 10 inside the 20 min–36 h window. **0 prices passed the gates**: the best was −0.75% EV vs Pinnacle fair. Pinnacle usually hangs different spread/total numbers than the soft books, so most spread/total quotes skip as "anchor has no price at this line". Per-market `last_update` ages were 20–66 s. No real bet has reached a close yet, so the real CLV scoreboard is empty: CLV capture and the verdict are tested with fixtures and on the MOCK feed only. The scheduler and budget logic are unit-tested with fixtures. Mock-market arb and +EV frequency is unrealistically high.
+
+- Mempool lab (H4):
+  - Uniswap v4 (Universal Router command 0x10) is detected but not decoded or simulated, and on the first real run that was 35 of 36 router txs.
+  - V3 is a single-tick virtual-reserve approximation that ignores tick crossings, so it is optimistic for large swaps.
+  - The sandwich truth is a same-block same-sender heuristic: it misses multi-address bots and can mislabel arbitrage loops.
+  - Only the public mempool is visible. Private orderflow (MEV-Share, private RPCs) never shows up, which caps recall.
+  - There is no Dune API integration; only an offline CSV import.
+  - No verdict has been reached yet (0/500 simulated, 0/50 confirmed).
+  - The precision/recall/error pipeline is tested with a scripted node only.
 
 - Binance perp funding interval is assumed to be 8 h because REST `fundingInfo` is geo-blocked from the test box. Symbols with 4 h intervals would show a halved hourly rate.
 - Pyth Hermes requires an API key (since 2026-08). The Pyth adapter is idle without `PYTH_API_KEY`, and it has not been tested with a key.

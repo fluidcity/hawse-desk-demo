@@ -81,6 +81,14 @@ function build(env = process.env) {
       tp: num(env.FOLLOW_TP, 0.02), sl: num(env.FOLLOW_SL, 0.01), maxHoldHHl: num(env.FOLLOW_MAX_HOLD_H_HL, 6), maxHoldHSol: num(env.FOLLOW_MAX_HOLD_H_SOL, 2),
       pollMs: Math.max(10000, num(env.FOLLOW_HL_POLL_MS, 30000)), controls: bool(env.FOLLOW_CONTROLS, true),
     },
+    mempool: { // H4 mempool lab: MEASUREMENT ONLY, off by default (no connection, no calls)
+      enabled: bool(env.MEMPOOL_ENABLED, false),
+      alchemyKey: env.ALCHEMY_API_KEY || '', wsUrl: env.MEMPOOL_WS_URL || '', rpcUrl: env.MEMPOOL_RPC_URL || '',
+      minUsd: num(env.MEMPOOL_MIN_USD, 25000), bidShare: Math.min(1, Math.max(0, num(env.MEV_BID_SHARE, 0.9))),
+      gasSandwich: num(env.MEV_GAS_UNITS_SANDWICH, 360000), gasBackrun: num(env.MEV_GAS_UNITS_BACKRUN, 180000),
+      eventsFile: env.MEMPOOL_EVENTS_FILE !== undefined ? (env.MEMPOOL_EVENTS_FILE || null) : path.join(__dirname, '..', 'data', 'mev', 'events.json'),
+      duneFile: env.MEMPOOL_DUNE_FILE !== undefined ? (env.MEMPOOL_DUNE_FILE || null) : path.join(__dirname, '..', 'data', 'mev', 'dune-sandwiched.json'),
+    },
     hooks: { port: num(env.HOOKS_PORT, 0), host: env.HOOKS_HOST || '127.0.0.1' }, // optional hooks-only listener (expose THIS via a tunnel, not the desk)
     creditsFile: env.CREDITS_FILE !== undefined ? env.CREDITS_FILE : path.join(__dirname, '..', 'data', 'credits.json'),
     evm: {

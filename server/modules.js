@@ -18,6 +18,8 @@ const path = require('path');
 const { PerpMomentum, PerpBasis } = require('./strategies/perps');
 const betting = require('./betting'); // self-contained module; see server/betting/index.js for the host contract
 const { Strategy } = require('./strategies/base');
+const { MempoolFeed } = require('./feeds/mempool');
+const { MevLab } = require('./strategies/mev-lab');
 
 module.exports = {
   whales(engine) {
@@ -40,6 +42,11 @@ module.exports = {
       const hl = engine.addFeed('follow.hl', new HlFillsFeed({ health: engine.health, wallets, pollMs: fc.pollMs, minUsd: fc.minUsdHl }));
       engine.addStrategy(new WalletFollow(engine, { hl, sol, cfg: fc }));
     }
+  },
+  mempool(engine) { // H4: measurement-only lab. The feed does not connect unless MEMPOOL_ENABLED=true.
+    const m = engine.cfg.mempool || { enabled: false };
+    const feed = engine.addFeed('mempool', new MempoolFeed({ health: engine.health, cfg: m }));
+    engine.addStrategy(new MevLab(engine, { feed, cfg: { minUsd: m.minUsd, bidShare: m.bidShare, gasSandwich: m.gasSandwich, gasBackrun: m.gasBackrun, eventsFile: m.eventsFile, duneFile: m.duneFile } }));
   },
   onepct(engine) {
     const feed = engine.addFeed('candles', new CandleFeed({ health: engine.health, symbols: engine.cfg.onepct.symbols }));

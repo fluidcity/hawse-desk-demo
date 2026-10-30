@@ -80,7 +80,7 @@ window.HAWSE.explain = (() => {
 
   function render() {
     renderHero(); renderTicker(); renderStrats(); renderRisk(); renderFunding(); renderAttr(); renderHealth(); renderTape();
-    renderWhales(); renderFollow(); renderGaps(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
+    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
   }
 
   // ---------- hero + animated curve ----------
@@ -356,6 +356,28 @@ window.HAWSE.explain = (() => {
     $('followScore').innerHTML = o ? `<div class="subh">Scoreboard · net % per follow after 2× taker + slippage · pass after ${P.minSignals}: CI &gt; 0 and ≥ ${P.passEdgeVsRandomPct}%/trade over random</div>` +
       `<div class="row head" style="${W}"><span>wallet</span><span>n</span><span>mean</span><span>95% CI</span><span>hit</span><span>random <span class="badge">SIM</span></span><span>hold <span class="badge">SIM</span></span><span>0s / 60s delay</span><span>verdict</span></div>` +
       line('<b>all wallets</b>', o) + (sc.wallets || []).slice(0, 10).map((w) => line(`${sw(w.wallet)} <span class="dim sm">${esc(w.chain)}</span>`, w)).join('') : '';
+  }
+  function renderMev() {
+    const s = S.strategies.find((x) => x.id === 'mevlab'); $('mevCard').hidden = !s; if (!s) return;
+    const v = s.view || {}, f = v.feed || {}, st = f.stats || {}, m = v.metrics || {}, c = v.counts || {}, r = v.rules || {}, P = v.plan || {};
+    const d = (x, k = 0, suf = '%') => (x == null ? '—' : x.toFixed(k) + suf), $u = (x) => (x == null ? '—' : (x < 0 ? '-' : '') + '$' + compact(Math.abs(x)));
+    $('mevMode').innerHTML = v.mode === 'off' ? `${badge('down')} MEMPOOL_ENABLED=false · not connected` : `${badge(v.mode === 'live' ? 'live' : 'down')} ${esc(f.label || '')} · block ${v.head || '—'} · base ${v.baseFeeGwei == null ? '—' : v.baseFeeGwei.toFixed(2)} gwei`;
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const vd = m.verdict || { status: 'collecting', text: '' };
+    $('mevMetrics').innerHTML = `<div class="subh">Rules: victim ≥ $${compact(r.minUsd || 0)} · gas ${compact(r.gasSandwich || 0)} / ${compact(r.gasBackrun || 0)} units · builder bid ${d((r.bidShare || 0) * 100)} of gross (realistic) · never trades, results are <span class="badge sim">SIMULATED</span></div>` +
+      `<div class="riskgrid">` + meter('pending seen', compact(st.pendingSeen || 0), `${st.routerTxs || 0} to routers · ${st.decoded || 0} decoded · ${st.unsupported || 0} v4`) +
+      meter('large swaps simulated', `${m.observed || 0}<span class="dim sm"> / ${P.minObserved || 500}</span>`, `${c.small || 0} small · ${c.exactOut || 0} exact-out · ${c.multihop || 0} multihop · ${c.unpriced || 0} unpriced`) +
+      meter('inclusion', `${m.included || 0} in`, `${m.dropped || 0} dropped · ${m.replaced || 0} replaced`) +
+      meter('coverage', d(m.coverageVictimsPct), `of ${c.victims || 0} heuristic victims in ${c.blocks || 0} blocks · ${d(m.coverageTxsPct)} of all block txs seen`) +
+      meter('model vs truth', `P ${d(m.precisionPct)} · R ${d(m.recallPct)}`, `${m.confirmed || 0}/${P.minConfirmed || 50} confirmed · median err ${d(m.medianErrPct)} (${m.matched || 0} matched)`) +
+      meter('sim sandwich sum', `${$u(m.ceilSumUsd)} <span class="dim sm">ceil</span>`, `${$u(m.realSumUsd)} realistic · ${d(m.realPositivePct)} of swaps > 0 · back-run > 0: ${d(m.backrunPositivePct)}`) + `</div>` +
+      `<div class="subh">Error histogram (|model − attacker gross| ÷ attacker gross): ${(m.errHist || []).map((h) => `${esc(h.label)} <b>${h.n}</b>`).join(' · ')}${m.duneRows ? ` · Dune truth rows: ${m.duneRows}` : ' · no Dune import (heuristic truth only)'}</div>` +
+      `<div class="subh">Verdict: <span class="${vd.status === 'pass' ? 'pos' : vd.status === 'fail' ? 'neg' : 'dim'}">${esc(vd.status)}</span> <span class="dim sm">${esc(vd.text)}</span></div>`;
+    const G = 'grid-template-columns:58px 1fr 70px 52px 76px 76px 70px 1.1fr';
+    const truth = (e) => (e.duneSandwiched ? '<span class="neg">sandwiched (Dune)</span>' : e.observedSandwich ? `<span class="neg">sandwiched</span> <span class="dim sm">${e.attackerGrossUsd != null ? 'atk ' + $u(e.attackerGrossUsd) : ''}</span>` : e.inclusion === 'included' ? 'clean' : esc(e.inclusion || ''));
+    $('mevEvents').innerHTML = `<div class="row head" style="${G}"><span>seen</span><span>swap</span><span>size</span><span>slip</span><span>ceil <span class="badge sim">SIM</span></span><span>realistic</span><span>back-run</span><span>truth</span></div>` +
+      ((v.events || []).map((e) => `<div class="row ${e.simSandwichRealUsd > 0 ? 'ok' : ''}" style="${G}"><span class="dim">${hhmmss(e.seenAt)}</span><span><a href="https://etherscan.io/tx/${esc(e.hash)}" target="_blank" rel="noopener" style="color:inherit">${esc(e.pair || '')}</a> <span class="dim sm">${esc(e.v || '')} ${esc(e.fn || '')}${e.likelyCrossesTicks ? ' · crosses ticks?' : ''}${e.status !== 'simulated' ? ' · ' + esc(e.status || '') : ''}</span></span><span>$${compact(e.usd || 0)}</span><span>${d(e.slipTolPct, 2)}</span><span class="${(e.simSandwichCeilUsd || 0) > 0 ? 'pos' : 'dim'}">${$u(e.simSandwichCeilUsd)}</span><span class="${(e.simSandwichRealUsd || 0) > 0 ? 'pos' : 'dim'}">${$u(e.simSandwichRealUsd)}</span><span class="${(e.simBackrunUsd || 0) > 0 ? 'pos' : 'dim'}">${$u(e.simBackrunUsd)}</span><span>${truth(e)}</span></div>`).join('') ||
+        `<div class="dim mono sm">${v.mode === 'off' ? 'off by default: set MEMPOOL_ENABLED=true to observe the public mempool (free publicnode WebSocket; read-only)' : 'waiting for a large Uniswap swap in the public mempool…'}</div>`);
   }
   function renderGaps() {
     const s = S.strategies.find((x) => x.id === 'gaps'); $('gapCard').hidden = !s; if (!s) return;

@@ -472,10 +472,45 @@ window.HAWSE.explain = (() => {
       meter('skips (logged)', Object.values(st.skips).reduce((a, b) => a + b, 0), Object.entries(st.skips).map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || 'none') + `</div>` +
       `<div class="subh">miro's pass criteria <span class="dim">(display only; frozen v1 rule and hash unchanged)</span></div>` +
       (st.miro || []).map((m) => `<div class="mono sm" style="margin:2px 0"><span class="badge ${m.status === 'met' ? 'live' : m.status === 'not met' ? 'down' : 'stale'}">${esc(m.status.toUpperCase())}</span> ${esc(m.label)} · now ${m.value == null ? '—' : m.unit === 'share' ? pc(m.value) : m.unit === '¢' ? c(m.value) : esc(String(m.value) + m.unit)} <span class="dim">· ${esc(m.so)}</span></div>`).join('') +
+      h2Pnl(H, c, pc) +
       `<div class="subh">Per asset: ${Object.entries(st.perAsset).map(([a, x]) => `${esc(a)} n=${x.n} ${c(x.meanCents)}`).join(' · ') || '—'} · markets with no touch ${H.observed.noTouch}/${H.observed.markets} · shadow 1% bankroll ×${st.shadowBankroll.multiple} (reporting only)</div>`;
     const cols = 'grid-template-columns:70px 80px 1.4fr 1.6fr';
     const desc = (r) => r.t === 'signal' ? `ask ${r.ya} ×${r.yas} · ${r.secLeft}s left` : r.t === 'fill' ? `px ${r.px} (next ask ${r.nextAsk}, lag ${r.lagMs} ms) fee ${r.fee1}` : r.t === 'skip' ? `${r.reason}${r.ya ? ' · ask ' + r.ya : ''}` : r.t === 'settle' ? `${r.result.toUpperCase()} · ${c(r.pnl1 * 100)}` : r.t === 'observed' ? r.outcome : r.t === 'flag' ? r.reason : r.t === 'session' ? 'session start' : '';
     $('h2Rows').innerHTML = `<div class="row head" style="${cols}"><span>at</span><span>event</span><span>market</span><span>detail</span></div>` + (H.recent || []).map((r) => `<div class="row" style="${cols}"><span class="dim">${hhmmss(r.at)}</span><span class="${r.t === 'skip' || r.t === 'flag' ? 'warn' : r.t === 'settle' ? (r.win ? 'pos' : 'neg') : ''}">${esc(r.t)}</span><span class="sm">${esc(r.tk || '')}</span><span class="sm mono">${esc(desc(r))}</span></div>`).join('');
+  }
+  // Live P&L for the frozen H2 test (display only, paper fills only). Realized and unrealized are kept apart.
+  function h2Pnl(H, c, pc) {
+    const P = H.pnl, st = H.stats; if (!P) return '';
+    const R = P.realizedCents, U = P.unrealized, cv = P.curve || [];
+    let svg = '<div class="dim sm mono">no settled paper fills yet: the curve starts at the first official settlement</div>';
+    if (cv.length) {
+      const W = 560, Hh = 120, pad = 6, xs = cv.map((p) => p.at), ys = [0, ...cv.map((p) => p.cumCents)];
+      const x0 = Math.min(H.startAt || xs[0], xs[0]), x1 = Math.max(Date.now(), xs[xs.length - 1]), y0 = Math.min(...ys), y1 = Math.max(...ys, y0 + 1);
+      const X = (t) => pad + ((t - x0) / Math.max(1, x1 - x0)) * (W - 2 * pad), Y = (v) => Hh - pad - ((v - y0) / (y1 - y0)) * (Hh - 2 * pad);
+      let d = `M${X(x0).toFixed(1)},${Y(0).toFixed(1)}`; for (const p of cv) d += ` H${X(p.at).toFixed(1)} V${Y(p.cumCents).toFixed(1)}`; d += ` H${X(x1).toFixed(1)}`;
+      const last = cv[cv.length - 1].cumCents;
+      svg = `<svg id="h2Curve" viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:${W}px;height:${Hh}px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="cumulative realized net P&L after fees">` +
+        `<line x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>` +
+        `<path d="${d}" fill="none" stroke="${last >= 0 ? 'var(--mint,#3dffb0)' : 'var(--hot,#ff3d5a)'}" stroke-width="1.6"/>` +
+        cv.map((p) => `<circle cx="${X(p.at).toFixed(1)}" cy="${Y(p.cumCents).toFixed(1)}" r="2.2" fill="${p.pnlCents >= 0 ? 'var(--mint,#3dffb0)' : 'var(--hot,#ff3d5a)'}"><title>${esc(p.tk)} ${c(p.pnlCents)} → ${c(p.cumCents)}</title></circle>`).join('') +
+        `<text x="${W - pad}" y="12" text-anchor="end" fill="currentColor" font-size="10" class="mono">${esc(c(last))} · ${cv.length} settled</text></svg>`;
+    }
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const tone = (x) => (x == null ? '' : x > 0 ? 'pos' : x < 0 ? 'neg' : '');
+    const unverified = st.enough && !st.failStops.length ? '' : ' <span class="badge stale">UNVERIFIED</span>';
+    const openRows = (U.open || []).map((o) => `<div class="row" style="grid-template-columns:1.6fr 60px 70px 110px 90px"><span class="sm">${esc(o.tk)}</span><span>${o.px}</span><span>${o.mark == null ? '—' : o.mark}</span><span class="dim sm">${o.markAgeMs == null ? 'no book yet' : Math.round(o.markAgeMs / 1000) + ' s ago'}</span><span class="${tone(o.unrealizedCents)}">${c(o.unrealizedCents)}</span></div>`).join('');
+    const wk = (st.weekTable || []).map((w) => `<div class="row" style="grid-template-columns:50px 90px 70px 70px 90px 90px 1fr"><span>${w.week}</span><span class="dim sm">${new Date(w.from).toISOString().slice(0, 10)}</span><span>${w.signals}</span><span>${w.settled}</span><span>${w.winRate == null ? '—' : pc(w.winRate)}</span><span class="${tone(w.netCents)}">${c(w.netCents)}</span><span class="sm ${w.complete ? (w.positive ? 'pos' : 'neg') : 'dim'}">${w.complete ? (w.positive ? 'positive' : 'not positive') : 'in progress'}</span></div>`).join('');
+    return `<div class="subh">Live P&amp;L <span class="badge live">PAPER</span>${unverified} <span class="dim">· ${esc(P.source)} · display only; frozen v1 rule unchanged</span></div>` +
+      `<div class="riskgrid" id="h2Realized">` +
+      meter('realized today', `<span class="${tone(R.today)}">${c(R.today)}</span>`, 'box-local day, by settle time') +
+      meter('realized this week', `<span class="${tone(R.thisWeek)}">${c(R.thisWeek)}</span>`, 'current test week (since first session)') +
+      meter('realized total', `<span class="${tone(R.total)}">${c(R.total)}</span>`, `${R.n} settled · official Kalshi results`) +
+      meter('unrealized (open)', `<span class="${tone(U.totalCents)}">${c(U.totalCents)}</span>`, `${(U.open || []).length} open${U.unmarked ? ` · ${U.unmarked} unmarked` : ''} · NOT in realized`) + `</div>` +
+      `<div class="dim sm mono" style="margin:6px 0 3px">Cumulative realized net P&amp;L after the 1-contract fee (¢ per 1-contract test)</div>${svg}` +
+      `<div class="subh">Open paper positions <span class="badge stale">UNREALIZED</span> <span class="dim">· ${esc(U.note)}</span></div>` +
+      (openRows ? `<div class="row head" style="grid-template-columns:1.6fr 60px 70px 110px 90px"><span>market</span><span>entry</span><span>bid</span><span>mark age</span><span>unrealized</span></div>${openRows}` : '<div class="dim sm mono">none open</div>') +
+      `<div class="subh">Per test week <span class="dim">(by signal time; feeds the ≥ 6 of 8 weeks positive criterion; a complete week with no settled fills counts as not positive)</span></div>` +
+      `<div class="row head" style="grid-template-columns:50px 90px 70px 70px 90px 90px 1fr"><span>week</span><span>from (UTC)</span><span>signals</span><span>settled</span><span>win rate</span><span>net</span><span>status</span></div>${wk || '<div class="dim sm mono">test not started</div>'}`;
   }
   function renderGaps() {
     const s = S.strategies.find((x) => x.id === 'gaps'); $('gapCard').hidden = !s; if (!s) return;

@@ -44,6 +44,12 @@ function summarize({ cfg, startAt, now, signals, fills, trades, skips, unsettled
   const wk = (t) => Math.floor((t.at - startAt) / WEEK);
   const weeks = []; for (const t of trades) { const w = wk(t); weeks[w] = weeks[w] || { week: w + 1, n: 0, pnl: 0 }; weeks[w].n++; weeks[w].pnl += t.pnl1; }
   const weekList = weeks.filter(Boolean).map((w) => ({ ...w, pnlCents: c(w.pnl), complete: (w.week) * WEEK <= now - startAt }));
+  // Per-week table over EVERY test week so far (weeks with no trades included), by signal time. Feeds miro's 6-of-8 criterion.
+  const curWeek = startAt ? Math.floor(Math.max(0, now - startAt) / WEEK) : -1, weekTable = [];
+  for (let w = 0; w <= curWeek; w++) {
+    const tw = trades.filter((t) => wk(t) === w), sw = signals.filter((x) => Math.floor((x.at - startAt) / WEEK) === w), wn = tw.filter((t) => t.win).length, net = tw.reduce((a, t) => a + t.pnl1, 0);
+    weekTable.push({ week: w + 1, from: startAt + w * WEEK, signals: sw.length, settled: tw.length, wins: wn, winRate: tw.length ? r6(wn / tw.length) : null, netCents: c(net), complete: (w + 1) * WEEK <= now - startAt, positive: tw.length > 0 && net > 0 });
+  }
   const assets = {}; for (const t of trades) { const a = (assets[t.asset] = assets[t.asset] || { n: 0, wins: 0, pnl: 0 }); a.n++; a.wins += t.win ? 1 : 0; a.pnl += t.pnl1; }
   for (const a of Object.values(assets)) { a.meanCents = c(a.pnl / a.n); a.pnlCents = c(a.pnl); delete a.pnl; }
   const sized = signals.filter((s) => s.yas != null), deep = sized.filter((s) => s.yas >= P.askSizeAtLeast).length;
@@ -70,7 +76,7 @@ function summarize({ cfg, startAt, now, signals, fills, trades, skips, unsettled
   // miro's pass criteria, shown honestly (DISPLAY ONLY: thresholds come from the frozen config; the verdict above is unchanged).
   // 'pending' = cannot be decided yet; 'met' / 'not met' = decided. Weeks are counted by week number, so a complete week
   // with no settled trades counts as not positive.
-  const completeWeeks = Math.min(8, Math.floor(weeksElapsed)), posWeeks = weekList.filter((w) => w.complete && w.week <= 8 && w.pnl > 0).length;
+  const completeWeeks = Math.min(8, Math.floor(weeksElapsed)), posWeeks = weekTable.filter((w) => w.complete && w.week <= 8 && w.positive).length;
   const needW = P.positiveWeeksMinOf8, askShare = sized.length ? deep / sized.length : null;
   const miro = [
     { key: 'meanNetOneLot', label: 'mean net per contract after 1-contract fee > 0', value: c(m1), unit: '¢', target: '> 0', so: `${n} settled`,
@@ -89,7 +95,7 @@ function summarize({ cfg, startAt, now, signals, fills, trades, skips, unsettled
     meanPnlCents: { oneLotFee: c(m1), largeOrderFee: c(mL), atSignalAskShadow: c(mean(pS)) },
     totalPnlCents: { oneLotFee: c(p1.reduce((s, x) => s + x, 0)), largeOrderFee: c(pL.reduce((s, x) => s + x, 0)) },
     ci95Cents: { dayBootstrap: { days: boot.days, lo: c(boot.lo), hi: c(boot.hi), note: boot.note || null }, normal: nci ? { lo: c(nci.lo), hi: c(nci.hi) } : null },
-    perAsset: assets, weeks: weekList, worstRolling4WeekLossPer100Cents: worst4 == null ? null : r6(worst4),
+    perAsset: assets, weeks: weekList, weekTable, worstRolling4WeekLossPer100Cents: worst4 == null ? null : r6(worst4),
     askSize: { measured: sized.length, atLeast: P.askSizeAtLeast, share: sized.length ? r6(deep / sized.length) : null },
     shadowBankroll: { multiple: r6(bank), maxDrawdown: r6(mdd), note: 'reporting only, 1% of bankroll per signal' },
     progress: { signals: nSig, targetSignals: T.minSignals, signalPct: r6(Math.min(1, nSig / T.minSignals)), weeks: r6(weeksElapsed), targetWeeks: T.minWeeks },
@@ -97,4 +103,30 @@ function summarize({ cfg, startAt, now, signals, fills, trades, skips, unsettled
     verdict: failStops.length ? 'FAIL-STOP' : !enough ? 'UNVERIFIED — not enough data' : Object.values(criteria).every(Boolean) ? 'PASS (all criteria met)' : 'FAIL (criteria not met)',
   };
 }
-module.exports = { fee1, feeLarge, wilson, bootstrapByDay, normalCi, mulberry32, summarize, mean };
+/**
+ * Live P&L view for the dashboard (DISPLAY ONLY, paper fills only; decides nothing).
+ *  realized: settled paper fills, 1-lot fee, by settle time: cumulative curve plus today / this test week / total.
+ *  unrealized: open (unsettled) paper fills marked to the latest YES bid, net of the entry fee AND the 1-lot exit fee you
+ *  would pay selling at that bid. Kept apart from realized and never added into it.
+ *  dayStartMs(now) gives the start of "today" (the desk passes box-local midnight).
+ */
+function livePnl({ trades = [], fills = [], marks = new Map(), now, startAt, rate = 0.07, dayStartMs = (t) => { const d = new Date(t); d.setHours(0, 0, 0, 0); return d.getTime(); } }) {
+  const c = (x) => (x == null ? null : r6(x * 100));
+  const settled = [...trades].map((t) => ({ ...t, sAt: t.settledAt || t.at })).sort((a, b) => a.sAt - b.sAt);
+  let cum = 0; const curve = settled.map((t) => { cum += t.pnl1; return { at: t.sAt, tk: t.tk, pnlCents: c(t.pnl1), cumCents: c(cum) }; });
+  const day0 = dayStartMs(now), week0 = startAt ? startAt + Math.floor(Math.max(0, now - startAt) / WEEK) * WEEK : null;
+  const sum = (f) => c(settled.filter(f).reduce((a, t) => a + t.pnl1, 0));
+  const open = fills.filter((f) => !f.settled).map((f) => {
+    const m = marks.get(f.tk) || null, bid = m && m.yb != null ? +m.yb : null;
+    const un = bid == null ? null : bid - f.px - f.fee1 - (bid > 0 ? fee1(bid, rate) : 0);
+    return { tk: f.tk, asset: f.asset, entryAt: f.at, px: f.px, fee1: f.fee1, close: f.close || null, mark: bid, markSize: m ? m.ybs : null, markAt: m ? m.rx : null, markAgeMs: m ? now - m.rx : null, unrealizedCents: c(un) };
+  });
+  const unAll = open.filter((o) => o.unrealizedCents != null);
+  return {
+    source: 'paper fills only (frozen v1 ledger); 1-contract fee', curve,
+    realizedCents: { today: sum((t) => t.sAt >= day0), thisWeek: week0 == null ? null : sum((t) => t.sAt >= week0), total: c(cum), n: settled.length },
+    unrealized: { open, totalCents: unAll.length ? r6(unAll.reduce((a, o) => a + o.unrealizedCents, 0)) : null, unmarked: open.length - unAll.length,
+      note: 'mark to the latest YES bid, net of the entry fee and the exit fee of selling at that bid; not realized, not in the totals' },
+  };
+}
+module.exports = { livePnl, fee1, feeLarge, wilson, bootstrapByDay, normalCi, mulberry32, summarize, mean };

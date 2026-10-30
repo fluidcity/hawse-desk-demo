@@ -32,7 +32,7 @@ class KalshiH2Paper {
     this.cfg = null; this.hash = null; this.key = null; this.error = null; this.running = false; this.timers = [];
     this.mk = new Map(); // tk -> per-market state
     this.signals = []; this.fills = new Map(); this.trades = []; this.skips = {}; this.flags = []; this.recent = []; this.startAt = null; this.sessions = 0;
-    this.observed = { markets: 0, noTouch: 0 }; this.halted = null;
+    this.observed = { markets: 0, noTouch: 0 }; this.halted = null; this.marks = new Map(); // tk -> latest YES bid of an open paper fill (display only)
     if (health) health.register('paper.kalshi-h2', { label: 'Kalshi H2 forward paper test (frozen v1)', group: 'recorder', note: 'paper ledger only; decisions from recorder books; official Kalshi results', staleMs: 120000 });
   }
   get ledgerFile() { return path.join(this.baseDir, this.cfg.version, 'ledger.jsonl'); }
@@ -70,7 +70,7 @@ class KalshiH2Paper {
     if (r.t === 'fill') this.fills.set(r.tk, { ...r, settled: false });
     if (r.t === 'skip') { this.skips[r.reason] = (this.skips[r.reason] || 0) + 1; this.done(r.tk); }
     if (r.t === 'observed') { this.observed.markets++; if (r.outcome === 'no_touch') this.observed.noTouch++; this.done(r.tk); }
-    if (r.t === 'settle') { const f = this.fills.get(r.tk); if (f) { f.settled = true; this.trades.push(r); } }
+    if (r.t === 'settle') { const f = this.fills.get(r.tk); if (f) { f.settled = true; this.trades.push(r); } this.marks && this.marks.delete(r.tk); }
     if (r.t === 'settle_timeout') { const f = this.fills.get(r.tk); if (f) f.settled = 'timeout'; this.skips.settle_timeout = (this.skips.settle_timeout || 0) + 1; }
     if (r.t === 'flag') { this.flags.push(r); if (r.halt) this.halted = r.reason; }
     this.recent.push(r); if (this.recent.length > 40) this.recent.shift();
@@ -89,7 +89,9 @@ class KalshiH2Paper {
   }
   haltOnce(reason) { if (this.halted) return; this.append({ t: 'flag', reason, halt: true, kind: 'fail-stop' }); this.log('[kalshi-h2] FAIL-STOP: ' + reason); }
   onBook(e) {
-    if (!this.running || this.halted) return;
+    if (!this.running) return;
+    { const f = this.fills.get(e.tk); if (f && !f.settled) this.marks.set(e.tk, { yb: e.yb, ybs: e.ybs, rx: e.rx }); }
+    if (this.halted) return;
     const R = this.cfg.rule; if (!R.series.includes(e.series) || e.secLeft == null) return;
     const m = this.mk.get(e.tk) || { tk: e.tk, preWindow: false, lastRx: null, broken: null };
     this.mk.set(e.tk, m);
@@ -151,7 +153,7 @@ class KalshiH2Paper {
   snapshot() {
     return { enabled: true, running: this.running, error: this.error, paper: true, label: 'PAPER · forward test · not real money', id: this.key, version: this.cfg && this.cfg.version, hash: this.hash,
       rule: this.cfg && this.cfg.rule, fill: this.cfg && this.cfg.fill && this.cfg.fill.model, startAt: this.startAt, sessions: this.sessions, observed: this.observed, halted: this.halted, flags: this.flags.slice(-5),
-      pending: [...this.mk.values()].filter((m) => m.pending).length, stats: this.stats(), recent: this.recent.slice(-15).reverse() };
+      pending: [...this.mk.values()].filter((m) => m.pending).length, stats: this.stats(), pnl: this.cfg ? S.livePnl({ trades: this.trades, fills: [...this.fills.values()], marks: this.marks, now: this.now(), startAt: this.startAt, rate: this.cfg.fees.rate }) : null, recent: this.recent.slice(-15).reverse() };
   }
 }
 module.exports = { KalshiH2Paper, loadFrozen, sha256, FROZEN, DEFAULT_FILE, assetOf };

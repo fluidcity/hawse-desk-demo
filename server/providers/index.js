@@ -20,6 +20,7 @@ function describe(entry, env, healthRows, adapterInfo) {
   else if (rows.some((r) => r.status === 'stale')) status = 'stale';
   else if (rows.some((r) => r.status === 'mock')) status = 'mocked';
   else if (rows.some((r) => r.status === 'down')) status = 'down';
+  else if (rows.some((r) => r.status === 'blocked')) status = 'blocked';
   else status = rows.length ? 'pending' : 'idle';
   const live = rows.filter((r) => r.status === 'live' && r.latencyMs != null);
   return {

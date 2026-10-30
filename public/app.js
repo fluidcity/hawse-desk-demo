@@ -33,8 +33,8 @@ window.HAWSE.explain = (() => {
   const ago = (ms) => ms == null ? '—' : ms < 1000 ? 'now' : ms < 60e3 ? Math.round(ms / 1000) + 's' : ms < 3600e3 ? Math.round(ms / 60e3) + 'm' : Math.round(ms / 3600e3) + 'h';
   const compact = (n) => Math.abs(n) >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : Math.abs(n) >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : n.toFixed(0);
   const pxFmt = (p) => p >= 1000 ? p.toLocaleString('en-US', { maximumFractionDigits: 1 }) : p >= 1 ? p.toFixed(3) : p.toFixed(5);
-  const BADGE_CLASS = { 'missing key': 'missing', 'mocked (missing key)': 'mock', mocked: 'mock', stale: 'stale', 'not implemented': 'pending', idle: 'pending' };
-  const badge = (mode) => `<span class="badge ${esc(BADGE_CLASS[mode] || mode)}">${esc({ live: 'LIVE', mock: 'MOCK', sim: 'SIMULATED', mixed: 'MIXED', down: 'NO DATA', indicative: 'INDICATIVE', pending: 'PENDING', stale: 'STALE' }[mode] || String(mode).toUpperCase())}</span>`;
+  const BADGE_CLASS = { 'missing key': 'missing', 'mocked (missing key)': 'mock', mocked: 'mock', stale: 'stale', blocked: 'blocked', 'not implemented': 'pending', idle: 'pending' };
+  const badge = (mode) => `<span class="badge ${esc(BADGE_CLASS[mode] || mode)}">${esc({ live: 'LIVE', mock: 'MOCK', sim: 'SIMULATED', mixed: 'MIXED', down: 'NO DATA', indicative: 'INDICATIVE', pending: 'PENDING', stale: 'STALE', blocked: 'BLOCKED' }[mode] || String(mode).toUpperCase())}</span>`;
   const heatColor = (v, scale) => {
     if (v == null || !isFinite(v)) return 'transparent';
     const a = Math.min(1, Math.abs(v) / scale);
@@ -285,11 +285,11 @@ window.HAWSE.explain = (() => {
   function renderHealth() {
     const h = S.health; const cnt = (st) => h.filter((x) => x.status === st).length;
     const wd = S.watchdog; const wdTxt = wd ? ` · watchdog ${wd.restarts} restart(s)${wd.clockJumps && wd.clockJumps.length ? ` · last clock jump +${Math.round(wd.clockJumps[wd.clockJumps.length - 1].ms / 1000)}s` : ''}` : '';
-    $('healthSum').innerHTML = `<span class="pos">${cnt('live')} live</span> · <span class="warn">${cnt('stale')} stale</span> · <span class="warn">${cnt('mock')} mock</span> · <span class="neg">${cnt('down')} down</span>${esc(wdTxt)}`;
+    $('healthSum').innerHTML = `<span class="pos">${cnt('live')} live</span> · <span class="warn">${cnt('stale')} stale</span> · <span class="warn">${cnt('mock')} mock</span> · <span class="neg">${cnt('down')} down</span>${cnt('blocked') ? ` · <span class="warn">${cnt('blocked')} blocked from this host</span>` : ''}${esc(wdTxt)}`;
     const cols = 'grid-template-columns:1.4fr 44px 62px 56px 48px';
     $('health').innerHTML = `<div class="row head" style="${cols}"><span>feed</span><span>via</span><span>status</span><span>latency</span><span>age</span></div>` +
-      h.map((x) => { const st = x.status === 'stale' ? 'stale' : x.kind === 'mock' ? 'mock' : x.status === 'live' ? 'live' : x.status === 'down' ? 'down' : 'pending';
-        return `<div class="row${st === 'stale' ? ' stale-row' : ''}" style="${cols}" title="${esc(x.error || x.note || '')}"><span>${esc(x.label)}<br><span class="dim sm">${esc(x.error ? x.error.slice(0, 70) : x.note || x.group)}</span></span><span class="dim">${esc(x.transport || 'rest')}</span><span>${badge(st)}${st === 'stale' && x.kind === 'mock' ? ' ' + badge('mock') : ''}</span><span>${x.latencyMs == null ? '—' : x.latencyMs + 'ms'}</span><span class="${st === 'stale' ? 'warn' : ''}">${ago(x.ageMs)}</span></div>`; }).join('');
+      h.map((x) => { const st = x.status === 'stale' ? 'stale' : x.kind === 'mock' ? 'mock' : x.status === 'live' ? 'live' : x.status === 'down' ? 'down' : x.status === 'blocked' ? 'blocked' : 'pending';
+        return `<div class="row${st === 'stale' ? ' stale-row' : ''}" style="${cols}" title="${esc(x.error || x.note || '')}"><span>${esc(x.label)}<br><span class="dim sm">${esc(x.error ? x.error.slice(0, 70) : x.note || x.group)}</span></span><span class="dim">${esc(x.transport || 'rest')}</span><span>${badge(st)}${st === 'stale' && x.kind === 'mock' ? ' ' + badge('mock') : ''}${st === 'blocked' && x.blockedHttp ? `<br><span class="dim sm">HTTP ${esc(x.blockedHttp)}</span>` : ''}</span><span>${x.latencyMs == null ? '—' : x.latencyMs + 'ms'}</span><span class="${st === 'stale' ? 'warn' : ''}">${ago(x.ageMs)}</span></div>`; }).join('');
     renderProviders();
   }
   const staleFeeds = (p) => { const rows = (p.feeds || []).map((f) => (S.health || []).find((h) => h.id === f.id)).filter((h) => h && h.status === 'stale');

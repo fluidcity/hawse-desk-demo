@@ -7,6 +7,12 @@ const { hourlyRate } = require('../lib/fees');
 
 const H = 3600e3;
 const VENUES = ['binance', 'bybit', 'okx', 'hyperliquid'];
+// Binance USD-M REST (fapi.binance.com, also dapi) answers 451 and Bybit REST (api.bybit.com and api.bytick.com) answers a
+// CloudFront 403 from some hosts (this box: US). No documented public REST alternative serves perp funding there, so the
+// row says BLOCKED (HTTP xxx) and is re-probed every 30 min; the same venues' public WebSockets (fstream.binance.com,
+// stream.bybit.com) are not blocked and already feed rates/marks into this store (transport 'ws').
+const BLOCK_REPROBE_MS = 30 * 60e3;
+const BLOCKED_ALT = { binance: 'rates/marks via ws.binance (public WS)', bybit: 'rates/marks via ws.bybit (public WS)' };
 const LABEL = { binance: 'Binance USD-M', bybit: 'Bybit Linear', okx: 'OKX Swap', hyperliquid: 'Hyperliquid' };
 
 function rec(venue, symbol, { rate, intervalH, nextFundingTime, mark, bid, ask }) {
@@ -102,6 +108,7 @@ class FundingFeed {
     this.cache = { binanceInfo: null, bybitInst: null, cacheT: 0 };
     for (const v of VENUES) health.register('funding.' + v, { label: LABEL[v] + ' funding', group: 'Perp funding', kind: 'live', note: 'public REST, no key' });
     if (usePredicted) health.register('funding.predicted', { label: 'Hyperliquid predictedFundings', group: 'Perp funding', kind: 'live', note: 'next-rate forecast for HL · Binance · Bybit, public, no key' });
+    for (const v of ['binance', 'bybit']) if (health.setBlockedAlt) health.setBlockedAlt('funding.' + v, BLOCKED_ALT[v]);
   }
   get(venue, symbol) { return this.data.get(venue + '|' + symbol); }
   predicted(venue, symbol, maxAgeMs = 10 * 60e3) { const r = this.pred.get(venue + '|' + symbol); return r && Date.now() - r.ts < maxAgeMs ? r : null; }
@@ -125,6 +132,7 @@ class FundingFeed {
   }
   async pollBinance() {
     const id = 'funding.binance', base = 'https://fapi.binance.com';
+    if (this.health.isBlocked && this.health.isBlocked(id, BLOCK_REPROBE_MS)) return;
     const premium = await fetchJson(base + '/fapi/v1/premiumIndex', { health: this.health, id });
     const book = await fetchJson(base + '/fapi/v1/ticker/bookTicker', { health: this.health, id }).catch(() => []);
     if (!this.cache.binanceInfo || Date.now() - this.cache.cacheT > H) this.cache.binanceInfo = await fetchJson(base + '/fapi/v1/fundingInfo').catch(() => []);
@@ -132,6 +140,7 @@ class FundingFeed {
   }
   async pollBybit() {
     const id = 'funding.bybit', base = 'https://api.bybit.com';
+    if (this.health.isBlocked && this.health.isBlocked(id, BLOCK_REPROBE_MS)) return;
     const t = await fetchJson(base + '/v5/market/tickers?category=linear', { health: this.health, id });
     if (!this.cache.bybitInst) this.cache.bybitInst = await fetchJson(base + '/v5/market/instruments-info?category=linear&limit=1000').catch(() => null);
     this.put(parseBybit(t, this.cache.bybitInst, this.symbols));

@@ -1,0 +1,137 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#06080a" />
+  <title>HAWSE · Paper Desk</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="icon" href="favicon.svg" type="image/svg+xml" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo">HAWSE</span>
+      <span class="pill pill-paper" title="No live orders are possible in this build">PAPER ONLY</span>
+    </div>
+    <div class="modeswitch" role="tablist" aria-label="Mode">
+      <button type="button" role="tab" class="mode on" data-mode="live" aria-selected="true">Live Data</button>
+      <button type="button" role="tab" class="mode" data-mode="demo" aria-selected="false">Demo</button>
+    </div>
+    <div class="status">
+      <span class="conn" id="conn"><i></i><b>connecting</b></span>
+      <span class="gatechip" id="gateChip">GATE —</span>
+      <span class="clock mono" id="clock">--:--:--</span>
+      <button type="button" class="btn hot sm" id="haltBtn">HALT</button>
+    </div>
+  </header>
+
+  <div class="ticker" aria-label="Live prices"><div class="ticker-track" id="ticker"></div></div>
+
+  <main id="liveView" class="shell">
+    <section class="hero card">
+      <div class="hero-left">
+        <div class="label">Paper equity · real-data book</div>
+        <div class="equity mono" id="equity">$—</div>
+        <div class="hero-sub mono">
+          <span id="pnlTotal">—</span><span class="dim">total</span>
+          <span id="pnlDay">—</span><span class="dim">today</span>
+          <span id="ddNow">—</span><span class="dim">drawdown</span>
+        </div>
+        <div class="simbook mono" id="simBook" title="PnL from strategies running on mocked/simulated inputs. Never merged into the real-data book.">SIM BOOK —</div>
+      </div>
+      <div class="hero-chart">
+        <div class="legend mono"><span class="lg lg-real">real-data equity</span><span class="lg lg-sim">simulated-feed book</span><span class="dim" id="curveSpan"></span></div>
+        <canvas id="curve" aria-label="Unified equity curve"></canvas>
+        <div class="tooltip mono" id="curveTip" hidden></div>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="card a-strats">
+        <div class="card-h"><h2>Strategies</h2><span class="dim mono sm">arm/disarm · own PnL · skip reasons</span></div>
+        <div id="strats" class="strats"></div>
+      </section>
+
+      <section class="card a-risk">
+        <div class="card-h"><h2>Portfolio risk gate</h2><span class="dim mono sm" id="riskTs"></span></div>
+        <div id="riskBody"></div>
+        <form id="riskForm" class="riskform">
+          <label>Daily loss halt %<input type="number" step="0.5" min="0.5" max="50" id="dailyIn" /></label>
+          <label>Drawdown breaker %<input type="number" step="0.5" min="1" max="80" id="ddIn" /></label>
+          <button type="submit" class="btn sm">Apply</button>
+        </form>
+        <div class="actions">
+          <button type="button" class="btn sm" id="resumeBtn">Resume</button>
+          <button type="button" class="btn sm ghost" id="resetBrk">Reset breaker</button>
+        </div>
+      </section>
+
+      <section class="card a-funding">
+        <div class="card-h"><h2>Perp funding heatmap <span class="dim">· APR</span></h2><span class="dim mono sm" id="fundTs"></span></div>
+        <div id="fundHeat" class="heat"></div>
+        <div class="subh">Best pairs after fees · slippage · basis buffer</div>
+        <div id="fundBest" class="tbl"></div>
+      </section>
+
+      <section class="card a-attr">
+        <div class="card-h"><h2>PnL attribution</h2><span class="dim mono sm">net of fees & slippage</span></div>
+        <div id="attr"></div>
+        <div class="subh">Open positions</div>
+        <div id="positions" class="tbl"></div>
+      </section>
+
+      <section class="card a-whale" id="whaleCard" hidden>
+        <div class="card-h"><h2>Whale flow <span class="dim">· large tx</span></h2><span class="dim mono sm" id="whaleMode"></span></div>
+        <div id="whaleNet" class="whalenet"></div>
+        <div id="whales" class="tbl whales"></div>
+      </section>
+
+      <section class="card a-gaps" id="gapCard" hidden>
+        <div class="card-h"><h2>DEX price gaps</h2><span class="dim mono sm" id="gapMode"></span></div>
+        <div id="gapHeat"></div>
+        <div id="gapTri" class="tbl"></div>
+      </section>
+
+      <section class="card a-onepct" id="onepctCard" hidden>
+        <div class="card-h"><h2>1% compounding</h2><span class="dim mono sm" id="onepctMode"></span></div>
+        <div id="onepct"></div>
+      </section>
+
+      <section class="card a-fut" id="futCard" hidden>
+        <div class="card-h"><h2>CME micros · ORB</h2><span class="dim mono sm" id="futMode"></span></div>
+        <canvas id="futChart" class="futchart"></canvas>
+        <div id="futBody"></div>
+      </section>
+
+      <section class="card a-health">
+        <div class="card-h"><h2>Data sources</h2><span class="dim mono sm" id="healthSum"></span></div>
+        <div id="health" class="tbl"></div>
+      </section>
+
+      <section class="card a-tape">
+        <div class="card-h"><h2>Live tape</h2>
+          <div class="chips" id="tapeChips">
+            <button type="button" class="chip on" data-f="all">all</button>
+            <button type="button" class="chip" data-f="fill">fills</button>
+            <button type="button" class="chip" data-f="flow">flows</button>
+            <button type="button" class="chip" data-f="skip">skips</button>
+            <button type="button" class="chip" data-f="risk">risk</button>
+          </div>
+        </div>
+        <div class="tape mono" id="tape" aria-live="polite"></div>
+      </section>
+    </div>
+    <p class="foot mono">HAWSE paper desk · real public market data where marked LIVE · MOCK/SIM inputs are labeled and booked separately · live order path is a disabled stub</p>
+  </main>
+
+  <main id="demoView" class="shell" hidden>
+    <div class="demo-banner mono">DEMO MODE · the original randomized HAWSE simulator · NOT real data · PnL here is random and meaningless</div>
+    <iframe id="demoFrame" title="HAWSE demo simulator" src="about:blank"></iframe>
+  </main>
+  <script src="app.js"></script>
+</body>
+</html>

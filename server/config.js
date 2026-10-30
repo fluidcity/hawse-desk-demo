@@ -1,0 +1,77 @@
+'use strict';
+// Server-side configuration. Secrets are read from process.env (optionally
+// populated from a local, gitignored .env file). Nothing in this module is
+// ever serialized to the browser except the booleans in publicFlags().
+const fs = require('fs');
+const path = require('path');
+
+function loadDotEnv(file = path.join(__dirname, '..', '.env')) {
+  if (!fs.existsSync(file)) return false;
+  const text = fs.readFileSync(file, 'utf8');
+  for (const raw of text.split(/\r?\n/)) {
+    const line = raw.trim();
+    if (!line || line.startsWith('#')) continue;
+    const eq = line.indexOf('=');
+    if (eq < 1) continue;
+    const key = line.slice(0, eq).trim();
+    let val = line.slice(eq + 1).trim();
+    if ((val.startsWith('"') && val.endsWith('"')) || (val.startsWith("'") && val.endsWith("'"))) val = val.slice(1, -1);
+    if (process.env[key] === undefined) process.env[key] = val;
+  }
+  return true;
+}
+
+const num = (v, d) => (v === undefined || v === '' || isNaN(+v) ? d : +v);
+const list = (v, d) => (v ? String(v).split(',').map((s) => s.trim()).filter(Boolean) : d);
+const bool = (v, d) => (v === undefined || v === '' ? d : /^(1|true|yes|on)$/i.test(String(v)));
+
+function build(env = process.env) {
+  const c = {
+    host: env.HOST || '127.0.0.1',
+    port: num(env.PORT, 8787),
+    paperStartEquity: num(env.PAPER_START_EQUITY, 10000),
+    // Hard-coded: this build has no live trading. Setting this env var to
+    // anything other than "paper" makes the server refuse to start.
+    tradingMode: env.TRADING_MODE || 'paper',
+    risk: {
+      dailyLossPct: num(env.RISK_DAILY_LOSS_PCT, 3),
+      maxDrawdownPct: num(env.RISK_MAX_DRAWDOWN_PCT, 10),
+    },
+    funding: {
+      symbols: list(env.FUNDING_SYMBOLS, ['BTC', 'ETH', 'SOL', 'XRP', 'DOGE', 'BNB', 'ARB', 'AVAX']),
+      pollMs: num(env.FUNDING_POLL_MS, 30000),
+      holdHours: num(env.FUNDING_HOLD_HOURS, 24),
+      minNetBps: num(env.FUNDING_MIN_NET_BPS, 8),
+    },
+    helius: { apiKey: env.HELIUS_API_KEY || '', watch: list(env.HELIUS_WATCH_ADDRESSES, null), minUsd: num(env.WHALE_MIN_USD, 250000) },
+    evm: {
+      alchemyKey: env.ALCHEMY_API_KEY || '',
+      infuraKey: env.INFURA_API_KEY || '',
+      rpc: { ethereum: env.EVM_RPC_URL_ETHEREUM || env.EVM_RPC_URL || '', base: env.EVM_RPC_URL_BASE || '', arbitrum: env.EVM_RPC_URL_ARBITRUM || '' },
+      publicFallback: bool(env.EVM_PUBLIC_RPC_FALLBACK, true),
+      chains: list(env.EVM_CHAINS, ['ethereum', 'base', 'arbitrum']),
+    },
+    tradovate: {
+      username: env.TRADOVATE_USERNAME || '', password: env.TRADOVATE_PASSWORD || '',
+      appId: env.TRADOVATE_APP_ID || '', cid: env.TRADOVATE_CID || '', secret: env.TRADOVATE_SECRET || '',
+      appVersion: env.TRADOVATE_APP_VERSION || '1.0', symbols: list(env.TRADOVATE_SYMBOLS, null),
+    },
+    jupiter: { base: env.JUPITER_API_BASE || 'https://lite-api.jup.ag' },
+  };
+  c.tradovate.configured = !!(c.tradovate.username && c.tradovate.password && c.tradovate.appId && c.tradovate.cid && c.tradovate.secret);
+  return c;
+}
+
+function publicFlags(c) {
+  // Only booleans / non-secret settings leave the server.
+  return {
+    tradingMode: 'paper',
+    heliusConfigured: !!c.helius.apiKey,
+    evmKeyConfigured: !!(c.evm.alchemyKey || c.evm.infuraKey || c.evm.rpc.ethereum || c.evm.rpc.base || c.evm.rpc.arbitrum),
+    evmPublicFallback: c.evm.publicFallback,
+    tradovateConfigured: c.tradovate.configured,
+    paperStartEquity: c.paperStartEquity,
+  };
+}
+
+module.exports = { loadDotEnv, build, publicFlags };

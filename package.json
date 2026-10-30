@@ -1,0 +1,14 @@
+{
+  "name": "hawse-desk",
+  "version": "2.0.0",
+  "description": "HAWSE paper trading desk on real public market data. Paper mode only.",
+  "private": true,
+  "type": "commonjs",
+  "engines": { "node": ">=22" },
+  "scripts": {
+    "start": "node server/server.js",
+    "dev": "node --watch server/server.js",
+    "test": "node --test \"test/*.test.js\""
+  },
+  "license": "UNLICENSED"
+}

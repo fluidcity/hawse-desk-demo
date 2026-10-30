@@ -305,7 +305,8 @@ window.HAWSE.explain = (() => {
     if (c.enabled === false) bits.unshift('<span class="warn">DEMO: WHALES_ENABLED=false, no Helius calls</span>');
     if (c.dailyBudget != null) bits.splice(1, 0, `<b>today</b> ${n(c.usedToday)} / ${n(c.dailyBudget)} daily cap (auto-pause at ${n(c.pauseAtPct)}%)`);
     if (c.paused) bits.push(`<span class="neg">AUTO-PAUSED${c.autoPaused && c.autoPaused.remote ? ': ' + esc(c.autoPaused.remote) : ''}</span>`);
-    if (c.watchConfigured === false && c.enabled) bits.push('<span class="warn">no whale wallets configured (HELIUS_WATCH_ADDRESSES / FOLLOW_WALLETS_SOL)</span>');
+    if (c.mode === 'inbox') bits.push(`watching ${n(c.watching)} accounts${c.watchConfigured ? '' : ' (proposed list)'}`);
+    if (c.inbox) bits.push(inboxInfo(c.inbox, c.delivery));
     if (c.schedule) bits.unshift(`schedule <b>${esc(c.schedule)}</b> · ${n(c.costPerCall)} cr/call`);
     if (c.legacyPerDay) bits.push(`<span class="dim">old default ≈ ${n(c.legacyPerDay)}/day</span>`);
     if (c.apiRemaining != null) bits.push(`API reports ${n(c.apiRemaining)} left`);
@@ -316,6 +317,20 @@ window.HAWSE.explain = (() => {
     const dpct = c.dailyBudget ? Math.min(100, (100 * (c.usedToday || 0)) / c.dailyBudget) : null;
     return `<br><span class="sm mono credits" data-credits="${esc(p.id)}">${bits.join(' · ')}</span><span class="credit-bar" title="month"><i style="width:${pct.toFixed(1)}%"></i></span>` +
       (dpct == null ? '' : `<span class="credit-bar daily${c.paused ? ' paused' : ''}" title="today"><i style="width:${dpct.toFixed(1)}%"></i></span>`);
+  }
+  // HAWSE webhook inbox health (counters only; the URL and token never reach the browser).
+  function inboxInfo(x, d) {
+    if (!x.configured) return '<span class="warn">inbox not configured (HAWSE_WEBHOOK_URL / HAWSE_READ_TOKEN missing): MOCK events</span>';
+    const ago = (ms) => (ms == null ? 'never' : ms < 90e3 ? Math.round(ms / 1000) + 's ago' : ms < 5400e3 ? Math.round(ms / 60e3) + 'm ago' : (ms / 3.6e6).toFixed(1) + 'h ago');
+    const b = [`<b>inbox</b> ${x.lastOkAt ? (x.stale ? '<span class="warn">STALE</span>' : '<span class="pos">ok</span>') : 'pending'} · last poll ${ago(x.lastOkAgoMs)} every ${x.pollSec}s`,
+      `cursor ${x.cursor}`, `rtt ${x.lastRttMs == null ? '—' : x.lastRttMs + 'ms'}`, `${x.txs} tx in ${x.events} deliveries · ${x.dupes} dupes`];
+    b.push(`last delivery ${ago(x.lastEventAgoMs)}`);
+    if (d && d.lastLagMs != null) b.push(`chain→inbox ${Math.round(d.lastLagMs / 1000)}s`);
+    if (d && d.test) b.push(`<span class="dim">${d.test} test payload(s), not billed</span>`);
+    if (x.backoffMs) b.push(`<span class="warn">backing off ${Math.round(x.backoffMs / 1000)}s</span>`);
+    if (x.lastError && (!x.lastOkAt || x.lastError.at > x.lastOkAt)) b.push(`<span class="neg">${esc(x.lastError.msg)}</span>`);
+    if (x.gapCount) b.push(`<span class="neg">${x.gapCount} GAP(s): offline &gt; 24 h, deliveries may be missing (last ${esc(String(x.gaps[x.gaps.length - 1].hours))} h)</span>`);
+    return b.join(' · ');
   }
   function pythInfo(p) {
     if (!p.extra || !p.extra.checks) return '';

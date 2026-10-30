@@ -56,19 +56,26 @@ function build(env = process.env) {
       carry: { enabled: bool(env.CARRY_ENABLED, true), minNetBps: num(env.CARRY_MIN_NET_BPS, 15), holdHours: num(env.CARRY_HOLD_HOURS, 72), spotPollMs: num(env.SPOT_POLL_MS, 30000) },
     },
     helius: {
-      // Only the configured whale wallets are watched: HELIUS_WATCH_ADDRESSES, else FOLLOW_WALLETS_SOL. No busy-pool default for live modes.
-      apiKey: env.HELIUS_API_KEY || '', watch: list(env.HELIUS_WATCH_ADDRESSES, null) || list(env.FOLLOW_WALLETS_SOL, null), minUsd: num(env.WHALE_MIN_USD, 250000),
-      // OFF by default: without WHALES_ENABLED=true the Solana feed is labelled DEMO/MOCK and makes no Helius calls at all.
+      // Watched-only filter: HELIUS_WATCH_ADDRESSES, else FOLLOW_WALLETS_SOL, else HELIUS_WEBHOOK_ADDRESSES, else the verified
+      // proposed list in server/feeds/helius-watch.js (the same accounts the admin script registers).
+      apiKey: env.HELIUS_API_KEY || '', watch: list(env.HELIUS_WATCH_ADDRESSES, null) || list(env.FOLLOW_WALLETS_SOL, null) || list(env.HELIUS_WEBHOOK_ADDRESSES, null), minUsd: num(env.WHALE_MIN_USD, 250000),
+      // OFF by default: without WHALES_ENABLED=true the Solana feed is labelled DEMO/MOCK and makes no network calls at all.
       enabled: env.WHALES_ENABLED === 'true',
-      // When enabled: 'webhook' if a receiver secret is configured, else MOCK. 'poll' (Parsed Events, 10 cr/call) is opt-in.
-      mode: env.WHALES_ENABLED !== 'true' ? 'mock' : ['webhook', 'poll', 'mock', 'off'].includes(env.HELIUS_MODE) ? env.HELIUS_MODE : (env.HELIUS_WEBHOOK_AUTH ? 'webhook' : 'mock'),
+      // When enabled: 'inbox' (poll the HAWSE webhook inbox). Falls back to labelled MOCK if the inbox is not configured.
+      mode: env.WHALES_ENABLED !== 'true' ? 'mock' : ['inbox', 'mock', 'off'].includes(env.HELIUS_MODE) ? env.HELIUS_MODE : 'inbox',
       dailyBudget: num(env.HELIUS_DAILY_CREDIT_BUDGET, 30000), // HARD daily cap (≈ 1M/month ÷ 30 = 33k); resets 00:00 UTC
       pauseAtPct: num(env.HELIUS_PAUSE_AT_PCT, 90), // auto-pause at this % of the daily (or monthly) cap
-      webhookUrl: env.HELIUS_WEBHOOK_URL || '',
-      autoPauseWebhook: env.HELIUS_AUTO_PAUSE_WEBHOOK !== 'false', // near the cap, PATCH the webhook to active:false (needs API key + URL)
-      webhookAuth: env.HELIUS_WEBHOOK_AUTH || '', // shared secret Helius echoes in the Authorization header; server-side only
-      pollSec: Math.max(300, num(env.HELIUS_POLL_SEC, 900)), pollLimit: num(env.HELIUS_POLL_LIMIT, 25),
+      webhookUrl: env.HAWSE_WEBHOOK_URL ? String(env.HAWSE_WEBHOOK_URL).replace(/\/+$/, '') + '/helius' : '', // what Helius delivers to; matches our webhook for auto-pause
+      webhooksApi: env.HELIUS_WEBHOOKS_API || '',
+      autoPauseWebhook: env.HELIUS_AUTO_PAUSE_WEBHOOK !== 'false', // near the cap, PATCH the webhook to active:false (needs API key + inbox URL)
       creditBudget: num(env.HELIUS_CREDIT_BUDGET, 300000), // hard monthly cap for credits this app spends (free plan = 1,000,000/month)
+      // HAWSE inbox (Cloudflare Worker). Both values are secrets: server-side only, never in the client view or logs.
+      inbox: {
+        baseUrl: env.HAWSE_WEBHOOK_URL || '', readToken: env.HAWSE_READ_TOKEN || '',
+        pollSec: Math.min(60, Math.max(15, num(env.INBOX_POLL_SEC, 30))), limit: Math.min(200, Math.max(1, num(env.INBOX_LIMIT, 100))),
+        stateFile: env.INBOX_STATE_FILE !== undefined ? env.INBOX_STATE_FILE : path.join(__dirname, '..', 'data', 'inbox-state.json'),
+      },
+      maxSignalAgeSec: num(env.INBOX_MAX_SIGNAL_AGE_SEC, 600), // older (backfilled) txs are shown but never drive strategies
     },
     // Wallet-follow v2 (batch-1 H3). Hyperliquid userFills are public/free; Solana reuses the Helius whale feed (off by default).
     follow: {
@@ -89,7 +96,6 @@ function build(env = process.env) {
       eventsFile: env.MEMPOOL_EVENTS_FILE !== undefined ? (env.MEMPOOL_EVENTS_FILE || null) : path.join(__dirname, '..', 'data', 'mev', 'events.json'),
       duneFile: env.MEMPOOL_DUNE_FILE !== undefined ? (env.MEMPOOL_DUNE_FILE || null) : path.join(__dirname, '..', 'data', 'mev', 'dune-sandwiched.json'),
     },
-    hooks: { port: num(env.HOOKS_PORT, 0), host: env.HOOKS_HOST || '127.0.0.1' }, // optional hooks-only listener (expose THIS via a tunnel, not the desk)
     creditsFile: env.CREDITS_FILE !== undefined ? env.CREDITS_FILE : path.join(__dirname, '..', 'data', 'credits.json'),
     evm: {
       alchemyKey: env.ALCHEMY_API_KEY || '',
@@ -129,6 +135,7 @@ function publicFlags(c) {
   return {
     tradingMode: 'paper',
     heliusConfigured: !!c.helius.apiKey,
+    inboxConfigured: !!(c.helius.inbox.baseUrl && c.helius.inbox.readToken),
     heliusMode: c.helius.mode,
     evmKeyConfigured: !!(c.evm.alchemyKey || c.evm.infuraKey || c.evm.rpc.ethereum || c.evm.rpc.base || c.evm.rpc.arbitrum),
     evmPublicFallback: c.evm.publicFallback,

@@ -56,7 +56,7 @@ class WhaleFollow extends Strategy {
     return X.explanation(`Watches large on-chain swaps by "whales" on Solana and on Ethereum, Base and Arbitrum. When the big money over the last
       ${r.windowMin} minutes is clearly flowing one way, it takes a small paper position on that asset's perpetual future in the same
       direction, with a tight stop, a modest target and a short time limit.`, {
-      Markets: ['Signals: Solana swaps (Helius) and Ethereum/Base/Arbitrum swaps (public RPC)', 'Trades: SOL perp for Solana flow, ETH perp for EVM flow, priced from real perp quotes'],
+      Markets: ['Signals: Solana swaps (Helius enhanced webhook → HAWSE inbox, polled every 15–60 s; off unless WHALES_ENABLED=true) and Ethereum/Base/Arbitrum swaps (public RPC)', 'Trades: SOL perp for Solana flow, ETH perp for EVM flow, priced from real perp quotes'],
       Signal: [`Counts swaps ≥ ${X.usd(this.minUsd)} (plain transfers are ignored) over a rolling ${r.windowMin}-min window, per asset`,
         `Net whale flow ≥ ${X.usd(this.signalUsd)} (${r.signalX}× the swap threshold)`, `At least ${r.minSwaps} swaps, and ≥ ${X.pct(r.minOneSided * 100, 0)} of the gross flow on one side`,
         `Checked every ${X.num(r.evalMs / 1000, 0)} s`],
@@ -64,7 +64,8 @@ class WhaleFollow extends Strategy {
         `${r.cooldownMin}-min cooldown per asset after an entry`],
       Exit: [`Take profit +${X.pct(r.tp * 100, 1)}`, `Stop loss −${X.pct(r.sl * 100, 1)}`, `Time stop after ${r.maxHoldMin} min`],
       Risk: X.deskRisk(this),
-      Data: [X.feesLine(), 'Chains without a key/RPC run on MOCK whale events; trades from MOCK signals go to the SIMULATED book, never the real one'] });
+      Data: [X.feesLine(), 'Chains without a key/RPC (or Solana with the inbox not configured) run on MOCK whale events; trades from MOCK signals go to the SIMULATED book, never the real one',
+        'Solana deliveries older than 10 min (inbox backlog after downtime) are shown but never trigger entries; offline > 24 h is flagged as a data gap'] });
   }
 }
 module.exports = { WhaleFollow };

@@ -1,12 +1,14 @@
 'use strict';
 // Large-transaction monitors.
-//  - Solana: Helius webhook push (default when configured) or an opt-in, budget-guarded Parsed Events slow poll. See SolanaWhaleFeed.
+//  - Solana: Helius enhanced webhook → HAWSE inbox (Cloudflare Worker) → polled by the desk. See SolanaWhaleFeed.
 //  - EVM (ethereum/base/arbitrum): JSON-RPC eth_getLogs for big USDC/USDT/WETH transfers plus
 //    directional Uniswap v3 WETH/USDC swaps. RPC from env (explicit URL > Alchemy > Infura > public fallback).
 //  - Anything unconfigured runs a clearly labeled MOCK generator (every event tagged mock:true).
 const { fetchJson, redact } = require('../lib/net');
 const { WsClient } = require('../lib/ws');
 const H = require('./helius');
+const { InboxPoller } = require('./inbox');
+const { PROPOSED_WATCH, estimateCredits } = require('./helius-watch');
 
 // PUBLIC IDENTIFIERS, NOT SECRETS: token mints, public pool addresses, and the keccak256 event topics of
 // ERC-20 Transfer and Uniswap-v3 Swap. Scanners flag the 64-hex topics; see .gitleaks.toml.
@@ -82,98 +84,91 @@ function decodeV3Swap(dataHex, stableIsToken0) {
 
 /**
  * Solana large-transaction feed. Modes (HELIUS_MODE):
- *   webhook (default when HELIUS_WEBHOOK_AUTH is set): receive-only. Helius pushes enhanced transactions to POST /hooks/helius
- *            (1 credit/event). Nothing is polled. Needs a publicly reachable HTTPS URL (see README).
- *   poll     opt-in slow fallback: Parsed Events (10 credits/request) every HELIUS_POLL_SEC (>= 300 s) per watched address,
- *            hard-stopped by the monthly HELIUS_CREDIT_BUDGET guard.
- *   mock     (default otherwise): labelled synthetic events (mock:true). No Helius calls at all.
- *   off      no events.
- * The old loop (Enhanced Tx REST every 15 s + logsSubscribe-triggered extra polls, ~1.15M credits/day) was removed.
+ *   inbox (default when WHALES_ENABLED=true): Helius pushes enhanced transactions (1 credit/event) to the HAWSE webhook inbox
+ *          (Cloudflare Worker); the desk polls GET /events every INBOX_POLL_SEC (15..60 s, no Helius credits). Needs
+ *          HAWSE_WEBHOOK_URL + HAWSE_READ_TOKEN; without them the feed falls back to labelled MOCK ("inbox not configured").
+ *   mock   (default): labelled synthetic events (mock:true). No Helius calls at all.
+ *   off    no events.
+ * Removed: the local /hooks/helius receiver (needed a tunnel), the Parsed Events poll, and the old Enhanced Tx REST loop.
  */
 class SolanaWhaleFeed {
-  constructor({ health, apiKey, watch, minUsd, priceFn, mode, enabled = true, webhookAuth = '', pollSec = 900, pollLimit = 25, budget = null, pauseRemote = null, fetchImpl, now = () => Date.now() }) {
-    this.health = health; this.apiKey = apiKey; this.minUsd = minUsd; this.priceFn = priceFn; this.now = now; this.fetchImpl = fetchImpl; this.enabled = enabled; this.pauseRemote = pauseRemote;
-    this.watchConfigured = !!(watch && watch.length); // live modes watch ONLY configured wallets; the pool list is just for MOCK labels
-    this.watch = this.watchConfigured ? watch.map((a) => ({ addr: a, label: a.slice(0, 4) + '…' + a.slice(-4) })) : DEFAULT_SOL_WATCH;
-    this.watchSet = new Set(this.watchConfigured ? watch : []); this.autoPaused = null; this.dropped = 0;
-    this.webhookAuth = webhookAuth; this.pollSec = Math.max(H.MIN_POLL_SEC, +pollSec || 900); this.pollLimit = Math.min(100, Math.max(1, +pollLimit || 25));
-    this.budget = budget; // CreditBudget (server/lib/credits.js); shared by poll + webhook accounting
-    this.mode = mode || (webhookAuth ? 'webhook' : 'mock');
-    if (this.mode === 'poll' && (!apiKey || !this.watchConfigured)) this.mode = 'mock'; // never poll without a key or the default busy pools
-    this.events = []; this.seen = new Set(); this.scanned = 0; this.webhook = { deliveries: 0, events: 0, dupes: 0, rejected: 0, firstAt: null, lastAt: null }; this.pollStats = { calls: 0, refused: 0, lastAt: null };
-    this.listeners = [];
+  constructor({ health, apiKey = '', watch, minUsd, priceFn, mode, enabled = true, inbox = {}, budget = null, pauseRemote = null, fetchImpl, now = () => Date.now(), maxSignalAgeSec = 600 }) {
+    this.health = health; this.apiKey = apiKey; this.minUsd = minUsd; this.priceFn = priceFn; this.now = now; this.enabled = enabled; this.pauseRemote = pauseRemote;
+    this.budget = budget; this.maxSignalAgeMs = maxSignalAgeSec * 1000; this.autoPaused = null; this.dropped = 0;
+    this.requested = mode || (enabled ? 'inbox' : 'mock');
+    // Watched-only filter: configured wallets, else the verified proposed list (the webhook's own account list).
+    const accounts = watch && watch.length ? watch.map((a) => PROPOSED_WATCH.find((w) => w.addr === a) || { addr: a, label: a.slice(0, 4) + '…' + a.slice(-4) }) : PROPOSED_WATCH;
+    this.watchConfigured = !!(watch && watch.length);
+    this.inbox = new InboxPoller({ ...inbox, health: this.requested === 'inbox' ? health : null, now, ...(fetchImpl ? { fetchImpl } : {}), onEvent: (e) => this.ingestInboxEvent(e) });
+    this.inboxConfigured = this.inbox.configured;
+    this.mode = this.requested === 'inbox' && !this.inboxConfigured ? 'mock' : this.requested;
+    this.watch = this.mode === 'inbox' ? accounts.map((w) => ({ addr: w.addr, label: w.label })) : DEFAULT_SOL_WATCH; // pools are MOCK labels only
+    this.watchSet = new Set(this.mode === 'inbox' ? this.watch.map((w) => w.addr) : []);
+    this.events = []; this.seen = new Set(); this.scanned = 0; this.listeners = [];
+    this.delivery = { batches: 0, events: 0, test: 0, firstAt: null, lastAt: null, lastLagMs: null };
     const notes = {
-      webhook: `webhook receiver (POST /hooks/helius) · 1 credit/event · ${this.watch.length} accounts · awaiting deliveries`,
-      poll: `OPT-IN slow poll: Parsed Events every ${this.pollSec}s × ${this.watch.length} accounts (10 credits/call, budget-guarded)`,
-      mock: enabled ? `MOCK: no Helius calls. Configure the webhook (HELIUS_WEBHOOK_AUTH) or HELIUS_MODE=poll with HELIUS_WATCH_ADDRESSES` : 'DEMO (MOCK): whale feed is OFF by default; set WHALES_ENABLED=true to use Helius. No Helius calls are made',
+      inbox: `HAWSE inbox (Helius webhook → Cloudflare Worker) · ${this.watch.length} accounts · 1 credit per delivered event · awaiting deliveries`,
+      mock: !enabled ? 'DEMO (MOCK): whale feed is OFF by default; set WHALES_ENABLED=true to use the Helius inbox. No Helius calls are made'
+        : this.requested === 'inbox' ? 'MOCK: inbox not configured (HAWSE_WEBHOOK_URL / HAWSE_READ_TOKEN missing). Events are synthetic' : 'MOCK (HELIUS_MODE=mock): no Helius calls',
       off: 'disabled (HELIUS_MODE=off)',
     };
-    health.register('whale.solana', { label: 'Solana large tx (Helius)', group: 'whales', kind: this.mode === 'mock' ? 'mock' : 'live', transport: this.mode === 'webhook' ? 'webhook' : 'rest',
-      staleMs: this.mode === 'poll' ? this.pollSec * 2500 : 6 * 3.6e6, note: notes[this.mode] });
+    health.register('whale.solana', { label: 'Solana large tx (Helius via HAWSE inbox)', group: 'whales', kind: this.mode === 'mock' ? 'mock' : 'live', transport: this.mode === 'inbox' ? 'webhook→inbox poll' : 'rest',
+      staleMs: 6 * 3.6e6, note: notes[this.mode] });
   }
   /** Subscribe to every accepted real transaction (used by wallet-follow). */
   onTx(fn) { this.listeners.push(fn); }
   start() {
     if (this.mode === 'mock') { this.mockTick(); this.timer = setInterval(() => this.mockTick(), 15000); }
-    else if (this.mode === 'poll') { this.poll(); this.timer = setInterval(() => this.poll(), this.pollSec * 1000); }
+    else if (this.mode === 'inbox') this.inbox.start();
   }
-  stop() { clearInterval(this.timer); }
-  /** Webhook ingress: already authenticated + parsed by server/feeds/helius.js handleWebhook. Each delivered tx = 1 credit. */
-  ingestWebhook(txs) {
-    const n = txs.length; const t = this.now(); this.webhook.deliveries++; this.webhook.events += n; this.webhook.firstAt = this.webhook.firstAt || t; this.webhook.lastAt = t;
-    if (this.budget) this.budget.record(n * H.CREDITS.webhookEvent, 'webhook-events');
-    if (this.checkPause()) { this.dropped += n; return 0; } // billed by Helius, but we stop acting on them while paused
-    let accepted = 0; for (const tx of txs) { if (!this.involvesWatched(tx)) { this.dropped++; continue; } if (this.ingestTx(tx, 'webhook')) accepted++; else this.webhook.dupes++; }
+  stop() { clearInterval(this.timer); this.inbox.stop(); }
+  /** One inbox event = one Helius delivery (an array of enhanced txs). Helius bills 1 credit per tx in it, dupes included. */
+  ingestInboxEvent({ receivedAt, delivered, txs }) {
+    const t = this.now(); const isTest = (tx) => /^HAWSE-TEST/i.test(tx.signature);
+    const test = txs.filter(isTest).length, real = txs.filter((x) => !isTest(x));
+    const billed = Math.max(0, delivered - test); // our own fake verification POSTs never went through Helius
+    this.delivery.batches++; this.delivery.events += billed; this.delivery.test += test; this.delivery.firstAt = this.delivery.firstAt || receivedAt; this.delivery.lastAt = receivedAt;
+    if (this.budget && billed) this.budget.record(billed * H.CREDITS.webhookEvent, 'webhook-events');
+    for (const tx of txs.filter(isTest)) this.ingestTx(tx, 'inbox', { test: true, receivedAt });
+    if (this.checkPause()) { this.dropped += real.length; return 0; } // billed by Helius, but we stop acting on them while paused
+    let accepted = 0;
+    for (const tx of real) { if (!this.involvesWatched(tx)) { this.dropped++; continue; } if (this.ingestTx(tx, 'inbox', { receivedAt })) accepted++; }
     const maxTs = txs.reduce((m, x) => Math.max(m, +x.timestamp || 0), 0);
-    if (this.mode === 'webhook') this.health.ok('whale.solana', maxTs ? Math.max(0, t - maxTs * 1000) : 0); // latency = block time → receipt
+    if (maxTs) this.delivery.lastLagMs = Math.max(0, receivedAt - maxTs * 1000); // block time → inbox receipt
+    if (this.mode === 'inbox') this.health.ok('whale.solana', maxTs ? Math.max(0, t - maxTs * 1000) : 0); // latency = block time → desk
     return accepted;
   }
-  /** Only configured whale wallets count (a mis-scoped webhook must not flood the desk). */
+  /** Only watched accounts count (a mis-scoped webhook must not flood the desk). */
   involvesWatched(tx) {
     if (!this.watchSet.size) return false;
     const ws = this.watchSet, hit = (a) => a && ws.has(a);
     return hit(tx.feePayer) || (tx.accountData || []).some((a) => hit(a.account)) || (tx.tokenTransfers || []).some((t) => hit(t.fromUserAccount) || hit(t.toUserAccount)) || (tx.nativeTransfers || []).some((t) => hit(t.fromUserAccount) || hit(t.toUserAccount));
   }
-  /** Auto-pause near the hard cap. Webhook mode also asks Helius to deactivate the webhook (once per UTC day) when configured. */
+  /** Auto-pause near the hard cap; also asks Helius to deactivate the webhook (once per UTC day) when configured. */
   checkPause() {
-    if (!this.budget || !this.budget.paused()) { if (this.autoPaused && this.autoPaused.day !== this.budget.today()) this.autoPaused = null; return false; }
+    if (!this.budget || !this.budget.paused()) { if (this.autoPaused && this.budget && this.autoPaused.day !== this.budget.today()) this.autoPaused = null; return false; }
     const day = this.budget.today(); if (this.autoPaused && this.autoPaused.day === day) return true;
     const v = this.budget.view(); this.autoPaused = { day, at: this.now(), usedToday: v.usedToday, dailyBudget: v.dailyBudget, remote: null };
     const msg = `AUTO-PAUSED at ${v.pauseAtPct}% of the credit cap (${v.usedToday}/${v.dailyBudget} today, ${v.used}/${v.budget} this month)`;
     this.health.setKind('whale.solana', 'live', msg); this.health.fail('whale.solana', msg);
-    if (this.mode === 'webhook' && this.pauseRemote) {
+    if (this.mode === 'inbox' && this.pauseRemote) {
       this.autoPaused.remote = 'pending'; this.budget.record(H.CREDITS.webhookManage, 'webhook-manage');
       Promise.resolve(this.pauseRemote()).then((r) => { this.autoPaused.remote = r && r.ok ? 'webhook deactivated (resume with scripts/helius-webhook.js resume --apply)' : 'remote pause failed: ' + ((r && r.error) || '?'); });
-    } else if (this.mode === 'webhook') this.autoPaused.remote = 'remote pause not configured (set HELIUS_API_KEY + HELIUS_WEBHOOK_URL): Helius keeps billing deliveries, pause it manually';
+    } else if (this.mode === 'inbox') this.autoPaused.remote = 'remote pause not configured (set HELIUS_API_KEY + HAWSE_WEBHOOK_URL): Helius keeps billing deliveries, pause it manually';
     return true;
   }
-  /** Shared path for webhook + poll. Dedupes by signature (Helius may deliver duplicates). Returns false if skipped. */
-  ingestTx(tx, origin) {
+  /** Dedupes by signature (the poller already dedupes; this guards restarts). Old (backfilled) txs never reach strategies. */
+  ingestTx(tx, origin, { test = false, receivedAt = null } = {}) {
     if (!tx || !tx.signature || this.seen.has(tx.signature) || tx.transactionError) return false;
     this.seen.add(tx.signature); this.scanned++; if (this.seen.size > 20000) this.seen = new Set([...this.seen].slice(-5000));
     const c = classifySolanaTx(tx, this.priceFn('SOL'));
-    const w = this.watch.find((x) => x.addr === tx.feePayer || (tx.accountData || []).some((a) => a.account === x.addr));
-    for (const fn of this.listeners) { try { fn(tx, c, origin); } catch { /* listener bugs must not break ingest */ } }
-    if (c.usd >= this.minUsd * 0.1) this.push({ t: (+tx.timestamp || this.now() / 1000) * 1000, chain: 'solana', asset: 'SOL', dir: c.dir, usd: c.usd, whale: c.usd >= this.minUsd,
-      desc: `${c.dir === 'transfer' ? 'transfer' : c.dir + ' SOL'} via ${tx.source || '?'}${w ? ' @ ' + w.label : ''} (${origin})`, url: 'https://solscan.io/tx/' + tx.signature, mock: false });
+    const blockMs = (+tx.timestamp || this.now() / 1000) * 1000, backfill = this.now() - blockMs > this.maxSignalAgeMs;
+    if (test) { this.push({ t: blockMs, chain: 'solana', asset: 'SOL', dir: c.dir, usd: c.usd, whale: false, desc: 'TEST payload (verification POST, not from Helius)', mock: true, test: true }); return true; }
+    const w = this.watch.find((x) => x.addr === tx.feePayer || (tx.accountData || []).some((a) => a.account === x.addr) || (tx.nativeTransfers || []).concat(tx.tokenTransfers || []).some((t) => t.fromUserAccount === x.addr || t.toUserAccount === x.addr));
+    if (!backfill) for (const fn of this.listeners) { try { fn(tx, c, origin); } catch { /* listener bugs must not break ingest */ } }
+    if (c.usd >= this.minUsd * 0.1) this.push({ t: blockMs, chain: 'solana', asset: 'SOL', dir: c.dir, usd: c.usd, whale: c.usd >= this.minUsd,
+      desc: `${c.dir === 'transfer' ? 'transfer' : c.dir + ' SOL'} via ${tx.source || '?'}${w ? ' @ ' + w.label : ''} (${origin}${backfill ? ', backfill' : ''})`, url: 'https://solscan.io/tx/' + tx.signature, mock: false });
     return true;
-  }
-  async poll() {
-    if (this.busy) return; this.busy = true;
-    try {
-      for (const w of this.watch) {
-        if (this.budget && this.checkPause()) { this.pollStats.refused++; break; }
-        if (!this.budget || !this.budget.trySpend(H.CREDITS.parsedHistory, 'parsed-history')) {
-          this.pollStats.refused++; this.health.setKind('whale.solana', 'live', `credit budget reached (${this.budget ? this.budget.view().used : '?'} used): poll paused until next month or raise HELIUS_CREDIT_BUDGET`);
-          this.health.fail('whale.solana', 'credit budget guard: poll refused'); break;
-        }
-        try {
-          const t0 = Date.now(); const txs = await H.fetchParsedHistory({ apiKey: this.apiKey, address: w.addr, limit: this.pollLimit, ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}) });
-          this.pollStats.calls++; this.pollStats.lastAt = this.now(); this.health.ok('whale.solana', Date.now() - t0);
-          for (const tx of txs.reverse()) this.ingestTx(tx, 'poll');
-        } catch (e) { this.health.fail('whale.solana', redact(String(e.message || e)).split(this.apiKey || '\u0000').join('***')); }
-      }
-    } finally { this.busy = false; }
   }
   mockTick() {
     this.health.ok('whale.solana', 0);
@@ -182,20 +177,22 @@ class SolanaWhaleFeed {
       this.push({ t: Date.now(), chain: 'solana', asset: 'SOL', dir, usd, whale: usd >= this.minUsd, desc: `MOCK ${dir} ${(usd / px).toFixed(0)} SOL`, mock: true }); }
   }
   push(ev) { this.events.unshift(ev); if (this.events.length > 300) this.events.pop(); }
-  /** Client-safe credit view for the Data Sources panel (no secrets). */
+  /** Client-safe credit view for the Data Sources panel (no secrets, no URLs). */
   credits() {
-    const n = this.watch.length, b = this.budget ? this.budget.view() : null;
-    const est = this.mode === 'poll' ? H.estimates.pollPerMonth(n, this.pollSec) : this.mode === 'webhook' ? H.estimates.webhookPerMonth(this.webhook.events, this.webhook.firstAt, this.now()) : 0;
-    return { provider: 'helius', mode: this.mode, unit: 'credits', planMonthly: H.CREDITS.freePlanMonthly, estMonthly: est,
-      estBasis: this.mode === 'poll' ? `${n} addr × 10 cr × every ${this.pollSec}s × 30 d` : this.mode === 'webhook' ? (est == null ? '1 cr/event; estimate after 1 h of deliveries' : `observed ${this.webhook.events} events → ×30 d`) : 'no Helius calls in this mode',
-      enabled: this.enabled, watchConfigured: this.watchConfigured, watching: this.watchConfigured ? n : 0, dropped: this.dropped, autoPaused: this.autoPaused,
+    const n = this.watch.length, b = this.budget ? this.budget.view() : null, live = this.mode === 'inbox';
+    const observed = live ? H.estimates.webhookPerMonth(this.delivery.events, this.delivery.firstAt, this.now()) : 0;
+    const planned = live ? estimateCredits(this.watchConfigured ? this.watch.map((w) => PROPOSED_WATCH.find((p) => p.addr === w.addr) || { ...w, txPerDay: null }) : PROPOSED_WATCH) : null;
+    const est = live ? (observed != null ? observed : planned.perMonth) : 0;
+    return { provider: 'helius', mode: this.mode, requested: this.requested, unit: 'credits', planMonthly: H.CREDITS.freePlanMonthly, estMonthly: est,
+      estBasis: !live ? 'no Helius calls in this mode' : observed != null ? `observed ${this.delivery.events} delivered events → ×30 d` : planned.perMonth != null ? `planned: ${planned.perDay}/day from public-RPC tx counts (1 cr/event)` : '1 cr/event; estimate after 1 h of deliveries',
+      enabled: this.enabled, watchConfigured: this.watchConfigured, watching: live ? n : 0, dropped: this.dropped, autoPaused: this.autoPaused,
       dailyBudget: b && b.dailyBudget, usedToday: b && b.usedToday, pauseAtPct: b && b.pauseAtPct, paused: !!(b && b.paused),
       estDaily: est == null ? null : Math.round(est / 30),
       legacyPerDay: H.estimates.legacyPerDay(2, 15), budget: b && b.budget, used: b && b.used, remaining: b && b.remaining, refused: b && b.refused, overBudget: !!(b && b.overBudget), month: b && b.month,
-      webhook: { ...this.webhook, receiverEnabled: !!this.webhookAuth }, poll: this.mode === 'poll' ? { ...this.pollStats, everySec: this.pollSec } : null };
+      delivery: { ...this.delivery }, inbox: this.requested === 'inbox' ? this.inbox.view() : null };
   }
   publicInfo() { return { credits: this.credits() }; }
-  snapshot() { return { mode: this.mode, scanned: this.scanned, events: this.events.length, transport: this.mode === 'webhook' ? 'webhook push' : this.mode === 'poll' ? `parsed-events poll /${this.pollSec}s` : this.mode, credits: this.credits() }; }
+  snapshot() { return { mode: this.mode, scanned: this.scanned, events: this.events.length, transport: this.mode === 'inbox' ? `inbox poll /${this.inbox.pollMs / 1000}s` : this.mode, credits: this.credits() }; }
 }
 
 class EvmWhaleFeed {

@@ -14,12 +14,14 @@ test('registry entries are well formed (id, signup URL, unlocks)', () => {
 });
 
 test('describe() exposes env var names + set flag, never values', () => {
-  const env = { HELIUS_API_KEY: 'super-secret-helius-value', KAIKO_API_KEY: 'kaiko-secret-xyz' };
+  const env = { HELIUS_API_KEY: 'super-secret-helius-value', HAWSE_READ_TOKEN: 'inbox-read-secret-abc', HAWSE_WEBHOOK_URL: 'https://inbox-secret-host.example.dev', KAIKO_API_KEY: 'kaiko-secret-xyz' };
   const out = ENTRIES.map((e) => describe(e, env, [], null));
   const json = JSON.stringify(out);
-  assert.ok(!json.includes('super-secret-helius-value') && !json.includes('kaiko-secret-xyz'));
+  for (const v of ['super-secret-helius-value', 'kaiko-secret-xyz', 'inbox-read-secret-abc', 'inbox-secret-host']) assert.ok(!json.includes(v), v);
   const hel = out.find((p) => p.id === 'helius');
-  assert.deepStrictEqual(hel.env.find((v) => v.name === 'HELIUS_API_KEY'), { name: 'HELIUS_API_KEY', required: true, set: true });
+  assert.deepStrictEqual(hel.env.find((v) => v.name === 'HELIUS_API_KEY'), { name: 'HELIUS_API_KEY', required: false, set: true }, 'only the admin script + auto-pause need the key; the desk reads the inbox');
+  assert.deepStrictEqual(hel.env.find((v) => v.name === 'HAWSE_READ_TOKEN'), { name: 'HAWSE_READ_TOKEN', required: true, set: true });
+  assert.strictEqual(describe(ENTRIES.find((e) => e.id === 'helius'), { HELIUS_API_KEY: 'k' }, [], null).status, 'missing key', 'inbox URL/token missing');
   assert.strictEqual(out.find((p) => p.id === 'kaiko').status, 'not implemented');
   assert.strictEqual(out.find((p) => p.id === 'amberdata').status, 'missing key');
 });

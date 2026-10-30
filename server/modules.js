@@ -26,12 +26,11 @@ module.exports = {
     const c = engine.cfg; const priceFn = (s) => engine.price(s);
     const h = c.helius;
     const budget = engine.heliusBudget = new CreditBudget({ provider: 'helius', budget: h.creditBudget, dailyBudget: h.dailyBudget, pauseAtPct: h.pauseAtPct, planCredits: HELIUS.CREDITS.freePlanMonthly, file: c.creditsFile });
-    // Auto-pause the remote webhook near the cap (webhook events cannot be refused locally; Helius bills each delivery).
-    const pauseRemote = h.autoPauseWebhook && h.apiKey && h.webhookUrl ? () => HELIUS.pauseWebhook({ apiKey: h.apiKey, url: h.webhookUrl }) : null;
+    // Auto-pause the remote webhook near the cap (deliveries cannot be refused locally; Helius bills each one).
+    const pauseRemote = h.autoPauseWebhook && h.apiKey && h.webhookUrl ? () => HELIUS.pauseWebhook({ apiKey: h.apiKey, url: h.webhookUrl, ...(h.webhooksApi ? { api: h.webhooksApi } : {}) }) : null;
+    // Live whale data arrives ONLY via the HAWSE inbox poller (server/feeds/inbox.js); there is no local webhook receiver.
     const sol = engine.addFeed('whale.solana', new SolanaWhaleFeed({ health: engine.health, apiKey: h.apiKey, watch: h.watch, minUsd: h.minUsd, priceFn,
-      mode: h.mode, enabled: h.enabled, webhookAuth: h.webhookAuth, pollSec: h.pollSec, pollLimit: h.pollLimit, budget, pauseRemote }));
-    // Webhook ingress (server.js dispatches /hooks/*). Auth + parse are pure (feeds/helius.js); processing happens after the 200 ACK.
-    (engine.hooks = engine.hooks || {})['/hooks/helius'] = { maxBody: HELIUS.MAX_BODY, handle: (req) => HELIUS.handleWebhook(req, { secret: h.enabled ? h.webhookAuth : '' }), process: (r) => sol.ingestWebhook(r.txs) };
+      mode: h.mode, enabled: h.enabled, inbox: h.inbox, budget, pauseRemote, maxSignalAgeSec: h.maxSignalAgeSec }));
     const feeds = [sol];
     for (const chain of c.evm.chains.filter((x) => EVM[x])) feeds.push(engine.addFeed('whale.' + chain, new EvmWhaleFeed({ health: engine.health, chain, evmCfg: c.evm, minUsd: c.helius.minUsd, priceFn })));
     engine.addStrategy(new WhaleFollow(engine, feeds));

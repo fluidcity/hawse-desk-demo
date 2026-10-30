@@ -25,10 +25,12 @@ module.exports = [
     unlocks: ['Funding arb', '1% mode candles', 'Perp momentum', 'Perp basis', 'Strategy backtests'], fallback: 'REST polling' },
   { id: 'coinbase', name: 'Coinbase Exchange', category: 'exchange', keyless: true, health: ['candles.coinbase'], signup: 'https://www.coinbase.com', unlocks: ['1% mode candles (fallback)'] },
   // ---- Solana ----
-  { id: 'helius', name: 'Helius (Solana webhooks / Parsed Events)', category: 'solana', anyOf: true, feed: 'whale.solana',
-    env: [{ name: 'WHALES_ENABLED' }, { name: 'HELIUS_WEBHOOK_AUTH', required: true }, { name: 'HELIUS_API_KEY', required: true }, { name: 'HELIUS_MODE' }, { name: 'HELIUS_WEBHOOK_URL' }, { name: 'HELIUS_WATCH_ADDRESSES' }, { name: 'HELIUS_CREDIT_BUDGET' }, { name: 'HELIUS_DAILY_CREDIT_BUDGET' }, { name: 'HELIUS_PAUSE_AT_PCT' }, { name: 'HELIUS_AUTO_PAUSE_WEBHOOK' }, { name: 'HELIUS_POLL_SEC' }],
-    health: ['whale.solana'], signup: 'https://www.helius.dev', unlocks: ['Whale monitor (Solana, live via webhook push, 1 credit/event)', 'Opt-in slow poll (Parsed Events, 10 credits/call, budget-guarded)'],
-    fallback: 'DEMO/MOCK Solana whale feed (labelled). OFF unless WHALES_ENABLED=true; hard daily credit cap with auto-pause' },
+  { id: 'helius', name: 'Helius (Solana webhook → HAWSE inbox)', category: 'solana', feed: 'whale.solana',
+    env: [{ name: 'WHALES_ENABLED' }, { name: 'HAWSE_WEBHOOK_URL', required: true }, { name: 'HAWSE_READ_TOKEN', required: true }, { name: 'HELIUS_API_KEY' }, { name: 'HELIUS_WEBHOOK_AUTH' },
+      { name: 'HELIUS_MODE' }, { name: 'HELIUS_WATCH_ADDRESSES' }, { name: 'HELIUS_WEBHOOK_ADDRESSES' }, { name: 'INBOX_POLL_SEC' }, { name: 'HELIUS_CREDIT_BUDGET' }, { name: 'HELIUS_DAILY_CREDIT_BUDGET' }, { name: 'HELIUS_PAUSE_AT_PCT' }, { name: 'HELIUS_AUTO_PAUSE_WEBHOOK' }],
+    health: ['whale.solana', 'whale.inbox'], signup: 'https://www.helius.dev',
+    unlocks: ['Whale monitor (Solana): Helius enhanced webhook (1 credit/event) → Cloudflare inbox, polled every 15–60 s (no credits)'],
+    fallback: 'DEMO/MOCK Solana whale feed (labelled). OFF unless WHALES_ENABLED=true; "inbox not configured" without HAWSE_WEBHOOK_URL + HAWSE_READ_TOKEN; hard daily credit cap with auto-pause' },
   { id: 'jupiter', name: 'Jupiter quotes', category: 'solana', keyless: true, env: [{ name: 'JUPITER_API_BASE' }, { name: 'JUPITER_API_KEY', optional: true }], health: ['dex.jupiter'], signup: 'https://jup.ag',
     unlocks: ['Gap scanner (Solana per-DEX + triangular)'], fallback: 'DexScreener indicative mids (not executable)' },
   // ---- EVM RPC ----

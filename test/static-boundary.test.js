@@ -70,6 +70,7 @@ const SENTINELS = {
   TRADOVATE_USERNAME: 'sentinel-tvuser-a81c', TRADOVATE_PASSWORD: 'sentinel-tvpass-2e6f', TRADOVATE_SECRET: 'sentinel-tvsec-c0de',
   JUPITER_API_KEY: 'sentinel-jup-3b77', HELIUS_WEBHOOK_AUTH: 'sentinel-hook-8a8a', ALCHEMY_API_KEY: 'sentinel-alch-4242',
   INFURA_API_KEY: 'sentinel-inf-1313', PYTH_API_KEY: 'sentinel-pyth-6060', DUNE_API_KEY: 'sentinel-dune-0101',
+  HAWSE_READ_TOKEN: 'sentinel-inboxread-77aa', HAWSE_WEBHOOK_URL: 'https://sentinel-inbox-5e5e.example.workers.dev',
 };
 function raw(port, p, method = 'GET') {
   return new Promise((resolve, reject) => {
@@ -84,16 +85,14 @@ test('HTTP: escapes are refused, assets served, no GET endpoint returns env valu
   const config = require('../server/config');
   const { Engine } = require('../server/engine');
   const modules = require('../server/modules');
-  const { createServer, createHooksServer } = require('../server/server');
-  const env = Object.assign({}, SENTINELS, { CREDITS_FILE: '', ODDS_CACHE_FILE: '', BET_RULES_FILE: '', LAB_FILE: '' });
+  const { createServer } = require('../server/server');
+  const env = Object.assign({}, SENTINELS, { CREDITS_FILE: '', ODDS_CACHE_FILE: '', BET_RULES_FILE: '', LAB_FILE: '', INBOX_STATE_FILE: '', WHALES_ENABLED: 'true' });
   const cfg = config.build(env);
   if (cfg.lab) cfg.lab.file = '';
   const engine = new Engine(cfg, { modules }); // not started: no network
   const srv = createServer(engine, config.publicFlags(cfg));
-  const hooks = createHooksServer(engine);
   await new Promise((r) => srv.listen(0, '127.0.0.1', r));
-  await new Promise((r) => hooks.listen(0, '127.0.0.1', r));
-  const port = srv.address().port, hport = hooks.address().port;
+  const port = srv.address().port;
   try {
     assert.strictEqual((await raw(port, '/')).status, 200);
     assert.strictEqual((await raw(port, '/app.js')).status, 200);
@@ -112,16 +111,18 @@ test('HTTP: escapes are refused, assets served, no GET endpoint returns env valu
     for (const g of gets) {
       const r = await raw(port, g);
       for (const [k, v] of Object.entries(SENTINELS)) assert.ok(!r.body.includes(v), g + ' leaked ' + k);
+      assert.ok(!r.body.includes('sentinel-inbox-5e5e'), g + ' leaked the inbox host');
     }
-    for (const [base, p] of [[port, '/hooks/helius'], [hport, '/hooks/helius'], [hport, '/api/state'], [hport, '/']]) {
+    // The local webhook receiver is gone (live whale data arrives via the HAWSE inbox poller): nothing under /hooks/ answers.
+    for (const [base, p] of [[port, '/hooks/helius'], [port, '/helius'], [port, '/events']]) {
       for (const m of ['GET', 'POST']) {
         const r = await raw(base, p, m);
-        assert.notStrictEqual(r.status, 200, m + ' ' + p + ' must not succeed without auth');
+        assert.ok(r.status === 404 || r.status === 405 || (m === 'GET' && r.status === 200 && r.body.startsWith('<!DOCTYPE html>')), m + ' ' + p + ' -> ' + r.status);
         for (const [k, v] of Object.entries(SENTINELS)) assert.ok(!r.body.includes(v), p + ' leaked ' + k);
       }
     }
   } finally {
     engine.stop && engine.stop();
-    await new Promise((r) => srv.close(r)); await new Promise((r) => hooks.close(r));
+    await new Promise((r) => srv.close(r));
   }
 });

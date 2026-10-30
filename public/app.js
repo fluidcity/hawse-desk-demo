@@ -80,7 +80,7 @@ window.HAWSE.explain = (() => {
 
   function render() {
     renderHero(); renderTicker(); renderStrats(); renderRisk(); renderFunding(); renderAttr(); renderHealth(); renderTape();
-    renderWhales(); renderGaps(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
+    renderWhales(); renderFollow(); renderGaps(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
   }
 
   // ---------- hero + animated curve ----------
@@ -337,6 +337,25 @@ window.HAWSE.explain = (() => {
     const v = s.view; $('whaleMode').innerHTML = Object.entries(v.modes || {}).map(([k, m]) => `${esc(k)} ${badge(m)}`).join(' ');
     $('whaleNet').innerHTML = (v.net || []).map((n) => `<div class="meter"><div class="label">${esc(n.chain)} · ${esc(n.window)}</div><div class="v mono ${n.netUsd >= 0 ? 'pos' : 'neg'}">${n.netUsd >= 0 ? '+' : '-'}$${compact(Math.abs(n.netUsd))}</div><div class="dim sm mono">${n.count} tx · ${n.mock ? 'MOCK' : 'live'}</div></div>`).join('');
     $('whales').innerHTML = (v.flows || []).slice(0, 40).map((f) => `<div class="row" style="grid-template-columns:58px 70px 1fr 80px"><span class="dim">${hhmmss(f.t)}</span><span>${esc(f.chain)}${f.mock ? ' <span class="badge mock">mock</span>' : ''}</span><span>${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener" style="color:inherit">${esc(f.desc)}</a>` : esc(f.desc)}</span><span class="${f.dir === 'buy' ? 'pos' : f.dir === 'sell' ? 'neg' : ''}">$${compact(f.usd)}</span></div>`).join('') || '<div class="dim mono sm">waiting for large transactions…</div>';
+  }
+  function renderFollow() {
+    const s = S.strategies.find((x) => x.id === 'wfollow'); $('followCard').hidden = !s; if (!s) return;
+    const v = s.view || {}, hl = v.hl || {}, r = v.rules || {}, sc = v.score || {};
+    const sw = (a) => (a ? esc(a.slice(0, 6) + '…' + a.slice(-4)) : '?');
+    $('followMode').innerHTML = `HL ${badge(hl.mode === 'live' ? 'live' : 'down')} ${(hl.wallets || []).length} wallet(s) · SOL ${badge(v.sol && v.sol.mode === 'mock' ? 'mock' : v.sol && v.sol.wallets ? 'live' : 'down')}`;
+    const fp = (x, d = 2) => (x == null ? '—' : (x >= 0 ? '+' : '') + x.toFixed(d) + '%');
+    const G = 'grid-template-columns:58px 70px 86px 1fr 70px';
+    const pos = (s.positions || []).filter((p) => p.kind === 'follow');
+    $('followSig').innerHTML = `<div class="subh">Rules: ≥ $${compact(r.minUsdHl || 0)} HL / $${compact(r.minUsdSol || 0)} SOL · delay ${r.delaySecHl}s / ${r.delaySecSol}s · chase ≤ ${r.maxChasePct}% · TP ${(r.tp * 100).toFixed(1)}% · SL ${(r.sl * 100).toFixed(1)}% · ${r.maxHoldHHl}h / ${r.maxHoldHSol}h · <span class="badge live">REAL FILLS · PAPER</span></div>` +
+      (pos.length ? `<div class="subh">Open follows (controls are SIM)</div>` + pos.map((p) => `<div class="row" style="${G}"><span>${esc(p.symbol)}</span><span class="${p.side === 'long' ? 'pos' : 'neg'}">${esc(p.side)}</span><span>${sw(p.wallet)}</span><span class="dim">${esc(p.chain)} · delay ${p.delaySec}s · chase ${(p.chasePct || 0).toFixed(2)}% · ${p.controlId ? p.controlId.filter(Boolean).length : 0} controls</span><span class="${(p.upnl || 0) >= 0 ? 'pos' : 'neg'}">${signed(p.upnl || 0)}</span></div>`).join('') : '') +
+      ((v.pending || []).length ? `<div class="dim sm mono">queued (latency delay): ${(v.pending || []).map((q) => `${esc(q.asset)} ${esc(q.side)} in ${q.dueInSec}s`).join(' · ')}</div>` : '') +
+      `<div class="subh">Wallet signals (public fills; history before add date ignored)</div><div class="row head" style="${G}"><span>time</span><span>asset</span><span>wallet</span><span>kind</span><span>size</span></div>` +
+      ((v.signals || []).slice(0, 12).map((x) => `<div class="row" style="${G}"><span class="dim">${hhmmss(x.t)}</span><span>${esc(x.asset)}</span><span>${sw(x.wallet)}</span><span class="${x.kind === 'reduce' ? 'neg' : 'pos'}">${esc(x.kind)} ${esc(x.side)}${x.frac != null ? ' ' + (x.frac * 100).toFixed(0) + '%' : ''}</span><span>$${compact(x.usd)}</span></div>`).join('') || `<div class="dim mono sm">${hl.mode === 'live' ? 'waiting for a tracked wallet to trade…' : 'no wallets configured: set FOLLOW_WALLETS_HL or run scripts/score-wallets.js'}</div>`);
+    const o = sc.overall, P = sc.plan || {}, W = 'grid-template-columns:1.2fr .5fr .8fr 1.2fr .6fr .8fr .8fr .9fr 1fr';
+    const line = (label, m) => `<div class="row" style="${W}"><span>${label}</span><span>${m.n}</span><span>${fp(m.mean)}</span><span>${m.ci ? fp(m.ci[0]) + ' … ' + fp(m.ci[1]) : '—'}</span><span>${m.hitPct == null ? '—' : m.hitPct.toFixed(0) + '%'}</span><span>${fp(m.meanRandom)}</span><span>${fp(m.meanHold)}</span><span>${fp(m.mean0)} / ${fp(m.mean60)}</span><span class="${m.verdict.status === 'pass' ? 'pos' : m.verdict.status === 'fail' ? 'neg' : 'dim'}">${esc(m.verdict.status)}<br><span class="dim sm">${esc(m.verdict.text)}</span></span></div>`;
+    $('followScore').innerHTML = o ? `<div class="subh">Scoreboard · net % per follow after 2× taker + slippage · pass after ${P.minSignals}: CI &gt; 0 and ≥ ${P.passEdgeVsRandomPct}%/trade over random</div>` +
+      `<div class="row head" style="${W}"><span>wallet</span><span>n</span><span>mean</span><span>95% CI</span><span>hit</span><span>random <span class="badge">SIM</span></span><span>hold <span class="badge">SIM</span></span><span>0s / 60s delay</span><span>verdict</span></div>` +
+      line('<b>all wallets</b>', o) + (sc.wallets || []).slice(0, 10).map((w) => line(`${sw(w.wallet)} <span class="dim sm">${esc(w.chain)}</span>`, w)).join('') : '';
   }
   function renderGaps() {
     const s = S.strategies.find((x) => x.id === 'gaps'); $('gapCard').hidden = !s; if (!s) return;

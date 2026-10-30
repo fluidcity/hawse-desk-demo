@@ -70,6 +70,17 @@ function build(env = process.env) {
       pollSec: Math.max(300, num(env.HELIUS_POLL_SEC, 900)), pollLimit: num(env.HELIUS_POLL_LIMIT, 25),
       creditBudget: num(env.HELIUS_CREDIT_BUDGET, 300000), // hard monthly cap for credits this app spends (free plan = 1,000,000/month)
     },
+    // Wallet-follow v2 (batch-1 H3). Hyperliquid userFills are public/free; Solana reuses the Helius whale feed (off by default).
+    follow: {
+      enabled: bool(env.FOLLOW_ENABLED, true),
+      walletsHl: list(env.FOLLOW_WALLETS_HL, []).filter((a) => /^0x[0-9a-fA-F]{40}$/.test(a)), walletsSol: list(env.FOLLOW_WALLETS_SOL, []),
+      watchlistFile: env.FOLLOW_WATCHLIST_FILE !== undefined ? env.FOLLOW_WATCHLIST_FILE : path.join(__dirname, '..', 'data', 'watchlist.json'),
+      scoreFile: env.FOLLOW_SCORE_FILE !== undefined ? (env.FOLLOW_SCORE_FILE || null) : path.join(__dirname, '..', 'data', 'follow', 'scoreboard.json'),
+      minUsdHl: num(env.FOLLOW_MIN_USD_HL, 50000), minUsdSol: num(env.FOLLOW_MIN_USD_SOL, 25000),
+      delaySecHl: num(env.FOLLOW_DELAY_SEC_HL, 20), delaySecSol: num(env.FOLLOW_DELAY_SEC_SOL, 10), maxChasePct: num(env.FOLLOW_MAX_CHASE_PCT, 0.5),
+      tp: num(env.FOLLOW_TP, 0.02), sl: num(env.FOLLOW_SL, 0.01), maxHoldHHl: num(env.FOLLOW_MAX_HOLD_H_HL, 6), maxHoldHSol: num(env.FOLLOW_MAX_HOLD_H_SOL, 2),
+      pollMs: Math.max(10000, num(env.FOLLOW_HL_POLL_MS, 30000)), controls: bool(env.FOLLOW_CONTROLS, true),
+    },
     hooks: { port: num(env.HOOKS_PORT, 0), host: env.HOOKS_HOST || '127.0.0.1' }, // optional hooks-only listener (expose THIS via a tunnel, not the desk)
     creditsFile: env.CREDITS_FILE !== undefined ? env.CREDITS_FILE : path.join(__dirname, '..', 'data', 'credits.json'),
     evm: {

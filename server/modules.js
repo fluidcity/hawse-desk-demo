@@ -4,6 +4,8 @@ const { SolanaWhaleFeed, EvmWhaleFeed, EVM } = require('./feeds/whales');
 const HELIUS = require('./feeds/helius');
 const { CreditBudget } = require('./lib/credits');
 const { WhaleFollow } = require('./strategies/whale-follow');
+const { WalletFollow, loadWatchlist } = require('./strategies/wallet-follow');
+const { HlFillsFeed } = require('./feeds/hl-fills');
 const { CandleFeed } = require('./feeds/candles');
 const { OnePct } = require('./strategies/one-pct');
 const { DexFeed } = require('./feeds/dex');
@@ -31,6 +33,13 @@ module.exports = {
     const feeds = [sol];
     for (const chain of c.evm.chains.filter((x) => EVM[x])) feeds.push(engine.addFeed('whale.' + chain, new EvmWhaleFeed({ health: engine.health, chain, evmCfg: c.evm, minUsd: c.helius.minUsd, priceFn })));
     engine.addStrategy(new WhaleFollow(engine, feeds));
+    // Wallet-follow v2 (H3): Hyperliquid fills (public) + the same Solana feed (no extra Helius calls).
+    const fc = c.follow;
+    if (fc && fc.enabled) {
+      const wallets = loadWatchlist(fc.watchlistFile, fc.walletsHl);
+      const hl = engine.addFeed('follow.hl', new HlFillsFeed({ health: engine.health, wallets, pollMs: fc.pollMs, minUsd: fc.minUsdHl }));
+      engine.addStrategy(new WalletFollow(engine, { hl, sol, cfg: fc }));
+    }
   },
   onepct(engine) {
     const feed = engine.addFeed('candles', new CandleFeed({ health: engine.health, symbols: engine.cfg.onepct.symbols }));

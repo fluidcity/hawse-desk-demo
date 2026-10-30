@@ -182,3 +182,6 @@ canvas.eq{width:100%;height:160px;display:block;border:1px solid var(--line);bor
 .fund-score .row span .badge { margin-left: 4px; }
 #fundBest, #fundCarry, #fundScore { overflow-x: auto; }
 #fundBest .row, #fundCarry .row, #fundScore .row { min-width: 560px; }
+#followSig, #followScore { overflow-x: auto; }
+#followSig .row, #followScore .row { min-width: 560px; }
+@media(min-width:1280px){.a-follow{grid-column:span 2;align-self:start}}

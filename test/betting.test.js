@@ -114,7 +114,7 @@ test('real-money bet placement is a stub that refuses', () => {
 
 test('odds feed: API key never appears in errors; first failure falls back to labelled MOCK', async () => {
   const health = { register() {}, ok() {}, fail(id, msg) { this.last = msg; } };
-  const cfg = config.build({ ODDS_API_KEY: 'k3y-SHOULD-NOT-LEAK' }).betting;
+  const cfg = config.build({ ODDS_API_KEY: 'k3y-SHOULD-NOT-LEAK', CREDITS_FILE: '' }).betting;
   const feed = new OddsFeed({ health, cfg, fetchImpl: async (u) => { throw new Error('connect failed ' + String(u)); } });
   await feed.pollOdds(); feed.stop();
   assert.equal(feed.mode, 'mock'); assert.equal(feed.simulated, true); assert.ok(!health.last.includes('k3y-SHOULD-NOT-LEAK')); assert.ok(!feed.note.includes('k3y-SHOULD-NOT-LEAK'));

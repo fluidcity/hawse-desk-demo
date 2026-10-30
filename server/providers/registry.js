@@ -25,9 +25,11 @@ module.exports = [
     unlocks: ['Funding arb', '1% mode candles', 'Perp momentum', 'Perp basis', 'Strategy backtests'], fallback: 'REST polling' },
   { id: 'coinbase', name: 'Coinbase Exchange', category: 'exchange', keyless: true, health: ['candles.coinbase'], signup: 'https://www.coinbase.com', unlocks: ['1% mode candles (fallback)'] },
   // ---- Solana ----
-  { id: 'helius', name: 'Helius (Solana RPC + enhanced tx)', category: 'solana', env: [{ name: 'HELIUS_API_KEY', required: true }, { name: 'HELIUS_WATCH_ADDRESSES' }],
-    health: ['whale.solana', 'ws.helius'], signup: 'https://www.helius.dev', unlocks: ['Whale monitor (Solana, live)', 'Solana push triggers (logsSubscribe)'], fallback: 'MOCK Solana whale feed (labelled)' },
-  { id: 'jupiter', name: 'Jupiter quotes', category: 'solana', keyless: true, env: [{ name: 'JUPITER_API_BASE' }], health: ['dex.jupiter'], signup: 'https://jup.ag',
+  { id: 'helius', name: 'Helius (Solana webhooks / Parsed Events)', category: 'solana', anyOf: true, feed: 'whale.solana',
+    env: [{ name: 'WHALES_ENABLED' }, { name: 'HELIUS_WEBHOOK_AUTH', required: true }, { name: 'HELIUS_API_KEY', required: true }, { name: 'HELIUS_MODE' }, { name: 'HELIUS_WEBHOOK_URL' }, { name: 'HELIUS_WATCH_ADDRESSES' }, { name: 'HELIUS_CREDIT_BUDGET' }, { name: 'HELIUS_DAILY_CREDIT_BUDGET' }, { name: 'HELIUS_PAUSE_AT_PCT' }, { name: 'HELIUS_AUTO_PAUSE_WEBHOOK' }, { name: 'HELIUS_POLL_SEC' }],
+    health: ['whale.solana'], signup: 'https://www.helius.dev', unlocks: ['Whale monitor (Solana, live via webhook push, 1 credit/event)', 'Opt-in slow poll (Parsed Events, 10 credits/call, budget-guarded)'],
+    fallback: 'DEMO/MOCK Solana whale feed (labelled). OFF unless WHALES_ENABLED=true; hard daily credit cap with auto-pause' },
+  { id: 'jupiter', name: 'Jupiter quotes', category: 'solana', keyless: true, env: [{ name: 'JUPITER_API_BASE' }, { name: 'JUPITER_API_KEY', optional: true }], health: ['dex.jupiter'], signup: 'https://jup.ag',
     unlocks: ['Gap scanner (Solana per-DEX + triangular)'], fallback: 'DexScreener indicative mids (not executable)' },
   // ---- EVM RPC ----
   { id: 'alchemy', name: 'Alchemy (EVM RPC + WS)', category: 'evm', env: [{ name: 'ALCHEMY_API_KEY', required: true }], health: ['whale.ethereum', 'whale.base', 'whale.arbitrum', 'ws.ethereum', 'ws.base', 'ws.arbitrum'],
@@ -52,7 +54,7 @@ module.exports = [
     health: ['tradovate.auth', 'tradovate.md', 'futures.sim'], signup: 'https://www.tradovate.com', unlocks: ['ORB on real MES/MNQ bars'], fallback: 'SIMULATED MES/MNQ session (labelled; PnL booked as simulated)' },
   // ---- sports ----
   { id: 'theoddsapi', name: 'The Odds API (sportsbook odds + scores)', category: 'sports',
-    env: [{ name: 'ODDS_API_KEY', required: true }, { name: 'ODDS_SPORTS', required: false }, { name: 'ODDS_REGIONS', required: false }],
+    feed: 'odds', env: [{ name: 'ODDS_API_KEY', required: true }, { name: 'ODDS_SPORTS' }, { name: 'ODDS_MARKETS' }, { name: 'ODDS_BOOKMAKERS' }, { name: 'BET_SNAPSHOTS_MIN' }, { name: 'ODDS_MONTHLY_BUDGET' }],
     health: ['odds.theoddsapi', 'odds.scores', 'odds.mock'], signup: 'https://the-odds-api.com',
     unlocks: ['Real multi-book odds for +EV line shopping, spread signals, arb/middle alerts', 'Final scores to grade paper bets', 'Closing-line value on real lines'],
     fallback: 'MOCK odds (synthetic books, labelled; bets booked as SIMULATED)' },

@@ -37,9 +37,9 @@ function pairWethPx(p, t) {
 
 class DexFeed {
   constructor({ health, cfg, evmCfg, priceFn }) {
-    this.health = health; this.c = cfg; this.evmCfg = evmCfg; this.priceFn = priceFn; this.jup = cfg.jupiterBase;
+    this.health = health; this.c = cfg; this.evmCfg = evmCfg; this.priceFn = priceFn; this.jup = cfg.jupiterBase; this.jupKey = cfg.jupiterKey || ''; this.jupGapMs = this.jupKey ? 1100 : 2100; // 1 rps with key, 0.5 rps keyless
     this.sol = null; this.evm = {}; this.gas = {}; this.para = {};
-    health.register('dex.jupiter', { label: 'Jupiter per-DEX quotes (Solana)', group: 'dex', note: 'public lite-api, executable amounts' });
+    health.register('dex.jupiter', { label: 'Jupiter per-DEX quotes (Solana)', group: 'dex', note: 'api.jup.ag ' + (cfg.jupiterKey ? '(API key, 1 rps)' : '(keyless, 0.5 rps)') + ', executable amounts' });
     health.register('dex.dexscreener', { label: 'DexScreener pool prices', group: 'dex', note: 'indicative mid prices' });
     health.register('dex.paraswap', { label: 'ParaSwap best-route quotes', group: 'dex', note: 'public, executable amounts' });
     this.chains = (evmCfg.chains || []).filter((c) => EVM_TOKENS[c]);
@@ -52,10 +52,12 @@ class DexFeed {
   }
   stop() { clearInterval(this.t1); clearInterval(this.t2); }
   async jq(inputMint, outputMint, amount, dex) {
+    // Metis /swap/v1/quote: still served on api.jup.ag but unmaintained. Kept because per-DEX direct-route quotes need it:
+    // v2 /order ignores `dexes`, and v2 /build requires a taker wallet. Paper desk = quotes only, never a transaction.
     const u = new URL(this.jup + '/swap/v1/quote');
     u.search = new URLSearchParams({ inputMint, outputMint, amount: String(Math.round(amount)), slippageBps: '50', onlyDirectRoutes: 'true', ...(dex ? { dexes: dex } : {}) });
     for (let a = 0; ; a++) {
-      try { const j = await fetchJson(u.toString(), { health: this.health, id: 'dex.jupiter' }); await sleep(1100); return j; } // stay inside the public rate limit
+      try { const j = await fetchJson(u.toString(), { health: this.health, id: 'dex.jupiter', headers: this.jupKey ? { 'x-api-key': this.jupKey } : {} }); await sleep(this.jupGapMs); return j; } // stay inside the rate limit
       catch (e) { if (a >= 1 || !/HTTP 429|timeout|aborted/i.test(e.message)) throw e; await sleep(2500); }
     }
   }

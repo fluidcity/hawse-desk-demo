@@ -31,6 +31,30 @@ async function labRoute(lab, req, p, url, body) {
   return null;
 }
 
+/** Inbound webhooks (e.g. POST /hooks/helius). Authenticated by the hook's own handler; ACK first, process after (Helius wants 200 within 1 s). */
+function hookRoute(engine, req, res, p) {
+  const hook = engine.hooks && engine.hooks[p];
+  const send = (code, obj) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); };
+  if (!hook) return send(404, { error: 'not found' });
+  const chunks = []; let n = 0, tooBig = false;
+  req.on('data', (c) => { n += c.length; if (n > hook.maxBody) { tooBig = true; req.destroy(); } else chunks.push(c); });
+  req.on('end', () => {
+    if (tooBig) return send(413, { error: 'body too large' });
+    const r = hook.handle({ method: req.method, headers: req.headers, rawBody: Buffer.concat(chunks).toString('utf8') });
+    send(r.status, r.body);
+    if (r.status === 200 && r.txs.length) setImmediate(() => { try { hook.process(r); } catch (e) { engine.tape && engine.tape.push({ kind: 'error', msg: 'webhook processing error: ' + e.message }); } });
+  });
+}
+
+/** Hooks-only listener (HOOKS_PORT): serves ONLY /hooks/*, so a tunnel can expose it without exposing the unauthenticated desk. */
+function createHooksServer(engine) {
+  return http.createServer((req, res) => {
+    const p = new URL(req.url, 'http://x').pathname;
+    if (p.startsWith('/hooks/')) return hookRoute(engine, req, res, p);
+    res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"error":"not found"}');
+  });
+}
+
 function createServer(engine, flags) {
   const send = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); };
   const body = (req) => new Promise((resolve, reject) => {
@@ -40,6 +64,7 @@ function createServer(engine, flags) {
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
+    if (p.startsWith('/hooks/')) return hookRoute(engine, req, res, p);
     try {
       if (p === '/api/state' && req.method === 'GET') return send(res, 200, engine.snapshot(flags));
       if (p === '/api/explain' && req.method === 'GET') return send(res, 200, { strategies: engine.explainAll() });
@@ -85,7 +110,9 @@ if (require.main === module) {
   engine.start();
   const server = createServer(engine, config.publicFlags(cfg));
   server.listen(cfg.port, cfg.host, () => console.log(`HAWSE paper desk on http://${cfg.host}:${cfg.port}  (PAPER ONLY)`));
-  const bye = () => { engine.stop(); server.close(); process.exit(0); };
+  const hooks = cfg.hooks.port ? createHooksServer(engine) : null;
+  if (hooks) hooks.listen(cfg.hooks.port, cfg.hooks.host, () => console.log(`webhook receiver (hooks only) on http://${cfg.hooks.host}:${cfg.hooks.port}/hooks/*`));
+  const bye = () => { engine.stop(); server.close(); hooks && hooks.close(); process.exit(0); };
   process.on('SIGINT', bye); process.on('SIGTERM', bye);
 }
-module.exports = { createServer };
+module.exports = { createServer, createHooksServer };

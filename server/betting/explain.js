@@ -18,10 +18,12 @@ const STRAT_RULES = Object.freeze({ evMaxPerScan: 3, spreadMaxPerScan: 2, arbMax
 function common(s) {
   const c = s.c;
   return {
-    Markets: [`Sports: ${list(c.sports)}`, `Markets: ${list(c.markets)} · regions: ${list(c.regions)}`, `Only games starting more than ${c.minMinutesToStart} min from now`],
+    Markets: [`Sports: ${list(c.sports)}`, `Markets: ${list(c.markets)} · ${c.bookmakers && c.bookmakers.length ? `books: ${list(c.bookmakers)}` : `regions: ${list(c.regions)}`}`, `Only games starting more than ${c.minMinutesToStart} min from now`],
     Risk: [`Paper sleeve ${pct(s.allocPct * 100, 1)} of the paper account`, `Caps: ≤ ${pct(c.maxStakePct, 1)} of the sleeve per bet, ≤ ${pct(c.maxEventPct, 1)} per game, ≤ ${pct(c.maxOpenPct, 1)} open in total`,
       `Minimum stake $${num(c.minStakeUsd)}; the desk risk gate (daily loss / drawdown / HALT) also blocks new bets`, 'Paper only: real-money placement is a disabled stub that refuses'],
-    Data: [`Without ODDS_API_KEY the odds are a MOCK feed; those bets are tagged SIMULATED and go to the SIM book only`],
+    Data: [`Without ODDS_API_KEY the odds are a MOCK feed; those bets are tagged SIMULATED and go to the SIM book only`,
+      c.schedule === 'interval' ? `Live odds are refreshed every ${num(c.pollSec / 60, 1)} min (interval mode), capped by a ${num(c.monthlyBudget, 0)}-credit monthly budget`
+        : `Live odds are snapshots taken ${list((c.snapshotsMin || []).map((m) => 'T-' + m + ' min'))} before each start (not continuous), capped by a ${num(c.monthlyBudget, 0)}-credit monthly budget; prices between snapshots may have moved`],
   };
 }
 

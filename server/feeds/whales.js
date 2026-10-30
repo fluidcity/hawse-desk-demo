@@ -1,11 +1,12 @@
 'use strict';
 // Large-transaction monitors.
-//  - Solana: Helius enhanced-transactions API (HELIUS_API_KEY, server-side only). Sampled, not exhaustive.
+//  - Solana: Helius webhook push (default when configured) or an opt-in, budget-guarded Parsed Events slow poll. See SolanaWhaleFeed.
 //  - EVM (ethereum/base/arbitrum): JSON-RPC eth_getLogs for big USDC/USDT/WETH transfers plus
 //    directional Uniswap v3 WETH/USDC swaps. RPC from env (explicit URL > Alchemy > Infura > public fallback).
 //  - Anything unconfigured runs a clearly labeled MOCK generator (every event tagged mock:true).
 const { fetchJson, redact } = require('../lib/net');
 const { WsClient } = require('../lib/ws');
+const H = require('./helius');
 
 const SOL_MINT = 'So11111111111111111111111111111111111111112';
 const STABLE_MINTS = { EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v: 'USDC', Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB: 'USDT' };
@@ -77,46 +78,100 @@ function decodeV3Swap(dataHex, stableIsToken0) {
   return { stableUsd: Math.abs(Number(stable)) / 1e6, eth: Math.abs(Number(weth)) / 1e18, dir: stable > 0n ? 'buy' : 'sell' }; // pool got USDC => trader bought ETH
 }
 
+/**
+ * Solana large-transaction feed. Modes (HELIUS_MODE):
+ *   webhook (default when HELIUS_WEBHOOK_AUTH is set): receive-only. Helius pushes enhanced transactions to POST /hooks/helius
+ *            (1 credit/event). Nothing is polled. Needs a publicly reachable HTTPS URL (see README).
+ *   poll     opt-in slow fallback: Parsed Events (10 credits/request) every HELIUS_POLL_SEC (>= 300 s) per watched address,
+ *            hard-stopped by the monthly HELIUS_CREDIT_BUDGET guard.
+ *   mock     (default otherwise): labelled synthetic events (mock:true). No Helius calls at all.
+ *   off      no events.
+ * The old loop (Enhanced Tx REST every 15 s + logsSubscribe-triggered extra polls, ~1.15M credits/day) was removed.
+ */
 class SolanaWhaleFeed {
-  constructor({ health, apiKey, watch, minUsd, priceFn, pollMs = 15000 }) {
-    this.health = health; this.apiKey = apiKey; this.minUsd = minUsd; this.priceFn = priceFn; this.pollMs = pollMs;
-    this.watch = watch && watch.length ? watch.map((a) => ({ addr: a, label: a.slice(0, 4) + '…' + a.slice(-4) })) : DEFAULT_SOL_WATCH;
-    this.mode = apiKey ? 'live' : 'mock'; this.events = []; this.seen = new Set(); this.scanned = 0;
-    health.register('whale.solana', { label: 'Solana large tx (Helius)', group: 'whales', kind: this.mode, note: apiKey ? `Helius enhanced tx · ${this.watch.length} accounts · sampled` : 'MOCK: set HELIUS_API_KEY for live data' });
+  constructor({ health, apiKey, watch, minUsd, priceFn, mode, enabled = true, webhookAuth = '', pollSec = 900, pollLimit = 25, budget = null, pauseRemote = null, fetchImpl, now = () => Date.now() }) {
+    this.health = health; this.apiKey = apiKey; this.minUsd = minUsd; this.priceFn = priceFn; this.now = now; this.fetchImpl = fetchImpl; this.enabled = enabled; this.pauseRemote = pauseRemote;
+    this.watchConfigured = !!(watch && watch.length); // live modes watch ONLY configured wallets; the pool list is just for MOCK labels
+    this.watch = this.watchConfigured ? watch.map((a) => ({ addr: a, label: a.slice(0, 4) + '…' + a.slice(-4) })) : DEFAULT_SOL_WATCH;
+    this.watchSet = new Set(this.watchConfigured ? watch : []); this.autoPaused = null; this.dropped = 0;
+    this.webhookAuth = webhookAuth; this.pollSec = Math.max(H.MIN_POLL_SEC, +pollSec || 900); this.pollLimit = Math.min(100, Math.max(1, +pollLimit || 25));
+    this.budget = budget; // CreditBudget (server/lib/credits.js); shared by poll + webhook accounting
+    this.mode = mode || (webhookAuth ? 'webhook' : 'mock');
+    if (this.mode === 'poll' && (!apiKey || !this.watchConfigured)) this.mode = 'mock'; // never poll without a key or the default busy pools
+    this.events = []; this.seen = new Set(); this.scanned = 0; this.webhook = { deliveries: 0, events: 0, dupes: 0, rejected: 0, firstAt: null, lastAt: null }; this.pollStats = { calls: 0, refused: 0, lastAt: null };
+    this.listeners = [];
+    const notes = {
+      webhook: `webhook receiver (POST /hooks/helius) · 1 credit/event · ${this.watch.length} accounts · awaiting deliveries`,
+      poll: `OPT-IN slow poll: Parsed Events every ${this.pollSec}s × ${this.watch.length} accounts (10 credits/call, budget-guarded)`,
+      mock: enabled ? `MOCK: no Helius calls. Configure the webhook (HELIUS_WEBHOOK_AUTH) or HELIUS_MODE=poll with HELIUS_WATCH_ADDRESSES` : 'DEMO (MOCK): whale feed is OFF by default; set WHALES_ENABLED=true to use Helius. No Helius calls are made',
+      off: 'disabled (HELIUS_MODE=off)',
+    };
+    health.register('whale.solana', { label: 'Solana large tx (Helius)', group: 'whales', kind: this.mode === 'mock' ? 'mock' : 'live', transport: this.mode === 'webhook' ? 'webhook' : 'rest',
+      staleMs: this.mode === 'poll' ? this.pollSec * 2500 : 6 * 3.6e6, note: notes[this.mode] });
   }
+  /** Subscribe to every accepted real transaction (used by wallet-follow). */
+  onTx(fn) { this.listeners.push(fn); }
   start() {
-    this.poll(); this.timer = setInterval(() => this.poll(), this.pollMs);
-    if (this.mode === 'live') {
-      // Helius standard websocket (logsSubscribe on each watched account) → triggers an immediate enhanced-tx fetch.
-      // REST polling stays on as the fallback; the key is only used inside the server process.
-      this.health.register('ws.helius', { label: 'Helius websocket (logsSubscribe)', group: 'websocket', transport: 'ws', staleMs: 120000, note: 'push trigger for Solana whale scan; REST poll is the fallback' });
-      this.ws = new WsClient({ url: `wss://mainnet.helius-rpc.com/?api-key=${encodeURIComponent(this.apiKey)}`, health: this.health, id: 'ws.helius', pingMs: 30000, ping: { jsonrpc: '2.0', id: 0, method: 'getHealth' },
-        onOpen: (c) => this.watch.forEach((w, i) => c.send({ jsonrpc: '2.0', id: i + 1, method: 'logsSubscribe', params: [{ mentions: [w.addr] }, { commitment: 'confirmed' }] })),
-        onMessage: (txt) => { const m = JSON.parse(txt); if (m.method === 'logsNotification') { this.wsEvents = (this.wsEvents || 0) + 1; this.trigger(); } return null; } });
-      this.ws.start();
-    }
+    if (this.mode === 'mock') { this.mockTick(); this.timer = setInterval(() => this.mockTick(), 15000); }
+    else if (this.mode === 'poll') { this.poll(); this.timer = setInterval(() => this.poll(), this.pollSec * 1000); }
   }
-  trigger() { if (this.pending) return; this.pending = setTimeout(() => { this.pending = null; this.poll(); }, 3000); }
-  stop() { clearInterval(this.timer); this.ws && this.ws.stop(); clearTimeout(this.pending); }
+  stop() { clearInterval(this.timer); }
+  /** Webhook ingress: already authenticated + parsed by server/feeds/helius.js handleWebhook. Each delivered tx = 1 credit. */
+  ingestWebhook(txs) {
+    const n = txs.length; const t = this.now(); this.webhook.deliveries++; this.webhook.events += n; this.webhook.firstAt = this.webhook.firstAt || t; this.webhook.lastAt = t;
+    if (this.budget) this.budget.record(n * H.CREDITS.webhookEvent, 'webhook-events');
+    if (this.checkPause()) { this.dropped += n; return 0; } // billed by Helius, but we stop acting on them while paused
+    let accepted = 0; for (const tx of txs) { if (!this.involvesWatched(tx)) { this.dropped++; continue; } if (this.ingestTx(tx, 'webhook')) accepted++; else this.webhook.dupes++; }
+    const maxTs = txs.reduce((m, x) => Math.max(m, +x.timestamp || 0), 0);
+    if (this.mode === 'webhook') this.health.ok('whale.solana', maxTs ? Math.max(0, t - maxTs * 1000) : 0); // latency = block time → receipt
+    return accepted;
+  }
+  /** Only configured whale wallets count (a mis-scoped webhook must not flood the desk). */
+  involvesWatched(tx) {
+    if (!this.watchSet.size) return false;
+    const ws = this.watchSet, hit = (a) => a && ws.has(a);
+    return hit(tx.feePayer) || (tx.accountData || []).some((a) => hit(a.account)) || (tx.tokenTransfers || []).some((t) => hit(t.fromUserAccount) || hit(t.toUserAccount)) || (tx.nativeTransfers || []).some((t) => hit(t.fromUserAccount) || hit(t.toUserAccount));
+  }
+  /** Auto-pause near the hard cap. Webhook mode also asks Helius to deactivate the webhook (once per UTC day) when configured. */
+  checkPause() {
+    if (!this.budget || !this.budget.paused()) { if (this.autoPaused && this.autoPaused.day !== this.budget.today()) this.autoPaused = null; return false; }
+    const day = this.budget.today(); if (this.autoPaused && this.autoPaused.day === day) return true;
+    const v = this.budget.view(); this.autoPaused = { day, at: this.now(), usedToday: v.usedToday, dailyBudget: v.dailyBudget, remote: null };
+    const msg = `AUTO-PAUSED at ${v.pauseAtPct}% of the credit cap (${v.usedToday}/${v.dailyBudget} today, ${v.used}/${v.budget} this month)`;
+    this.health.setKind('whale.solana', 'live', msg); this.health.fail('whale.solana', msg);
+    if (this.mode === 'webhook' && this.pauseRemote) {
+      this.autoPaused.remote = 'pending'; this.budget.record(H.CREDITS.webhookManage, 'webhook-manage');
+      Promise.resolve(this.pauseRemote()).then((r) => { this.autoPaused.remote = r && r.ok ? 'webhook deactivated (resume with scripts/helius-webhook.js resume --apply)' : 'remote pause failed: ' + ((r && r.error) || '?'); });
+    } else if (this.mode === 'webhook') this.autoPaused.remote = 'remote pause not configured (set HELIUS_API_KEY + HELIUS_WEBHOOK_URL): Helius keeps billing deliveries, pause it manually';
+    return true;
+  }
+  /** Shared path for webhook + poll. Dedupes by signature (Helius may deliver duplicates). Returns false if skipped. */
+  ingestTx(tx, origin) {
+    if (!tx || !tx.signature || this.seen.has(tx.signature) || tx.transactionError) return false;
+    this.seen.add(tx.signature); this.scanned++; if (this.seen.size > 20000) this.seen = new Set([...this.seen].slice(-5000));
+    const c = classifySolanaTx(tx, this.priceFn('SOL'));
+    const w = this.watch.find((x) => x.addr === tx.feePayer || (tx.accountData || []).some((a) => a.account === x.addr));
+    for (const fn of this.listeners) { try { fn(tx, c, origin); } catch { /* listener bugs must not break ingest */ } }
+    if (c.usd >= this.minUsd * 0.1) this.push({ t: (+tx.timestamp || this.now() / 1000) * 1000, chain: 'solana', asset: 'SOL', dir: c.dir, usd: c.usd, whale: c.usd >= this.minUsd,
+      desc: `${c.dir === 'transfer' ? 'transfer' : c.dir + ' SOL'} via ${tx.source || '?'}${w ? ' @ ' + w.label : ''} (${origin})`, url: 'https://solscan.io/tx/' + tx.signature, mock: false });
+    return true;
+  }
   async poll() {
-    if (this.mode === 'mock') return this.mockTick();
     if (this.busy) return; this.busy = true;
-    try { await this.pollInner(); } finally { this.busy = false; }
-  }
-  async pollInner() {
-    for (const w of this.watch) {
-      try {
-        const txs = await fetchJson(`https://api.helius.xyz/v0/addresses/${w.addr}/transactions?api-key=${encodeURIComponent(this.apiKey)}&limit=50`, { health: this.health, id: 'whale.solana', timeoutMs: 10000 });
-        const px = this.priceFn('SOL');
-        for (const tx of txs.reverse()) {
-          if (this.seen.has(tx.signature) || tx.transactionError) continue; this.seen.add(tx.signature); this.scanned++;
-          const c = classifySolanaTx(tx, px);
-          if (c.usd >= this.minUsd * 0.1) this.push({ t: tx.timestamp * 1000, chain: 'solana', asset: 'SOL', dir: c.dir, usd: c.usd, whale: c.usd >= this.minUsd,
-            desc: `${c.dir === 'transfer' ? 'transfer' : c.dir + ' SOL'} via ${tx.source || '?'} @ ${w.label}`, url: 'https://solscan.io/tx/' + tx.signature, mock: false });
+    try {
+      for (const w of this.watch) {
+        if (this.budget && this.checkPause()) { this.pollStats.refused++; break; }
+        if (!this.budget || !this.budget.trySpend(H.CREDITS.parsedHistory, 'parsed-history')) {
+          this.pollStats.refused++; this.health.setKind('whale.solana', 'live', `credit budget reached (${this.budget ? this.budget.view().used : '?'} used): poll paused until next month or raise HELIUS_CREDIT_BUDGET`);
+          this.health.fail('whale.solana', 'credit budget guard: poll refused'); break;
         }
-      } catch (e) { /* health already marked down; error redacted */ void redact(e.message); }
-    }
-    if (this.seen.size > 20000) this.seen = new Set([...this.seen].slice(-5000));
+        try {
+          const t0 = Date.now(); const txs = await H.fetchParsedHistory({ apiKey: this.apiKey, address: w.addr, limit: this.pollLimit, ...(this.fetchImpl ? { fetchImpl: this.fetchImpl } : {}) });
+          this.pollStats.calls++; this.pollStats.lastAt = this.now(); this.health.ok('whale.solana', Date.now() - t0);
+          for (const tx of txs.reverse()) this.ingestTx(tx, 'poll');
+        } catch (e) { this.health.fail('whale.solana', redact(String(e.message || e)).split(this.apiKey || '\u0000').join('***')); }
+      }
+    } finally { this.busy = false; }
   }
   mockTick() {
     this.health.ok('whale.solana', 0);
@@ -125,7 +180,20 @@ class SolanaWhaleFeed {
       this.push({ t: Date.now(), chain: 'solana', asset: 'SOL', dir, usd, whale: usd >= this.minUsd, desc: `MOCK ${dir} ${(usd / px).toFixed(0)} SOL`, mock: true }); }
   }
   push(ev) { this.events.unshift(ev); if (this.events.length > 300) this.events.pop(); }
-  snapshot() { return { mode: this.mode, scanned: this.scanned, events: this.events.length, transport: this.ws && this.ws.open ? 'ws-trigger + rest' : 'rest poll', wsEvents: this.wsEvents || 0 }; }
+  /** Client-safe credit view for the Data Sources panel (no secrets). */
+  credits() {
+    const n = this.watch.length, b = this.budget ? this.budget.view() : null;
+    const est = this.mode === 'poll' ? H.estimates.pollPerMonth(n, this.pollSec) : this.mode === 'webhook' ? H.estimates.webhookPerMonth(this.webhook.events, this.webhook.firstAt, this.now()) : 0;
+    return { provider: 'helius', mode: this.mode, unit: 'credits', planMonthly: H.CREDITS.freePlanMonthly, estMonthly: est,
+      estBasis: this.mode === 'poll' ? `${n} addr × 10 cr × every ${this.pollSec}s × 30 d` : this.mode === 'webhook' ? (est == null ? '1 cr/event; estimate after 1 h of deliveries' : `observed ${this.webhook.events} events → ×30 d`) : 'no Helius calls in this mode',
+      enabled: this.enabled, watchConfigured: this.watchConfigured, watching: this.watchConfigured ? n : 0, dropped: this.dropped, autoPaused: this.autoPaused,
+      dailyBudget: b && b.dailyBudget, usedToday: b && b.usedToday, pauseAtPct: b && b.pauseAtPct, paused: !!(b && b.paused),
+      estDaily: est == null ? null : Math.round(est / 30),
+      legacyPerDay: H.estimates.legacyPerDay(2, 15), budget: b && b.budget, used: b && b.used, remaining: b && b.remaining, refused: b && b.refused, overBudget: !!(b && b.overBudget), month: b && b.month,
+      webhook: { ...this.webhook, receiverEnabled: !!this.webhookAuth }, poll: this.mode === 'poll' ? { ...this.pollStats, everySec: this.pollSec } : null };
+  }
+  publicInfo() { return { credits: this.credits() }; }
+  snapshot() { return { mode: this.mode, scanned: this.scanned, events: this.events.length, transport: this.mode === 'webhook' ? 'webhook push' : this.mode === 'poll' ? `parsed-events poll /${this.pollSec}s` : this.mode, credits: this.credits() }; }
 }
 
 class EvmWhaleFeed {
@@ -191,4 +259,4 @@ class EvmWhaleFeed {
 const short = (topic) => '0x' + topic.slice(-40, -36) + '…' + topic.slice(-4);
 function keep(map, hash, ev, isSwap) { const cur = map.get(hash); if (!cur || (isSwap && !cur.isSwap) || (!cur.isSwap && ev.usd > cur.usd)) map.set(hash, { ...ev, isSwap }); }
 
-module.exports = { SolanaWhaleFeed, EvmWhaleFeed, classifySolanaTx, decodeV3Swap, resolveRpc, resolveWs, EVM };
+module.exports = { DEFAULT_SOL_WATCH, SolanaWhaleFeed, EvmWhaleFeed, classifySolanaTx, decodeV3Swap, resolveRpc, resolveWs, EVM };

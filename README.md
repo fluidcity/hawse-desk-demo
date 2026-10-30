@@ -31,7 +31,7 @@ You need Node ≥ 22. There are no npm dependencies. One Node process proxies ev
 | 1 | Cross-venue perp funding arb | OKX, Hyperliquid, Binance, Bybit public REST | — | A venue that fails shows **NO DATA** and is excluded. Nothing is faked. |
 | 2 | Whale flow (large-tx monitor) | EVM via public RPC (publicnode) for Ethereum, Base and Arbitrum | `HELIUS_API_KEY` (Solana), `EVM_RPC_URL_*` / `ALCHEMY_API_KEY` / `INFURA_API_KEY` | With no key, Solana runs labeled **MOCK**. With `EVM_PUBLIC_RPC_FALLBACK=false` and no key, EVM runs MOCK. Trades on mock signals book to the SIM book. |
 | 3 | 1% mode | OKX spot candles (15m) and spot top-of-book | — | Coinbase, then Binance data-api candles. With no candles the strategy shows NO DATA and does not trade. |
-| 4 | DEX gap scanner | Jupiter lite-api per-DEX quotes (Solana), DexScreener pool prices, ParaSwap quotes, `eth_gasPrice` via public RPC (Ethereum, Base, Arbitrum) | optional `JUPITER_API_BASE`, EVM RPC vars | If Jupiter is down, Solana falls back to DexScreener mid prices, labeled **INDICATIVE**, which are never traded. EVM mid-price gaps are always indicative. |
+| 4 | DEX gap scanner | Jupiter per-DEX quotes (`api.jup.ag`, keyless 0.5 rps or optional free `JUPITER_API_KEY` at 1 rps) (Solana), DexScreener pool prices, ParaSwap quotes, `eth_gasPrice` via public RPC (Ethereum, Base, Arbitrum) | optional `JUPITER_API_KEY` / `JUPITER_API_BASE`, EVM RPC vars | If Jupiter is down, Solana falls back to DexScreener mid prices, labeled **INDICATIVE**, which are never traded. EVM mid-price gaps are always indicative. |
 | 5 | ORB · MES/MNQ | Tradovate **demo** API (auth + md websocket), used only when all `TRADOVATE_*` vars are set | `TRADOVATE_USERNAME`, `TRADOVATE_PASSWORD`, `TRADOVATE_APP_ID`, `TRADOVATE_CID`, `TRADOVATE_SECRET` | The default is a **SIMULATED** accelerated session replay, labeled in the UI. All of its PnL goes to the SIM book. |
 | 6 | Perp momentum | OKX swap candles (REST, closed bars only); execution on the freshest perp quote (Hyperliquid / Binance / Bybit / OKX websockets, REST fallback) | — | With no closed bars or no fresh quote it skips and logs why. It never trades on mock data. |
 | 7 | Perp basis (cash and carry) | Spot books from OKX, Binance and Bybit spot websockets, plus perp books from all four venues | — | It needs a fresh spot book **and** a fresh perp book (15 s or less), otherwise it skips. |
@@ -52,7 +52,7 @@ While a position is open, funding settles discretely at each venue's next settle
 
 ### 2. Whale flow
 
-- **Solana:** the Helius enhanced-transactions API polls the watched accounts every 15s. The defaults are the Raydium and Orca SOL-USDC pools, or set `HELIUS_WATCH_ADDRESSES`. Each transaction is classified from the fee payer's side: stables out and SOL in is a buy, the reverse is a sell, and anything else is a transfer sized by the larger leg. This samples the most recent 50 transactions per account per poll, so it is **not** a complete feed.
+- **Solana (Helius): OFF by default.** Unless `WHALES_ENABLED=true`, the Solana feed is labelled **DEMO/MOCK**, `/hooks/helius` answers 503 and no Helius call is made. When enabled, it watches **only the configured whale wallets** (`HELIUS_WATCH_ADDRESSES`, else `FOLLOW_WALLETS_SOL`); there are no busy-pool defaults. Live data arrives by **Helius webhook push** (1 credit per delivered event) to `POST /hooks/helius`; an opt-in slow poll (`HELIUS_MODE=poll`, Parsed Events, 10 credits/call, at least 300 s per address) is the fallback. The old 15 s Enhanced-Tx loop (about 1.15M credits/day, more than the whole 1M/month free plan) was removed. Each transaction is classified from the fee payer's side: stables out and SOL in is a buy, the reverse is a sell, and anything else is a transfer sized by the larger leg. See **Helius credits and webhooks** below.
 - **EVM (Ethereum, Base, Arbitrum):** `eth_getLogs` over each new block range collects USDC, USDT and WETH `Transfer` logs plus directional Uniswap v3 WETH/USDC `Swap` logs. The pool's `token0` is read on chain to orient the swap.
 - **Signal:** this uses directional swaps only, never plain transfers. If net flow over 15 minutes reaches at least 2× `WHALE_MIN_USD` across at least 3 swaps, and at least 60% of it is one-sided, the desk opens a paper perp (SOL or ETH) on the freshest real quote. It uses 50% of the sleeve, a 1.2% take-profit, a 0.6% stop and a 90-minute time stop, with a 30-minute cooldown. Taker fee and slippage apply on both sides.
 - Whale-follow edge is speculative. The tape logs every skip with its numbers.
@@ -136,7 +136,7 @@ In practice, gaps between public quotes almost never survive costs. Expect skip 
 >
 > **Paper results are optimistic.** They ignore stake limits, account restrictions or bans, bet rejections, and line movement between the quote and placement (odds are polled, so a quoted price may already be gone). Treat paper PnL as an upper bound, and judge the strategies mainly by closing-line value (CLV).
 
-**Data.** The Odds API (`ODDS_API_KEY`, https://the-odds-api.com) gives `/v4/sports/{sport}/odds` for `ODDS_SPORTS` × `ODDS_REGIONS` × `ODDS_MARKETS` (h2h, spreads, totals), plus `/scores` for settlement. The provider's docs say a live odds request costs **markets × regions** credits, and the remaining quota comes back in `x-requests-remaining` / `x-requests-used` / `x-requests-last` headers, which the panel shows. So the default poll is slow (`ODDS_POLL_SEC=900`); check current plan quotas and pricing with the provider before shortening it. The key is read only on the server and is redacted from every error message and log line. With no key, a **MOCK** market runs instead. It has 6 synthetic books with 4–6.5% vig, about 12% stale or lagging quotes, a random walk before kickoff and a simulated final score. It is there to exercise the pipeline, and its arb and +EV frequency is **much higher than in real markets**.
+**Data.** The Odds API (`ODDS_API_KEY`, https://the-odds-api.com). A live `/odds` request costs **markets × regions** credits, and an explicit `bookmakers=` list of up to 10 books counts as one region. `/events` and `/sports` are free, and `/scores` with `daysFrom` costs 2. Defaults are sized for the **free 500-credit plan**: `basketball_nba`, `h2h`, 10 books including Pinnacle (1 credit/snapshot). Odds are fetched on a **scheduled snapshot** plan, not an interval: the free `/events` slate is refreshed every 3 h, and snapshots run at T-360/60/10 min before each game. Targets within 15 min are merged into one call, and nothing is scheduled after kickoff. Results are cached on disk (`data/odds-cache.json`, TTL 900 s, key never stored). A hard monthly guard (`ODDS_MONTHLY_BUDGET`, default 450) paces spend per day. Under 15% left, only closing snapshots run. The remaining quota is read from the `x-requests-remaining` / `x-requests-used` / `x-requests-last` headers and shown in the desk. At 0 (or on a quota 401/429), polling **stops** and the desk shows **QUOTA EXHAUSTED**. There is never an automatic key switch: `ODDS_API_KEY_PAID` is only used when `ODDS_USE_PAID_KEY=true` is set by hand.
 
 **Math** (`server/betting/math.js`, unit tested):
 - **No-vig fair price:** multiplicative (divide each implied probability by the overround) or power (`BET_FAIR_METHOD=power`, which shifts more of the margin onto longshots).
@@ -162,7 +162,7 @@ In practice, gaps between public quotes almost never survive costs. Expect skip 
 | OKX | WS `ws.okx.com/ws/v5/public` | swap tickers, mark, funding, spot tickers | `ws.okx` |
 | Hyperliquid | WS `api.hyperliquid.xyz/ws` | `bbo` + `activeAssetCtx` (mark, funding) | `ws.hyperliquid` |
 | Binance / Bybit spot | WS (`data-stream.binance.vision`, `stream.bybit.com/v5/public/spot`) | top of book | `ws.binance-spot`, `ws.bybit-spot` |
-| Helius (Solana) | WS `logsSubscribe` on watched pools → triggers enhanced-tx fetch | push trigger | `ws.helius` |
+| Helius (Solana) | webhook push to `/hooks/helius` (configured wallets only); opt-in ≥300 s poll | push | `whale.solana` |
 | EVM (ETH/Base/Arbitrum) | WS `newHeads` (env URL > Alchemy > Infura > publicnode) → triggers log scan | push trigger | `ws.<chain>` |
 | Funding / candles / DEX quotes | REST polling | fallback + data with no public stream | `funding.*`, `candles.*`, `dex.*` |
 
@@ -180,12 +180,12 @@ only names, a set/unset boolean, status and latency (`GET /api/providers`); valu
 
 | Provider | Env var(s) | Signup | Unlocks |
 |---|---|---|---|
-| Helius | `HELIUS_API_KEY` | https://www.helius.dev | live Solana whale flow + WS triggers |
+| Helius | `HELIUS_API_KEY` | https://www.helius.dev | live Solana whale flow via webhook (needs `WHALES_ENABLED=true`, `HELIUS_WEBHOOK_AUTH`) |
 | Alchemy / Infura | `ALCHEMY_API_KEY` / `INFURA_API_KEY` | https://www.alchemy.com / https://www.infura.io | keyed EVM RPC + WS |
 | QuickNode (or any RPC) | `EVM_RPC_URL_<CHAIN>`, `EVM_WS_URL_<CHAIN>` | https://www.quicknode.com | per-chain endpoint, highest priority |
 | publicnode | none | https://www.publicnode.com | keyless EVM fallback (best effort) |
 | Pyth (Hermes) | `PYTH_API_KEY` | https://pyth.network | oracle cross-check of venue marks (Hermes requires a key since 2026-08-26) |
-| Jupiter | none (`JUPITER_API_BASE` optional) | https://jup.ag | Solana executable quotes for the gap scanner |
+| Jupiter | none (optional free `JUPITER_API_KEY`; `JUPITER_API_BASE` defaults to `https://api.jup.ag`) | https://jup.ag | Solana executable quotes for the gap scanner |
 | Binance / Bybit / OKX / Hyperliquid | none | exchange sites | perps, funding, spot books |
 | The Odds API | `ODDS_API_KEY` (`ODDS_SPORTS`, `ODDS_REGIONS` optional) | https://the-odds-api.com | live multi-book odds + scores for the betting strategies |
 | Tradovate | `TRADOVATE_USERNAME`, `_PASSWORD`, `_APP_ID`, `_CID`, `_SECRET` | https://www.tradovate.com | real MES/MNQ bars for ORB |
@@ -227,7 +227,7 @@ every registry entry (unique id, https signup URL, adapter file loads) and that 
 | 1% mode | Decides on closed 15m candles | REST candles plus top of book | **Yes.** |
 | Perp momentum | Decides on closed 5m bars and executes on a fresh quote | REST bars plus WS quotes | **Yes for paper.** Live trading would add a few hundred ms of order latency, which the slippage model only approximates. |
 | Perp basis | Fresh spot and perp books at the same moment | WS on both, staleness guard of 15 s or less | **Mostly.** Real carry desks quote both legs within milliseconds. Here, a stale leg means a skip. |
-| Whale flow | Sees transactions soon after they land | Helius WS `logsSubscribe` (Solana) and EVM `newHeads` WS, with REST/RPC polling as fallback | **WS is needed.** Polling public RPC is seconds late, and public endpoints rate-limit. |
+| Whale flow | Sees transactions soon after they land | Helius webhook push (Solana) and EVM `newHeads` WS, with REST/RPC polling as fallback | **WS is needed.** Polling public RPC is seconds late, and public endpoints rate-limit. |
 | DEX gap / triangular scanning | Sub-second or same-block data and execution | Public quote APIs polled every ~20 s | **No, not for real edge.** Real gaps close in milliseconds to one block, and competitors run co-located nodes and private order flow. A paper scanner on public data **overstates** the edge. That is why this one models gas, tips and failure risk, and labels mid-price gaps INDICATIVE. Its PnL should be read as an upper bound. |
 | ORB (MES/MNQ) | One-minute bars and a market-data WS during the cash open | Tradovate demo WS when configured, otherwise a SIMULATED replay | Real data needs a Tradovate API key (not provided here). |
 | Sports betting | Odds that are current when the bet is placed | The Odds API REST, polled every 15 min by default to save quota | **No for stale-line or arb edges.** Those windows often last seconds to minutes, so a 15-min poll mostly sees lines that already moved. Paper results overstate them. +EV vs consensus and CLV tracking are fine at this cadence. A faster or streaming odds feed is a paid upgrade (check current pricing with the provider). |
@@ -398,7 +398,7 @@ test/                     node:test suites
 ## Known limits
 
 - Betting rules desk: team/player stats are MOCK (no provider wired), so stats-based signals are always SIM. Kalshi/Polymarket adapters are interface-only and refuse. Print and clipboard were checked only in headless Chromium (print media emulation); a real print dialog was not exercised.
-- Sports betting: The Odds API live path has been written against the documented v4 API and unit tested with fixtures, but it has **not** been exercised against the live API: no `ODDS_API_KEY` was set on the build box. Mock-market arb and +EV frequency is unrealistically high.
+- Sports betting: The Odds API live path was smoke-tested once against the real API on 2026-10-29 (1 `/events` call = 0 credits, 1 `/odds` snapshot = 1 credit; headers parsed, 10 NBA games, Pinnacle on all). The scheduler and budget logic are unit-tested with fixtures. Mock-market arb and +EV frequency is unrealistically high.
 
 - Binance perp funding interval is assumed to be 8 h because REST `fundingInfo` is geo-blocked from the test box. Symbols with 4 h intervals would show a halved hourly rate.
 - Pyth Hermes requires an API key (since 2026-08). The Pyth adapter is idle without `PYTH_API_KEY`, and it has not been tested with a key.
@@ -406,3 +406,14 @@ test/                     node:test suites
 - From some regions Binance returns HTTP 451 and Bybit returns 403. They then show NO DATA and the arb runs on the venues that answer.
 - Funding arb fills are modeled at the observed top of book plus impact. Real queue position, partial fills and venue downtime are not modeled.
 - Gap scanner: public Jupiter and ParaSwap quotes are rate-limited, so some cells can be blank (·) on a given scan. Mid prices from thinly traded or stale DexScreener pools can show large gaps that are not executable, which is why they are indicative only.
+
+## Helius credits and webhooks
+
+Helius credit costs (helius.dev, checked 2026-10-29): webhook event = 1 credit (charged even when our endpoint errors),
+webhook create/edit/delete = 100, Parsed Events request = 10. The free plan has 1,000,000 credits/month and 5 webhooks.
+
+- **Off by default.** `WHALES_ENABLED=false` means DEMO/MOCK with zero Helius calls.
+- **Hard caps, both enforced.** `HELIUS_DAILY_CREDIT_BUDGET` (default 30,000 per UTC day) and `HELIUS_CREDIT_BUDGET` (default 300,000 per month). Spend is tracked in `data/credits.json` and shown in **Data Sources** with a monthly and a daily bar.
+- **Auto-pause** at `HELIUS_PAUSE_AT_PCT` (default 90%) of either cap. The poll stops, and webhook events are ignored. Because Helius bills every delivery anyway, the desk also PATCHes our webhook (matched by `HELIUS_WEBHOOK_URL`) to `active:false` once (100 credits; needs `HELIUS_API_KEY`; disable with `HELIUS_AUTO_PAUSE_WEBHOOK=false`). Resume with `node scripts/helius-webhook.js resume --apply`.
+- **Public URL needed.** Helius can only deliver to a public **HTTPS** URL. Run the hooks-only listener (`HOOKS_PORT=8788`) and expose that port with a tunnel (`cloudflared tunnel --url http://127.0.0.1:8788` or ngrok) or a host. Do not expose the desk itself. The receiver checks the `Authorization` header against `HELIUS_WEBHOOK_AUTH` (403 on mismatch), ACKs 200 immediately (Helius wants under 1 s and retries otherwise) and dedupes by signature.
+- **Register / manage.** `node scripts/helius-webhook.js plan` is a dry run that prints the request and its credit cost with secrets redacted. `upsert|pause|resume|delete --apply` actually call Helius. The script refuses localhost/http URLs and busy AMM pools (a pool can emit thousands of events per hour), so watch wallets.

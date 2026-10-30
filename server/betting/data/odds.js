@@ -2,11 +2,26 @@
 // Sportsbook odds feed.
 //  LIVE: The Odds API v4 (https://the-odds-api.com) when ODDS_API_KEY is set server-side. The key goes only into the
 //        server-side request URL (their API takes it as a query parameter); errors are redacted before they reach
-//        health/logs and it is never sent to the client. Each odds request spends quota; the app polls slowly by
-//        default (ODDS_POLL_SEC) and shows the remaining quota the API reports. Check current pricing/quota with the provider.
+//        health/logs and it is never sent to the client. Default schedule = SNAPSHOTS (./schedule.js): the free /events
+//        endpoint gives the slate, and odds are fetched only at BET_SNAPSHOTS_MIN minutes before each start, with
+//        bookmakers= (10 books = 1 region), under a monthly ODDS_MONTHLY_BUDGET guard. The quota headers are shown.
 //  MOCK: without a key (or if the first live request fails), a labelled synthetic market: invented teams/books on an
 //        accelerated schedule, outcomes drawn from the mock "true" probabilities. Every bet on it is SIMULATED.
 const { redact } = require('../util');
+const fs = require('fs');
+const pathMod = require('path');
+const { oddsCost, planSnapshots, OddsBudget, estimateMonthly } = require('./schedule');
+
+/** On-disk response cache (data/odds-cache.json, gitignored) so restarts and repeated schedule ticks never re-spend credits.
+ *  Keys exclude the API key. Stores the last seen quota headers too, so the desk shows remaining credits after a restart. */
+class DiskCache {
+  constructor(file) { this.file = file || ''; this.d = { entries: {}, quota: null }; if (this.file) { try { this.d = { entries: {}, quota: null, ...JSON.parse(fs.readFileSync(this.file, 'utf8')) }; } catch { /* first run */ } } }
+  key(path, params) { return path + '?' + Object.keys(params).sort().map((k) => k + '=' + params[k]).join('&'); }
+  get(k, ttlMs, now) { const e = this.d.entries[k]; return e && now - e.t < ttlMs ? e.body : null; }
+  put(k, body, now) { this.d.entries[k] = { t: now, body }; for (const [x, e] of Object.entries(this.d.entries)) if (now - e.t > 3 * 864e5) delete this.d.entries[x]; this.save(); }
+  setQuota(q) { this.d.quota = q; this.save(); }
+  save() { if (!this.file) return; try { fs.mkdirSync(pathMod.dirname(this.file), { recursive: true }); fs.writeFileSync(this.file, JSON.stringify(this.d)); } catch { /* best effort */ } }
+}
 
 const BASE = 'https://api.the-odds-api.com/v4';
 const MOCK_BOOKS = ['mockbook_a', 'mockbook_b', 'mockbook_c', 'mockbook_d', 'mockbook_e', 'mockbook_f'];
@@ -40,31 +55,108 @@ class OddsFeed {
     this.mode = cfg.apiKey ? 'pending' : 'mock';
     this.note = cfg.apiKey ? 'connecting to The Odds API' : 'ODDS_API_KEY not set → MOCK odds (synthetic, labelled; bets SIMULATED)';
     this.events = new Map(); this.closing = new Map(); this.scores = new Map(); this.quota = null; this.everOk = false; this.mockTruth = new Map();
-    health.register('odds.theoddsapi', { label: 'The Odds API · odds', group: 'sports', note: cfg.apiKey ? `${cfg.sports.join(', ')} · ${cfg.regions.join(',')} · every ${cfg.pollSec}s` : 'not configured', staleMs: cfg.pollSec * 2500 });
+    this.schedule = cfg.schedule || 'interval'; this.slate = new Map(); this.done = new Set(); this.skipped = []; this.lastScores = {}; this.slateAt = 0; this.snapshots = 0;
+    this.offsets = cfg.snapshotsMin && cfg.snapshotsMin.length ? cfg.snapshotsMin : [10];
+    this.budget = new OddsBudget({ monthlyBudget: cfg.monthlyBudget != null ? cfg.monthlyBudget : 450, closingOnlyBelowPct: cfg.closingOnlyBelowPct != null ? cfg.closingOnlyBelowPct : 15, file: cfg.apiKey ? cfg.creditsFile || '' : '', now });
+    this.cache = new DiskCache(cfg.apiKey ? cfg.cacheFile || '' : ''); if (this.cache.d.quota) { this.quota = this.cache.d.quota; this.budget.setApiQuota(this.quota); }
+    this.cacheTtlMs = (cfg.cacheTtlSec != null ? cfg.cacheTtlSec : 900) * 1000; this.cacheHits = 0;
+    this.cost = oddsCost({ markets: cfg.markets, regions: cfg.regions, bookmakers: cfg.bookmakers });
+    const what = `${cfg.sports.join(', ')} · ${cfg.markets.join(',')} · ${cfg.bookmakers && cfg.bookmakers.length ? cfg.bookmakers.length + ' books' : cfg.regions.join(',')} · ${this.cost} cr/call`;
+    health.register('odds.theoddsapi', { label: 'The Odds API · odds', group: 'sports', note: cfg.apiKey ? (this.schedule === 'snapshots' ? `${what} · snapshots at T-${this.offsets.join('/')} min` : `${what} · every ${cfg.pollSec}s (interval mode)`) : 'not configured',
+      staleMs: this.schedule === 'snapshots' ? 36 * 3.6e6 : cfg.pollSec * 2500 });
+    health.register('odds.events', { label: 'The Odds API · event slate (free)', group: 'sports', note: '/events costs 0 credits; drives the snapshot schedule', staleMs: (cfg.eventsRefreshMin || 180) * 150e3 });
     health.register('odds.scores', { label: 'The Odds API · scores', group: 'sports', note: 'settles paper bets', staleMs: Infinity });
     health.register('odds.mock', { label: 'Mock sportsbook odds (synthetic)', group: 'sports', kind: 'mock', note: 'used when ODDS_API_KEY is unset or the API fails', staleMs: 30000 });
   }
   get simulated() { return this.mode === 'mock'; }
   start() {
-    if (this.c.apiKey) { this.pollOdds(); this.oddsT = setInterval(() => this.pollOdds(), this.c.pollSec * 1000); this.scoreT = setInterval(() => this.pollScores(), this.c.scoresPollSec * 1000); }
-    else this.startMock();
+    if (!this.c.apiKey) return this.startMock();
+    if (this.quota && this.quota.remaining != null && this.quota.remaining <= 0) { this.markExhausted('last seen x-requests-remaining = 0'); return; }
+    if (this.schedule === 'snapshots') { this.tickSchedule(); this.oddsT = setInterval(() => this.tickSchedule(), 60e3); return; }
+    this.pollOdds(); this.oddsT = setInterval(() => this.pollOdds(), this.c.pollSec * 1000); this.scoreT = setInterval(() => this.pollScores(), this.c.scoresPollSec * 1000);
   }
   stop() { clearInterval(this.oddsT); clearInterval(this.scoreT); clearInterval(this.mockT); }
-  async get(path, params, id) {
+  /** Budget gate for one paid call. Reserves `cost` credits up front; get() reconciles with x-requests-last. */
+  allow(cost, kind, what) {
+    const d = this.budget.check(cost, kind);
+    if (!d.ok) { this.budget.refuse(); this.skipped.unshift({ t: this.now(), what, kind, reason: d.reason }); this.skipped.length = Math.min(this.skipped.length, 20); return false; }
+    this.budget.spend(cost, kind); this.pendingCost = cost; return true;
+  }
+  /** Free key ran out: stop ALL polling (no key switching), keep cached data, show it in the desk. */
+  markExhausted(why) {
+    if (this.exhausted) return; this.exhausted = { at: this.now(), why };
+    clearInterval(this.oddsT); clearInterval(this.scoreT); this.oddsT = this.scoreT = null;
+    this.note = `The Odds API QUOTA EXHAUSTED (${why}) on ${this.c.keySlot || 'ODDS_API_KEY'}: polling stopped. No automatic key switch; showing cached data only.`;
+    this.health.fail('odds.theoddsapi', 'quota exhausted: polling stopped (' + why + ')');
+  }
+  /** Cache → budget guard → request → cache. Returns null when refused by the guard. cost 0 = free endpoint. */
+  async cachedGet(path, params, id, { cost, kind, what, ttlMs }) {
+    const k = this.cache.key(path, params); const hit = this.cache.get(k, ttlMs != null ? ttlMs : this.cacheTtlMs, this.now());
+    if (hit) { this.cacheHits++; return hit; }
+    if (this.exhausted) return null;
+    if (cost > 0 && !this.allow(cost, kind, what)) return null;
+    const rows = await this.get(path, params, id, cost > 0 ? cost : null); this.cache.put(k, rows, this.now()); return rows;
+  }
+  /** Free slate refresh (/events = 0 credits). */
+  async refreshSlate() {
+    const from = new Date(this.now()).toISOString().replace(/\.\d+Z$/, 'Z'), to = new Date(this.now() + (this.c.horizonHours || 36) * 3.6e6).toISOString().replace(/\.\d+Z$/, 'Z');
+    for (const sport of this.c.sports) {
+      const rows = await this.cachedGet(`/sports/${encodeURIComponent(sport)}/events`, { dateFormat: 'iso', hours: this.c.horizonHours || 36 }, 'odds.events', { cost: 0, ttlMs: (this.c.eventsRefreshMin || 180) * 60e3 })
+        .then((r) => r.filter((e) => { const t = Date.parse(e.commence_time); return t >= Date.parse(from) && t <= Date.parse(to); }));
+      for (const e of rows) this.slate.set(e.id, { id: e.id, sport: e.sport_key || sport, home: e.home_team, away: e.away_team, commence: Date.parse(e.commence_time) });
+    }
+    const cut = this.now() - 6 * 3.6e6; for (const [id, e] of this.slate) if (e.commence < cut) this.slate.delete(id);
+    this.slateAt = this.now();
+  }
+  plan() { return planSnapshots([...this.slate.values()], { offsetsMin: this.offsets, mergeMin: this.c.snapshotMergeMin || 15, now: this.now(), horizonMs: (this.c.horizonHours || 36) * 3.6e6 }); }
+  /** Snapshot scheduler tick (every 60 s): refresh the free slate when due, run due snapshots, then scores. */
+  async tickSchedule() {
+    if (this.busy || this.exhausted) return; this.busy = true;
+    try {
+      if (this.now() - this.slateAt >= (this.c.eventsRefreshMin || 180) * 60e3) {
+        try { await this.refreshSlate(); if (!this.everOk) { this.everOk = true; this.mode = 'live'; } if (!this.exhausted) this.note = 'The Odds API (live, scheduled snapshots)'; }
+        catch (e) { if (!this.everOk) { this.note = `The Odds API failed (${e.message}) → MOCK odds (labelled; bets SIMULATED)`; this.stop(); this.startMock(); return; } }
+      }
+      for (const p of this.plan()) {
+        if (p.at > this.now() || this.done.has(p.key)) continue;
+        this.done.add(p.key); const kind = p.closing ? 'closing' : 'snapshot';
+        try { if (await this.snapshotOdds(p.sport, p.latestCommence, kind, `${p.sport} T-${p.offsets.join('/')} (${p.eventIds.length} games)`)) this.snapshots++; } catch { /* health shows it */ }
+      }
+      if (this.exhausted) return;
+      if (this.done.size > 2000) this.done = new Set([...this.done].slice(-500));
+      await this.pollScores();
+    } finally { this.busy = false; }
+  }
+  async snapshotOdds(sport, toMs, kind = 'snapshot', what = sport) {
+    const p = { markets: this.c.markets.join(','), oddsFormat: 'decimal', dateFormat: 'iso' };
+    if (this.c.bookmakers && this.c.bookmakers.length) p.bookmakers = this.c.bookmakers.join(','); else p.regions = this.c.regions.join(',');
+    // commenceTimeTo rounded to the minute so the cache key is stable within a tick; commenceTimeFrom omitted (API default = upcoming)
+    if (toMs) p.commenceTimeTo = new Date(Math.ceil((toMs + 60e3) / 60e3) * 60e3).toISOString().replace(/\.\d+Z$/, 'Z');
+    const rows = await this.cachedGet(`/sports/${encodeURIComponent(sport)}/odds`, p, 'odds.theoddsapi', { cost: this.cost, kind, what });
+    if (!rows) return false;
+    for (const e of rows) this.upsert(normalizeOddsApi(e)); this.prune(); return true;
+  }
+  async get(path, params, id, reserved = null) {
     const u = new URL(BASE + path); for (const [k, v] of Object.entries({ ...params, apiKey: this.c.apiKey })) u.searchParams.set(k, v);
-    const t0 = Date.now();
+    const t0 = Date.now(); let gotResponse = false;
     try {
       const r = await this.fetch(u, { headers: { accept: 'application/json', 'user-agent': 'hawse-paper-desk/2.0' }, signal: AbortSignal.timeout(10000) });
-      const rem = r.headers.get('x-requests-remaining'), used = r.headers.get('x-requests-used'), last = r.headers.get('x-requests-last'); if (rem != null) this.quota = { remaining: +rem, used: used != null ? +used : null, last: last != null ? +last : null, at: Date.now() };
-      const text = await r.text(); if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0, 120).replace(/\s+/g, ' ')}`);
+      gotResponse = true; const rem = r.headers.get('x-requests-remaining'), used = r.headers.get('x-requests-used'), last = r.headers.get('x-requests-last'); if (rem != null) { this.quota = { remaining: +rem, used: used != null ? +used : null, last: last != null ? +last : null, at: Date.now() }; this.budget.setApiQuota(this.quota); this.cache.setQuota(this.quota); }
+      if (reserved != null && last != null && +last !== reserved) this.budget.spend(+last - reserved, 'reconcile'); // provider-reported actual cost wins
+      const text = await r.text();
+      if ((rem != null && +rem <= 0) || (!r.ok && (r.status === 401 || r.status === 429) && /quota|usage|limit|credits/i.test(text))) this.markExhausted(r.ok ? 'x-requests-remaining = 0' : `HTTP ${r.status}`);
+      if (!r.ok) throw new Error(`HTTP ${r.status}: ${text.slice(0, 120).replace(/\s+/g, ' ')}`);
       this.health.ok(id, Date.now() - t0); return JSON.parse(text);
-    } catch (e) { const msg = redact(String(e.message || e)).split(this.c.apiKey).join('***'); this.health.fail(id, msg); throw new Error(msg); }
+    } catch (e) {
+      if (!gotResponse && reserved) this.budget.spend(-reserved, 'refund'); // network failure: no request reached the API, nothing billed
+      const msg = redact(String(e.message || e)).split(this.c.apiKey).join('***'); this.health.fail(id, msg); throw new Error(msg); }
   }
+  /** Interval mode (opt-in ODDS_SCHEDULE=interval): every pollSec, all sports. Still budget-guarded. */
   async pollOdds() {
+    if (this.exhausted) return;
     try {
       for (const sport of this.c.sports) {
-        const rows = await this.get(`/sports/${encodeURIComponent(sport)}/odds`, { regions: this.c.regions.join(','), markets: this.c.markets.join(','), oddsFormat: 'decimal', dateFormat: 'iso' }, 'odds.theoddsapi');
-        for (const e of rows) this.upsert(normalizeOddsApi(e));
+        await this.snapshotOdds(sport, null, 'snapshot', `${sport} interval poll`);
       }
       this.everOk = true; this.mode = 'live'; this.note = 'The Odds API (live odds)';
       this.prune();
@@ -75,8 +167,13 @@ class OddsFeed {
   }
   async pollScores() {
     const now = this.now(); const sports = new Set([...this.events.values()].filter((e) => e.commence < now && !this.scores.has(e.id)).map((e) => e.sport));
+    const after = (this.c.scoresAfterMin != null ? this.c.scoresAfterMin : 200) * 60e3, gap = (this.c.scoresMinGapH != null ? this.c.scoresMinGapH : 12) * 3.6e6;
     for (const sport of sports) {
-      try { const rows = await this.get(`/sports/${encodeURIComponent(sport)}/scores`, { daysFrom: 3, dateFormat: 'iso' }, 'odds.scores'); for (const r of rows) { const s = scoreFromApi(r); if (s) this.scores.set(r.id, { ...s, at: now }); } } catch { /* health shows it */ }
+      // Only when a game should be over, and at most once per scoresMinGapH per sport. daysFrom=1 → 2 credits.
+      if (![...this.events.values()].some((e) => e.sport === sport && e.commence + after <= now && !this.scores.has(e.id))) continue;
+      if (this.lastScores[sport] && now - this.lastScores[sport] < gap) continue;
+      this.lastScores[sport] = now;
+      try { const rows = (await this.cachedGet(`/sports/${encodeURIComponent(sport)}/scores`, { daysFrom: 1, dateFormat: 'iso' }, 'odds.scores', { cost: 2, kind: 'scores', what: `${sport} scores`, ttlMs: 3 * 3.6e6 })) || []; for (const r of rows) { const s = scoreFromApi(r); if (s) this.scores.set(r.id, { ...s, at: now }); } } catch { /* health shows it */ }
     }
   }
   /** Store an event snapshot. While the game has not started, it is also the latest closing-line candidate. */
@@ -139,9 +236,22 @@ class OddsFeed {
     }
     this.health.ok('odds.mock', 0); this.prune();
   }
+  /** Client-safe credit view for the Data Sources panel. */
+  credits() {
+    const est = estimateMonthly({ sports: this.c.sports, markets: this.c.markets, regions: this.c.regions, bookmakers: this.c.bookmakers, offsetsMin: this.offsets });
+    const next = this.schedule === 'snapshots' && this.c.apiKey ? this.plan().filter((p) => !this.done.has(p.key)) : [];
+    const day = next.filter((p) => p.at < this.now() + 864e5);
+    return { provider: 'theoddsapi', unit: 'credits', planMonthly: this.c.planCredits || 500, cacheHits: this.cacheHits, cacheTtlSec: this.cacheTtlMs / 1000, schedule: this.schedule, costPerCall: this.cost, offsetsMin: this.offsets, live: !!this.c.apiKey && this.mode !== 'mock',
+      estMonthly: this.c.apiKey && this.schedule === 'interval' ? Math.round(this.c.sports.length * this.cost * (86400 / this.c.pollSec) * 30) : est,
+      estBasis: this.schedule === 'interval' ? `interval: ${this.c.sports.length} sport(s) × ${this.cost} cr every ${this.c.pollSec}s` : `${this.c.sports.length} sport(s) × ${this.offsets.length} snapshots × ~2.5 start-time clusters/day × ${this.cost} cr + scores`,
+      legacyPerDay: 3 * 3 * 96, next24h: day.length, next24hCredits: day.length * this.cost, nextAt: next[0] ? next[0].at : null,
+      keySlot: this.c.keySlot || 'ODDS_API_KEY', exhausted: this.exhausted || null,
+      ...this.budget.view(), apiRemaining: this.quota ? this.quota.remaining : null, apiUsed: this.quota ? this.quota.used : null, skipped: this.skipped.slice(0, 5) };
+  }
+  publicInfo() { return { credits: this.credits() }; }
   snapshot() {
     const now = this.now();
-    return { mode: this.mode, simulated: this.simulated, note: this.note, provider: this.mode === 'mock' ? 'MOCK' : 'The Odds API', quota: this.quota,
+    return { mode: this.mode, simulated: this.simulated, note: this.note, provider: this.mode === 'mock' ? 'MOCK' : 'The Odds API', quota: this.quota, credits: this.credits(),
       sports: this.mode === 'mock' ? Object.keys(MOCK_TEAMS) : this.c.sports, upcoming: this.upcoming().length, live: this.list().filter((e) => e.commence <= now && !this.scores.has(e.id)).length, settled: this.scores.size };
   }
 }

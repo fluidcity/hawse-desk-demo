@@ -44,7 +44,23 @@ function build(env = process.env) {
       holdHours: num(env.FUNDING_HOLD_HOURS, 24),
       minNetBps: num(env.FUNDING_MIN_NET_BPS, 8),
     },
-    helius: { apiKey: env.HELIUS_API_KEY || '', watch: list(env.HELIUS_WATCH_ADDRESSES, null), minUsd: num(env.WHALE_MIN_USD, 250000) },
+    helius: {
+      // Only the configured whale wallets are watched: HELIUS_WATCH_ADDRESSES, else FOLLOW_WALLETS_SOL. No busy-pool default for live modes.
+      apiKey: env.HELIUS_API_KEY || '', watch: list(env.HELIUS_WATCH_ADDRESSES, null) || list(env.FOLLOW_WALLETS_SOL, null), minUsd: num(env.WHALE_MIN_USD, 250000),
+      // OFF by default: without WHALES_ENABLED=true the Solana feed is labelled DEMO/MOCK and makes no Helius calls at all.
+      enabled: env.WHALES_ENABLED === 'true',
+      // When enabled: 'webhook' if a receiver secret is configured, else MOCK. 'poll' (Parsed Events, 10 cr/call) is opt-in.
+      mode: env.WHALES_ENABLED !== 'true' ? 'mock' : ['webhook', 'poll', 'mock', 'off'].includes(env.HELIUS_MODE) ? env.HELIUS_MODE : (env.HELIUS_WEBHOOK_AUTH ? 'webhook' : 'mock'),
+      dailyBudget: num(env.HELIUS_DAILY_CREDIT_BUDGET, 30000), // HARD daily cap (≈ 1M/month ÷ 30 = 33k); resets 00:00 UTC
+      pauseAtPct: num(env.HELIUS_PAUSE_AT_PCT, 90), // auto-pause at this % of the daily (or monthly) cap
+      webhookUrl: env.HELIUS_WEBHOOK_URL || '',
+      autoPauseWebhook: env.HELIUS_AUTO_PAUSE_WEBHOOK !== 'false', // near the cap, PATCH the webhook to active:false (needs API key + URL)
+      webhookAuth: env.HELIUS_WEBHOOK_AUTH || '', // shared secret Helius echoes in the Authorization header; server-side only
+      pollSec: Math.max(300, num(env.HELIUS_POLL_SEC, 900)), pollLimit: num(env.HELIUS_POLL_LIMIT, 25),
+      creditBudget: num(env.HELIUS_CREDIT_BUDGET, 300000), // hard monthly cap for credits this app spends (free plan = 1,000,000/month)
+    },
+    hooks: { port: num(env.HOOKS_PORT, 0), host: env.HOOKS_HOST || '127.0.0.1' }, // optional hooks-only listener (expose THIS via a tunnel, not the desk)
+    creditsFile: env.CREDITS_FILE !== undefined ? env.CREDITS_FILE : path.join(__dirname, '..', 'data', 'credits.json'),
     evm: {
       alchemyKey: env.ALCHEMY_API_KEY || '',
       infuraKey: env.INFURA_API_KEY || '',
@@ -65,7 +81,8 @@ function build(env = process.env) {
       basis: { minNetBps: num(env.BASIS_MIN_NET_BPS, 5), exitBps: num(env.BASIS_EXIT_BPS, 2), holdH: num(env.BASIS_HOLD_H, 24), maxHoldH: num(env.BASIS_MAX_HOLD_H, 72), sizePct: num(env.BASIS_SIZE_PCT, 0.45), maxPositions: num(env.BASIS_MAX_POSITIONS, 2) },
     },
     onepct: { symbols: list(env.ONEPCT_SYMBOLS, ['BTC', 'ETH', 'SOL']), targetNetPct: num(env.ONEPCT_TARGET_NET_PCT, 1), minScore: num(env.ONEPCT_MIN_SCORE, 80) },
-    jupiter: { base: env.JUPITER_API_BASE || 'https://lite-api.jup.ag' },
+    // lite-api.jup.ag is being retired; keyless api.jup.ag = 0.5 rps, a free JUPITER_API_KEY (x-api-key header, server-side) = 1 rps.
+    jupiter: { base: env.JUPITER_API_BASE || 'https://api.jup.ag', apiKey: env.JUPITER_API_KEY || '' },
     orb: { minutes: num(env.ORB_MINUTES, 15), targetR: num(env.ORB_TARGET_R, 1.5), feePerSide: num(env.ORB_FEE_PER_SIDE, 0.72), maxRiskPct: num(env.ORB_MAX_RISK_PCT, 8),
       minWidthPct: num(env.ORB_MIN_WIDTH_PCT, 0.1), maxWidthPct: num(env.ORB_MAX_WIDTH_PCT, 0.8), lastEntryMinute: 240, flatMinute: 385 },
     betting: require('./betting/config').fromEnv(env), // self-contained module config (server/betting/config.js)
@@ -82,6 +99,7 @@ function publicFlags(c) {
   return {
     tradingMode: 'paper',
     heliusConfigured: !!c.helius.apiKey,
+    heliusMode: c.helius.mode,
     evmKeyConfigured: !!(c.evm.alchemyKey || c.evm.infuraKey || c.evm.rpc.ethereum || c.evm.rpc.base || c.evm.rpc.arbitrum),
     evmPublicFallback: c.evm.publicFallback,
     tradovateConfigured: c.tradovate.configured,

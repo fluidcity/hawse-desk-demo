@@ -274,9 +274,33 @@ window.HAWSE.explain = (() => {
       const how = p.keyless ? 'Works without a key.' : p.connect.anyOf ? 'Set any one of these env vars (server-side .env), then restart:' : 'Set these env vars (server-side .env), then restart:';
       const open = openConnect.has(p.id);
       return `<div class="row prov" style="${cols}"><span>${esc(p.name)}<br><span class="dim sm">${esc(p.category)}${p.fallback ? ' · fallback: ' + esc(p.fallback) : ''}</span></span><span>${badge(p.status)}</span><span>${p.latencyMs == null ? '—' : Math.round(p.latencyMs) + 'ms'}</span>
-        <span class="sm">${p.unlocks.map(esc).join(' · ')}${pythInfo(p)}</span><span><button type="button" class="btn sm" data-connect="${esc(p.id)}">${open ? 'Close' : p.keyless ? 'Details' : 'Connect'}</button></span>
+        <span class="sm">${p.unlocks.map(esc).join(' · ')}${pythInfo(p)}${creditInfo(p)}</span><span><button type="button" class="btn sm" data-connect="${esc(p.id)}">${open ? 'Close' : p.keyless ? 'Details' : 'Connect'}</button></span>
         ${open ? `<div class="connect sm" style="grid-column:1/-1"><div>${how}</div><div class="mono">${vars}</div>${p.connect.signup ? `<div>Sign up / docs: <a href="${esc(p.connect.signup)}" target="_blank" rel="noopener">${esc(p.connect.signup)}</a></div>` : ''}${p.placeholder ? '<div class="warn">Placeholder: no adapter yet. Add one file in server/providers/adapters/ (see README).</div>' : ''}<div class="dim">feeds: ${p.feeds.map((f) => esc(f.id) + ' ' + esc(f.status) + ' via ' + esc(f.transport || 'rest')).join(' · ') || 'none'}</div></div>` : ''}</div>`; }).join('');
     $('providers').querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => { const id = b.dataset.connect; openConnect.has(id) ? openConnect.delete(id) : openConnect.add(id); renderProviders(); });
+  }
+  // Credit-usage estimate + budget guard (Helius, The Odds API). Numbers are local counters / estimates, not provider invoices.
+  function creditInfo(p) {
+    const c = p.extra && p.extra.credits; if (!c) return '';
+    const n = (x) => (x == null ? '—' : Math.round(x).toLocaleString());
+    const pct = c.budget ? Math.min(100, (100 * (c.used || 0)) / c.budget) : 0;
+    const over = c.overBudget || (c.estMonthly != null && c.planMonthly && c.estMonthly > c.planMonthly);
+    const bits = [`<b>Credits ${esc(c.month || '')}</b>: ${n(c.used)} / ${n(c.budget)} budget used (guard)`, `free plan ${n(c.planMonthly)}/mo`,
+      `est. ${n(c.estMonthly)}/mo${c.estBasis ? ` (${esc(c.estBasis)})` : ''}`];
+    if (c.mode) bits.unshift(`mode <b>${esc(c.mode)}</b>`);
+    if (c.enabled === false) bits.unshift('<span class="warn">DEMO: WHALES_ENABLED=false, no Helius calls</span>');
+    if (c.dailyBudget != null) bits.splice(1, 0, `<b>today</b> ${n(c.usedToday)} / ${n(c.dailyBudget)} daily cap (auto-pause at ${n(c.pauseAtPct)}%)`);
+    if (c.paused) bits.push(`<span class="neg">AUTO-PAUSED${c.autoPaused && c.autoPaused.remote ? ': ' + esc(c.autoPaused.remote) : ''}</span>`);
+    if (c.watchConfigured === false && c.enabled) bits.push('<span class="warn">no whale wallets configured (HELIUS_WATCH_ADDRESSES / FOLLOW_WALLETS_SOL)</span>');
+    if (c.schedule) bits.unshift(`schedule <b>${esc(c.schedule)}</b> · ${n(c.costPerCall)} cr/call`);
+    if (c.legacyPerDay) bits.push(`<span class="dim">old default ≈ ${n(c.legacyPerDay)}/day</span>`);
+    if (c.apiRemaining != null) bits.push(`API reports ${n(c.apiRemaining)} left`);
+    if (c.next24h != null && c.schedule === 'snapshots') bits.push(`${c.next24h} snapshot(s) next 24h`);
+    if (c.refused) bits.push(`<span class="warn">${n(c.refused)} call(s) refused by guard</span>`);
+    if (c.closingOnly) bits.push('<span class="warn">closing-only throttle</span>');
+    if (over) bits.push('<span class="neg">estimate exceeds free plan</span>');
+    const dpct = c.dailyBudget ? Math.min(100, (100 * (c.usedToday || 0)) / c.dailyBudget) : null;
+    return `<br><span class="sm mono credits" data-credits="${esc(p.id)}">${bits.join(' · ')}</span><span class="credit-bar" title="month"><i style="width:${pct.toFixed(1)}%"></i></span>` +
+      (dpct == null ? '' : `<span class="credit-bar daily${c.paused ? ' paused' : ''}" title="today"><i style="width:${dpct.toFixed(1)}%"></i></span>`);
   }
   function pythInfo(p) {
     if (!p.extra || !p.extra.checks) return '';

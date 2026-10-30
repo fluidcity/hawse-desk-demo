@@ -43,7 +43,9 @@ class Providers {
   }
   list() {
     const rows = this.engine.health.list();
-    return this.entries.map((e) => describe(e, this.env, rows, this.adapters[e.id] && this.adapters[e.id].publicInfo ? this.adapters[e.id].publicInfo() : null));
+    return this.entries.map((e) => { // adapter feeds, or a host feed named by entry.feed (e.g. whale.solana credit view)
+      const f = this.adapters[e.id] || (e.feed && this.engine.feeds[e.feed]);
+      return describe(e, this.env, rows, f && f.publicInfo ? f.publicInfo() : null); });
   }
 }
 module.exports = { Providers, describe, ENTRIES };

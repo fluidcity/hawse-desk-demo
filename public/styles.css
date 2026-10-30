@@ -174,3 +174,5 @@ canvas.eq{width:100%;height:160px;display:block;border:1px solid var(--line);bor
 .strats{align-items:start}
 @media (max-width:600px){.lab-grid .x-row,.bd-rule .x-row,.x-under .x-row{grid-template-columns:1fr;gap:2px}.explain>summary{min-height:44px}.x-body{font-size:12.5px}}
 @media (prefers-reduced-motion:reduce){.x-caret{transition:none}}
+.credit-bar{display:block;height:3px;background:var(--line,#333);margin-top:3px;max-width:260px}.credit-bar i{display:block;height:100%;background:var(--amber)}
+.credit-bar.daily i{background:var(--warn,#d9a400)}.credit-bar.paused i{background:var(--neg,#e5484d)}

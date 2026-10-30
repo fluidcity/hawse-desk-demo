@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0c0f0c" />
+  <title>HAWSE · Desk Reference</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <div id="app" class="shell">
+    <header class="top">
+      <div class="brand">
+        <span class="mark">HAWSE</span>
+        <span class="mode-pill" id="modePill">PAPER</span>
+      </div>
+      <div class="status-row">
+        <span class="dot live" id="liveDot"></span>
+        <span class="mono muted" id="clock">00:00:00</span>
+        <span class="sep">·</span>
+        <span class="mono" id="regime">Quiet</span>
+      </div>
+    </header>
+    <section class="equity-plate">
+      <div class="equity-main">
+        <div class="label">Equity</div>
+        <div class="equity-val mono" id="equity">$1,000.00</div>
+        <div class="pnl mono" id="pnlDay"><span class="pos">+$0.00</span> today</div>
+      </div>
+      <div class="goal">
+        <div class="goal-bar"><div class="goal-fill" id="goalFill" style="width:0.1%"></div></div>
+        <div class="goal-meta mono muted">
+          <span>$1k</span><span class="mid">→</span><span>$1M ref</span>
+        </div>
+      </div>
+      <canvas id="spark" width="600" height="80" aria-label="Equity curve"></canvas>
+    </section>
+    <main class="grid">
+      <section class="panel strats">
+        <div class="panel-h">
+          <h2>Strategies</h2>
+          <button type="button" class="btn ghost sm" id="armRec">Arm recommended</button>
+        </div>
+        <div class="strat-list" id="stratList"></div>
+      </section>
+      <section class="panel risk">
+        <div class="panel-h"><h2>Risk</h2></div>
+        <div class="field">
+          <div class="field-label">Pace</div>
+          <div class="seg" id="paceSeg" role="group" aria-label="Pace"></div>
+          <p class="hint mono muted" id="paceHint">Steady · normal queue</p>
+        </div>
+        <div class="field">
+          <div class="field-label">Aggression</div>
+          <div class="seg five" id="aggSeg" role="group" aria-label="Aggression"></div>
+        </div>
+        <div class="field">
+          <div class="field-label">Breaker</div>
+          <div class="seg" id="ddSeg" role="group" aria-label="Drawdown limit"></div>
+        </div>
+        <div class="risk-actions">
+          <button type="button" class="btn hot" id="haltBtn" aria-label="Halt desk">Halt</button>
+          <button type="button" class="btn ghost" id="resetBtn">Reset paper</button>
+        </div>
+      </section>
+      <section class="panel venues">
+        <div class="panel-h"><h2>SOL funding</h2><span class="mono muted sm" id="fundTs">—</span></div>
+        <div class="matrix" id="matrix"></div>
+        <div class="best-card" id="bestCard">
+          <div class="best-title">Best pair</div>
+          <div class="best-body mono" id="bestBody">Scanning…</div>
+          <button type="button" class="btn lime sm" id="armBest" disabled>Arm pair</button>
+        </div>
+      </section>
+      <section class="panel tape">
+        <div class="panel-h"><h2>Tape</h2></div>
+        <div class="tape-list mono" id="tape" aria-live="polite"></div>
+      </section>
+    </main>
+    <footer class="foot muted mono">UI reference demo · simulated paper · not live trading</footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

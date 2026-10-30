@@ -112,7 +112,7 @@ function build(env = process.env) {
       kalshiWs: { enabled: bool(env.KALSHI_WS, false), url: env.KALSHI_WS_URL || 'wss://api.elections.kalshi.com/trade-api/ws/v2', cfIndex: bool(env.KALSHI_WS_CF_INDEX, false),
         indexIds: list(env.KALSHI_WS_CF_INDEX_IDS, ['BRTI', 'ETHUSD_RTI', 'SOLUSD_RTI', 'XRPUSD_RTI']), kinds: bool(env.KALSHI_WS_EXTRA, false) ? ['crypto', 'extra'] : ['crypto'] },
       polymarket: { enabled: bool(env.RECORDER_POLYMARKET, true), assets: list(env.RECORDER_POLY_ASSETS, ['btc', 'eth', 'sol', 'xrp']), topN: num(env.RECORDER_POLY_TOP, 10), bookMs: Math.max(1000, num(env.RECORDER_POLY_BOOK_MS, 2000)) },
-      ref: { enabled: bool(env.RECORDER_REF, true), venues: list(env.RECORDER_REF_VENUES, ['coinbase', 'kraken', 'bitstamp', 'gemini', 'cryptocom']), assets: list(env.RECORDER_REF_ASSETS, ['BTC', 'ETH', 'SOL', 'XRP']) },
+      ref: { enabled: bool(env.RECORDER_REF, true), venues: list(env.RECORDER_REF_VENUES, ['coinbase', 'kraken', 'bitstamp', 'gemini', 'cryptocom', 'bullish']), assets: list(env.RECORDER_REF_ASSETS, ['BTC', 'ETH', 'SOL', 'XRP']) },
       odds: { enabled: bool(env.RECORDER_ODDS, true) },
     },
     storage: { // H7 Storage panel: fill bars per disk/memory consumer + runtime recorder-cap control (data/runtime/recorder-cap.json, gitignored)

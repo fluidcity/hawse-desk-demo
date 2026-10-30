@@ -524,7 +524,7 @@ Record only. There is no strategy, no order code and no authentication. It imple
 **Deviation from the spec:** miro asked for Kalshi's WebSocket (`orderbook_delta`). That WebSocket requires API-key
 request signing, and this job forbids auth-signing code, so books are polled over public REST instead. That gives
 1 s resolution, not every delta, and no exchange timestamp on books (trades do carry one).
-The `ref` median is a BRTI-*like* median of last trades from 5 of the 7 CF constituents (LMAX and Bullish are not wired).
+The `ref` median is a BRTI-*like* median of last trades from 6 of the 7 CF constituents (Bullish added in H7; LMAX Digital has no free public feed — see [docs/reference-price-sources.md](docs/reference-price-sources.md)).
 It is **not** the CF Benchmarks index and not Kalshi's settlement source.
 
 **Files.** Output goes to `data/recorder/<UTC day>/<stream>.<HHMMSS>-<pid>.jsonl`. Files are append-only

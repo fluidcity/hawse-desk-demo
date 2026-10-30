@@ -115,6 +115,11 @@ function build(env = process.env) {
       ref: { enabled: bool(env.RECORDER_REF, true), venues: list(env.RECORDER_REF_VENUES, ['coinbase', 'kraken', 'bitstamp', 'gemini', 'cryptocom', 'bullish']), assets: list(env.RECORDER_REF_ASSETS, ['BTC', 'ETH', 'SOL', 'XRP']) },
       odds: { enabled: bool(env.RECORDER_ODDS, true) },
     },
+    cfRecorder: { // H7 Stage L: always-on Cloudflare recorder (cloudflare/recorder). URL + READ token from env only (never sent to the browser).
+      enabled: bool(env.CF_RECORDER, !!(env.CF_RECORDER_URL && env.CF_RECORDER_READ_TOKEN)), url: env.CF_RECORDER_URL || '', readToken: env.CF_RECORDER_READ_TOKEN || '',
+      dir: env.CF_RECORDER_DIR || path.join(__dirname, '..', 'data', 'recorder', 'cf'), statusMs: Math.max(15000, num(env.CF_RECORDER_STATUS_MS, 60000)),
+      sync: bool(env.CF_RECORDER_SYNC, true), syncMs: Math.max(60000, num(env.CF_RECORDER_SYNC_MS, 600000)), staleMs: Math.max(60000, num(env.CF_RECORDER_STALE_MS, 180000)),
+    },
     storage: { // H7 Storage panel: fill bars per disk/memory consumer + runtime recorder-cap control (data/runtime/recorder-cap.json, gitignored)
       enabled: bool(env.STORAGE_PANEL, true), dataDir: env.STORAGE_DATA_DIR || path.join(__dirname, '..', 'data'), logFile: env.DESK_LOG_FILE || '',
       minGb: Math.max(0.1, num(env.RECORDER_CAP_MIN_GB, 1)), maxGb: num(env.RECORDER_CAP_MAX_GB, 500), warnPct: num(env.STORAGE_WARN_PCT, 70), critPct: num(env.STORAGE_CRIT_PCT, 90),

@@ -23,6 +23,7 @@ const { MevLab } = require('./strategies/mev-lab');
 const { Recorder } = require('./recorder');
 const { makeWsAuth } = require('./kalshi-auth/ws-sign');
 const { StorageMonitor, readRuntimeCap } = require('./storage');
+const { CfRecorderRemote } = require('./recorder/cf-remote');
 const { KalshiH2Paper } = require('./kalshi-h2');
 
 module.exports = {
@@ -84,9 +85,13 @@ module.exports = {
     const c = engine.cfg.kalshiH2; if (!c || !c.enabled || !engine.recorder || !engine.recorder.kalshi) return;
     engine.kalshiH2 = engine.addFeed('kalshiH2', new KalshiH2Paper({ kalshi: engine.recorder.kalshi, health: engine.health, dir: c.dir, log: engine.log || ((m) => console.log(m)) }));
   },
+  cfRecorder(engine) { // H7 Stage L: status + pull client for the always-on Cloudflare recorder. READ token stays server-side.
+    const c = engine.cfg.cfRecorder; if (!c || !c.enabled) return;
+    engine.cfRecorder = engine.addFeed('cfRecorder', new CfRecorderRemote({ url: c.url, token: c.readToken, dir: c.dir, health: engine.health, statusMs: c.statusMs, syncMs: c.syncMs, sync: c.sync, staleMs: c.staleMs, log: engine.log || ((m) => console.log(m)) }));
+  },
   storage(engine) { // H7: disk/memory fill bars + live recorder-cap control. Read-only measuring; the only write is the cap file.
     const c = engine.cfg.storage; if (!c || !c.enabled) return;
-    engine.storage = engine.addFeed('storage', new StorageMonitor({ dataDir: c.dataDir, recorder: engine.recorder || null, logFiles: c.logFile ? [c.logFile] : [], minGb: c.minGb, maxGb: c.maxGb, warnPct: c.warnPct, critPct: c.critPct, log: engine.log || ((m) => console.log(m)) }));
+    engine.storage = engine.addFeed('storage', new StorageMonitor({ dataDir: c.dataDir, recorder: engine.recorder || null, cf: engine.cfRecorder || null, logFiles: c.logFile ? [c.logFile] : [], minGb: c.minGb, maxGb: c.maxGb, warnPct: c.warnPct, critPct: c.critPct, log: engine.log || ((m) => console.log(m)) }));
   },
   lab(engine) {
     const file = engine.cfg.lab && engine.cfg.lab.file !== undefined ? engine.cfg.lab.file : path.join(__dirname, '..', 'data', 'lab', 'strategies.json');

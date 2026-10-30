@@ -427,6 +427,7 @@ window.HAWSE.explain = (() => {
       ` · venues ${Object.entries(RF.venues || {}).map(([v, x]) => `<span class="${x.open ? 'pos' : 'neg'}">${esc(v)}</span>`).join(' ')}</div>` +
       `<div class="subh">Kalshi WebSocket (optional, read-only key): ${!R.kalshiWs ? 'off (<code>KALSHI_WS=true</code> + a read-only key turns it on; see docs/kalshi-api-key.md)' : R.kalshiWs.problem ? '<span class="neg">' + esc(R.kalshiWs.problem) + '</span>' : `${R.kalshiWs.socket && R.kalshiWs.socket.open ? '<span class="pos">open</span>' : '<span class="neg">closed</span>'} · ${R.kalshiWs.markets} markets · ${compact(R.kalshiWs.counts.snap)} snapshots · ${compact(R.kalshiWs.counts.delta)} deltas · ${compact(R.kalshiWs.counts.trade)} trades · ${R.kalshiWs.counts.seqGaps} seq gaps${R.kalshiWs.cfIndex ? ' · CF index ' + Object.entries(R.kalshiWs.cf || {}).map(([k, x]) => esc(k) + ' ' + (x.v ?? '—')).join(' · ') : ''}`}</div>` +
       `<div class="subh">Rebuilt index vs Kalshi official 15m outcomes (miro, target &gt; ${R.agree ? (100 * R.agree.target).toFixed(1) : '99.5'}%): ${!R.agree ? 'off (needs the ref median + Kalshi recorder)' : Object.keys(R.agree.sources).length ? Object.entries(R.agree.sources).map(([k, a]) => `<span class="badge ${a.status === 'met' ? 'live' : a.status === 'not met' ? 'down' : 'stale'}">${esc(a.status.toUpperCase())}</span> ${k === 'cf' ? 'Kalshi CF feed' : '6-venue median'} ${a.agree}/${a.compared}${a.rate == null ? '' : ` = ${(100 * a.rate).toFixed(2)}%`}${a.ci95 ? ` <span class="dim">(95% CI ${(100 * a.ci95.lo).toFixed(1)}–${(100 * a.ci95.hi).toFixed(1)}%)</span>` : ''} · ${a.insufficient} with &lt; ${R.agree.minSamples} s coverage`).join(' · ') : '<span class="badge stale">PENDING</span> no settled crypto 15m market seen since desk start'} <span class="dim">· pending until ${R.agree ? R.agree.minSettled : 200} compared · display only</span></div>` +
+      cfLine(S.feeds && S.feeds.cfRecorder) +
       `<div class="subh">Sports odds tap: ${esc(O.note || '')} · ${O.rows || 0} rows${O.credits ? ` · Odds API credits remaining ${O.credits.remaining}` : ''}</div>` +
       `<div class="subh">Requests: ${[['Kalshi', K], ['Poly', PM]].map(([n, x]) => `${n} ${x.errors || 0} errors${Object.keys(x.errKinds || {}).length ? ' (' + Object.entries(x.errKinds).map(([k, v]) => esc(k) + ' ' + v).join(', ') + ')' : ''} · ${x.rateSkipped || 0} rate-skipped · ${x.loopSkips || 0} busy-loop skips`).join(' · ')}</div>`;
     const cols = 'grid-template-columns:1.6fr 60px 70px 70px 64px 64px';
@@ -436,6 +437,15 @@ window.HAWSE.explain = (() => {
     const gc = 'grid-template-columns:70px 110px 1.2fr 70px';
     $('recGaps').innerHTML = (G.recent || []).length ? `<div class="row head" style="${gc}"><span>at</span><span>reason</span><span>stream · key</span><span>length</span></div>` + G.recent.map((g) => `<div class="row" style="${gc}"><span class="dim">${hhmmss(g.to)}</span><span class="warn">${esc(g.reason)}</span><span class="sm">${esc(g.stream)} · ${esc(String(g.key))}</span><span>${ago(g.ms)}</span></div>`).join('') : '';
   }
+  // H7 Stage L: one honest line for the always-on Cloudflare recorder. STALE whenever the remote is not writing or unreachable.
+  function cfLine(C) {
+    if (!C || C.state === 'off') return '';
+    const st = C.state === 'live' ? 'live' : C.state === 'pending' ? 'pending' : 'stale'; // anything not writing is STALE, never LIVE
+    const lbl = C.state === 'live' ? '' : ` <span class="warn">${esc(C.staleReason || '')}</span>`;
+    const pct = (x) => (100 * (x || 0)).toFixed(2) + '%';
+    const rows = C.stored ? C.stored.rows.toLocaleString() : '—';
+    return `<div class="subh">Cloudflare recorder ${badge(st)}${lbl} · ${esc(C.host || '')} · last write ${C.lastWriteAgeS == null ? '—' : C.lastWriteAgeS + 's ago'} · ${rows} rows stored · 429s ${C.s429 || 0}/${(C.req || 0).toLocaleString()} (${pct(C.share429)}) · ${C.gaps || 0} gaps · ${C.restarts || 0} restarts · synced ${C.sync ? C.sync.files : 0} chunks${C.sync && C.sync.error ? ' <span class="neg">sync: ' + esc(C.sync.error) + '</span>' : ''}</div>`;
+  }
   function renderStorage() {
     const V = S.feeds && S.feeds.storage; $('storCard').hidden = !V; if (!V || !V.bars) return;
     const B = (n) => (n == null ? '—' : n >= 2 ** 30 ? (n / 2 ** 30).toFixed(2) + ' GiB' : n >= 2 ** 20 ? (n / 2 ** 20).toFixed(1) + ' MiB' : n >= 1024 ? (n / 1024).toFixed(0) + ' KiB' : n + ' B');
@@ -443,6 +453,7 @@ window.HAWSE.explain = (() => {
     const worst = V.bars.some((b) => b.level === 'crit') ? 'down' : V.bars.some((b) => b.level === 'warn') ? 'stale' : 'live';
     $('storMode').innerHTML = `${badge(worst)} measured ${ago(Date.now() - V.at)}`;
     $('storBars').innerHTML = V.bars.map((b) => `<div style="margin:6px 0"><div class="dim sm mono" style="display:flex;justify-content:space-between"><span><b style="color:var(--fg,inherit)">${esc(b.label)}</b> · ${esc(b.note || '')}</span><span class="${b.level === 'crit' ? 'neg' : b.level === 'warn' ? 'warn' : ''}">${B(b.used)}${b.limit ? ' / ' + B(b.limit) + ' · ' + b.pct.toFixed(1) + '%' : ''} ${b.level === 'n/a' ? '' : esc(b.level.toUpperCase())}</span></div><div class="bar"><i style="left:0;width:${Math.min(100, Math.max(b.pct ? 0.6 : 0, b.pct || 0)).toFixed(1)}%;background:${col[b.level]}"></i></div></div>`).join('');
+    const cb = V.bars.find((b) => b.id === 'cf'); if (cb && cb.cf) $('storBars').innerHTML += cfLine(cb.cf);
     const inp = $('storCap'), rb = V.bars.find((b) => b.id === 'recorder');
     if (inp && document.activeElement !== inp) { if (rb && rb.limit) inp.value = +(rb.limit / 2 ** 30).toFixed(1); inp.min = V.limits.minGb; inp.max = V.limits.maxGb; }
     $('storCtl').hidden = !(rb && rb.limit);

@@ -4,7 +4,8 @@
 //   recorder data (data/recorder vs the recorder cap), paper ledgers (data/paper), odds cache (data/odds-cache.json +
 //   data/credits.json), logs (*.log under data/ plus DESK_LOG_FILE), total data/ dir, host disk (statfs of data/'s
 //   filesystem), process RSS (vs host RAM) and V8 heap (vs the heap limit). Uncapped consumers are shown as a share of
-//   the host disk and say "no cap".
+//   the host disk and say "no cap". With the Cloudflare recorder configured, a 'cf' bar shows its remote SQLite use vs MAX_BYTES
+//   and its LIVE/STALE state (STALE also turns the bar amber).
 // Runtime cap: setRecorderCap(gb) validates [minGb, maxGb] and the free disk, persists {capGb, at, prevGb} to
 // data/runtime/recorder-cap.json (gitignored with the rest of data/), appends to data/runtime/cap-changes.jsonl, writes
 // a 'cap_change' meta row in the recorder and applies it to the live store at once (no restart). Shrinking the cap
@@ -25,10 +26,10 @@ function within(child, parent) { const r = path.relative(path.resolve(parent), p
 function readRuntimeCap(file) { try { const j = JSON.parse(fs.readFileSync(file, 'utf8')); return Number.isFinite(+j.capGb) && +j.capGb > 0 ? +j.capGb : null; } catch { return null; } }
 
 class StorageMonitor {
-  constructor({ dataDir, recorder = null, runtimeDir, logFiles = [], minGb = 1, maxGb = 500, warnPct = 70, critPct = 90, everyMs = 30000,
+  constructor({ dataDir, recorder = null, cf = null, runtimeDir, logFiles = [], minGb = 1, maxGb = 500, warnPct = 70, critPct = 90, everyMs = 30000,
     statfs = (p) => fs.statfsSync(p), mem = () => process.memoryUsage(), totalMem = () => os.totalmem(), heapLimit = () => v8.getHeapStatistics().heap_size_limit,
     now = () => Date.now(), log = (m) => console.log(m) }) {
-    Object.assign(this, { dataDir, recorder, logFiles, minGb, maxGb, warnPct, critPct, everyMs, statfs, mem, totalMem, heapLimit, now, log });
+    Object.assign(this, { dataDir, recorder, cf, logFiles, minGb, maxGb, warnPct, critPct, everyMs, statfs, mem, totalMem, heapLimit, now, log });
     this.runtimeDir = runtimeDir || path.join(dataDir, 'runtime'); this.capFile = path.join(this.runtimeDir, 'recorder-cap.json'); this.changeLog = path.join(this.runtimeDir, 'cap-changes.jsonl');
     this.last = null; this.changes = []; this.timer = null;
   }
@@ -45,6 +46,7 @@ class StorageMonitor {
     const total = sizeOf(D); const m = this.mem(); const capBytes = st ? st.capBytes : null;
     const bars = [
       this.bar('recorder', 'Recorder data', rec, capBytes, capBytes ? `cap ${(capBytes / GiB).toFixed(1)} GiB · oldest closed files pruned first` : 'recorder off'),
+      ...(this.cf ? [this.cfBar()] : []),
       this.bar('paper', 'Paper ledgers', paper, share, 'no cap (share of disk) · never pruned (frozen-test ledger is protected)'),
       this.bar('odds', 'Odds cache + credits', odds, share, 'no cap (share of disk) · small JSON, rewritten in place'),
       this.bar('logs', 'Logs', logs, share, 'no cap (share of disk) · *.log under data/' + (this.logFiles.length ? ' + desk log' : '')),
@@ -55,6 +57,12 @@ class StorageMonitor {
     ];
     this.last = { at: this.now(), bars, disk: d, thresholds: { warnPct: this.warnPct, critPct: this.critPct } };
     return this.last;
+  }
+  /** Remote (Cloudflare Durable Object SQLite) usage vs its MAX_BYTES cap, from the last /status the desk fetched. */
+  cfBar() {
+    const v = this.cf.view(); const used = v.stored ? v.stored.bytes : 0;
+    const b = this.bar('cf', 'Cloudflare recorder (remote)', used, v.capBytes || null, v.state === 'off' ? 'not configured' : `${v.state.toUpperCase()}${v.staleReason ? ' (' + v.staleReason + ')' : ''} · ${v.retainDays || '?'} d retention · synced copy under data/recorder/cf`);
+    if (v.stale && b.level === 'ok') b.level = 'warn'; b.cf = v; return b;
   }
   limits() { const st = this.store(); const d = this.disk(); const used = st ? st.usedBytes || sizeOf(st.dir) : 0; const room = d ? Math.floor((((d.free + used) * 0.95) / GiB) * 10) / 10 : this.maxGb; return { minGb: this.minGb, maxGb: Math.max(this.minGb, Math.min(this.maxGb, room)) }; }
   /** Change the recorder cap at runtime. Returns { ok, error? , capGb, prevGb, pruned }. */

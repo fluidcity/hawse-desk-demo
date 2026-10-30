@@ -61,7 +61,7 @@ class StorageMonitor {
   /** Remote (Cloudflare Durable Object SQLite) usage vs its MAX_BYTES cap, from the last /status the desk fetched. */
   cfBar() {
     const v = this.cf.view(); const used = v.stored ? v.stored.bytes : 0;
-    const b = this.bar('cf', 'Cloudflare recorder (remote)', used, v.capBytes || null, v.state === 'off' ? 'not configured' : `${v.state.toUpperCase()}${v.staleReason ? ' (' + v.staleReason + ')' : ''} · ${v.retainDays || '?'} d retention · synced copy under data/recorder/cf`);
+    const b = this.bar('cf', 'Cloudflare recorder (remote)', used, v.capBytes || null, v.state === 'off' ? 'not configured' : `${v.state.toUpperCase()}${v.staleReason ? ' (' + v.staleReason + ')' : ''} · keeps ≤ ${v.retainDays || '?'} d or the byte cap, oldest pruned first · synced copy under data/recorder/cf`);
     if (v.stale && b.level === 'ok') b.level = 'warn'; b.cf = v; return b;
   }
   limits() { const st = this.store(); const d = this.disk(); const used = st ? st.usedBytes || sizeOf(st.dir) : 0; const room = d ? Math.floor((((d.free + used) * 0.95) / GiB) * 10) / 10 : this.maxGb; return { minGb: this.minGb, maxGb: Math.max(this.minGb, Math.min(this.maxGb, room)) }; }

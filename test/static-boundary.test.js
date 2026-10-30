@@ -71,6 +71,7 @@ const SENTINELS = {
   JUPITER_API_KEY: 'sentinel-jup-3b77', HELIUS_WEBHOOK_AUTH: 'sentinel-hook-8a8a', ALCHEMY_API_KEY: 'sentinel-alch-4242',
   INFURA_API_KEY: 'sentinel-inf-1313', PYTH_API_KEY: 'sentinel-pyth-6060', DUNE_API_KEY: 'sentinel-dune-0101',
   HAWSE_READ_TOKEN: 'sentinel-inboxread-77aa', HAWSE_WEBHOOK_URL: 'https://sentinel-inbox-5e5e.example.workers.dev',
+  CF_RECORDER_READ_TOKEN: 'sentinel-cfread-3c3c', CF_RECORDER_URL: 'https://sentinel-cfrec-9b9b.example.workers.dev',
 };
 function raw(port, p, method = 'GET') {
   return new Promise((resolve, reject) => {

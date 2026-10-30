@@ -20,6 +20,11 @@ class CfRecorderRemote {
     if (health) health.register('rec.cf', { label: 'Recorder · Cloudflare (always-on)', group: 'recorder', note: this.configured ? `${new URL(this.url).host} · status every ${statusMs / 1000}s` : 'not configured (CF_RECORDER_URL / CF_RECORDER_READ_TOKEN)', staleMs: statusMs * 3 });
   }
   readState() { try { const j = JSON.parse(fs.readFileSync(this.stateFile, 'utf8')); return { lastId: +j.lastId || 0, files: +j.files || 0, bytes: +j.bytes || 0, at: j.at || null, rows: +j.rows || 0 }; } catch { return { lastId: 0, files: 0, bytes: 0, rows: 0, at: null }; } }
+  diskTotals() {
+    let files = 0, bytes = 0;
+    try { for (const day of fs.readdirSync(this.dir)) { if (!/^\d{4}-\d\d-\d\d$/.test(day)) continue; for (const f of fs.readdirSync(path.join(this.dir, day))) if (f.endsWith('-cf.jsonl.gz')) { files++; bytes += fs.statSync(path.join(this.dir, day, f)).size; } } } catch {}
+    return { files, bytes };
+  }
   saveState() { fs.mkdirSync(this.dir, { recursive: true }); const t = this.stateFile + '.tmp'; fs.writeFileSync(t, JSON.stringify(this.state) + '\n'); fs.renameSync(t, this.stateFile); }
   async get(p) {
     const r = await this.fetchImpl(this.url + p, { method: 'GET', headers: { authorization: 'Bearer ' + this.token }, signal: AbortSignal.timeout(20000) });
@@ -46,6 +51,10 @@ class CfRecorderRemote {
     if (!this.configured || this.syncing) return { fetched: 0, skipped: true }; this.syncing = true;
     let fetched = 0, bytes = 0;
     try {
+      // Another process (the CLI, or a second desk) may have synced since: adopt the newer on-disk cursor, and count files
+      // and bytes from disk so the two never overwrite each other's totals.
+      const d = this.readState(); if (d.lastId > this.state.lastId) this.state = d;
+      const disk = this.diskTotals(); this.state.files = disk.files; this.state.bytes = disk.bytes;
       for (let guard = 0; guard < 20 && fetched < max; guard++) {
         const j = await (await this.get(`/pull/list?after=${this.state.lastId}&limit=200`)).json(); const list = j.chunks || [];
         if (!list.length) break;

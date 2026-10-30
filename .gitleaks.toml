@@ -21,3 +21,9 @@ regexes = [
 [[allowlists]]
 description = "public Pyth feed ids and EVM event topics"
 regexes = ['''(e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43|ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace|ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d|0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef|0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67)''']
+
+# 3) Public Kalshi market tickers used as test fixtures (exchange identifiers, not credentials).
+[[allowlists]]
+description = "public Kalshi market tickers in tests"
+regexTarget = "match"
+regexes = ['''KXBTC15M-26OCT301715-15''']

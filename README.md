@@ -236,6 +236,7 @@ only names, a set/unset boolean, status and latency (`GET /api/providers`); valu
 | Provider | Env var(s) | Signup | Unlocks |
 |---|---|---|---|
 | Helius + HAWSE inbox | `HAWSE_WEBHOOK_URL`, `HAWSE_READ_TOKEN` (desk); `HELIUS_API_KEY`, `HELIUS_WEBHOOK_AUTH` (admin script) | https://www.helius.dev | live Solana whale flow (needs `WHALES_ENABLED=true`) |
+| Cloudflare recorder (H7 L) | `CF_RECORDER_URL`, `CF_RECORDER_READ_TOKEN` (desk, from `/home/box/secrets/hawse-cf-recorder.env`) | docs/cloudflare-recorder.md | status + chunk sync of the always-on recorder; missing = "not configured" |
 | Alchemy / Infura | `ALCHEMY_API_KEY` / `INFURA_API_KEY` | https://www.alchemy.com / https://www.infura.io | keyed EVM RPC + WS |
 | QuickNode (or any RPC) | `EVM_RPC_URL_<CHAIN>`, `EVM_WS_URL_<CHAIN>` | https://www.quicknode.com | per-chain endpoint, highest priority |
 | publicnode | none | https://www.publicnode.com | keyless EVM fallback (best effort) |
@@ -619,14 +620,36 @@ off by default) next to the rebuilt index from free spot websockets. Paid option
 (enterprise), LMAX Digital (not free), CoinAPI (from about $79/mo) and Kaiko (about $1k+/mo). None is worth it for this
 test.
 
-### Cloudflare recorder (H7, design + skeleton, NOT deployed)
-`cloudflare/recorder/` is a Worker with a Durable Object whose alarm re-arms every 1 s (cron is too coarse). It polls
-only public Kalshi GET endpoints (allowlisted), writes gzipped JSONL to R2 (`hawse-recorder`), and records 429s and
-restarts as gap rows. The box would pull with a read-only R2 S3 token. The likely cost is about $5.25–7/mo, mostly the
-Workers Paid minimum. The main risk is Kalshi rate limits on shared Cloudflare egress IPs. `npm run deploy` refuses on
-purpose. The steps, the cost table and the list of what was tested are in
-[docs/cloudflare-recorder.md](docs/cloudflare-recorder.md). It passed a `wrangler` dry-run and a local `wrangler dev`
-run. **Nothing was deployed and no billable resource was created.**
+### Cloudflare recorder (H7 Stage L, DEPLOYED as `hawse-recorder`)
+`cloudflare/recorder/` runs at https://hawse-recorder.leadpathqa.workers.dev. It is a Durable Object whose alarm
+re-arms every 1 s, and it is **record-only**: allowlisted public HTTPS GETs, no order path, no exchange key.
+
+It records:
+- Kalshi 15m BTC/ETH/SOL/XRP books (1 s) and trades (2 s, cursor-paged, deduped);
+- the extra-series books;
+- Polymarket books and trades for the same assets;
+- gap rows for restarts, 429s and full trade pages.
+
+Rows are stored as gzipped JSONL chunks in the DO's SQLite, pruned at 14 days or 2 GiB. R2 isn't enabled on the
+account; an optional mirror is ready if you enable it.
+
+| Endpoint | Auth |
+|---|---|
+| `GET /health` | public |
+| `GET /status`, `/pull/*` | READ token |
+| `POST /start`, `/stop`, `/restart` | ADMIN token |
+
+The Worker stores only SHA-256 digests of the tokens. The tokens themselves live in
+`/home/box/secrets/hawse-cf-recorder.env` (mode 600).
+
+The desk (`CF_RECORDER_URL` + `CF_RECORDER_READ_TOKEN`, server-side) does two things:
+- it polls `/status` and syncs chunks into `data/recorder/cf/` every 10 min (`scripts/cf-recorder-sync.js` does the
+  same by hand);
+- it shows a **Cloudflare recorder (remote)** line and Storage bar that turns **STALE** with a reason when writes stop or
+  the desk can't reach it.
+
+Projected cost is about $5.26/mo on Workers Paid, or $0 inside the Free limits. Live evidence, cost table, limits and
+teardown/rollback: [docs/cloudflare-recorder.md](docs/cloudflare-recorder.md).
 
 ## Kalshi H2 frozen forward paper test (H6 Stage C)
 

@@ -57,8 +57,12 @@ test('cf remote: sync downloads new chunks once, resumes from sync-state.json, a
   const st = JSON.parse(fs.readFileSync(path.join(dir, 'sync-state.json'), 'utf8')); assert.equal(st.lastId, 3); assert.equal(st.files, 3); assert.equal(st.rows, 60);
   const n = R.c.calls.length; const r2 = new CfRecorderRemote({ url: 'https://h.example', token: TOKEN, dir, fetchImpl: R.fetchImpl, now: R.now });
   assert.equal((await r2.sync()).fetched, 0); assert.equal(R.c.calls.length, n + 1, 'resume: one list call, no chunk refetch');
-  R.chunks.push({ id: 4, t0: R.c.t, t1: R.c.t, rows: 5, data: zlib.gzipSync(Buffer.from('{"s":"gap"}\n')) }); R.c.corrupt = true;
-  await assert.rejects(r2.sync(), /chunk 4: .* expected/); assert.equal(r2.state.lastId, 3, 'a bad chunk is not marked synced'); assert.ok(!fs.readdirSync(path.join(dir, '2026-10-30')).some((x) => x.startsWith('000000004')));
+    const r3 = new CfRecorderRemote({ url: 'https://h.example', token: TOKEN, dir, fetchImpl: R.fetchImpl, now: R.now }); // a second process, started before r2's sync
+  R.chunks.push({ id: 4, t0: R.c.t, t1: R.c.t, rows: 5, data: zlib.gzipSync(Buffer.from('{"s":"gap"}\n')) }); r3.state.lastId = 0; r3.state.files = 0;
+  assert.equal((await r2.sync()).fetched, 1); assert.equal((await r3.sync()).fetched, 0, 'the other process adopts the newer on-disk cursor');
+  assert.equal(JSON.parse(fs.readFileSync(path.join(dir, 'sync-state.json'), 'utf8')).files, 4, 'file count comes from disk, not a stale in-memory total');
+  R.chunks.push({ id: 5, t0: R.c.t, t1: R.c.t, rows: 5, data: zlib.gzipSync(Buffer.from('{"s":"gap"}\n')) }); R.c.corrupt = true;
+  await assert.rejects(r2.sync(), /chunk 5: .* expected/); assert.equal(r2.state.lastId, 4, 'a bad chunk is not marked synced'); assert.ok(!fs.readdirSync(path.join(dir, '2026-10-30')).some((x) => x.startsWith('000000005')));
 });
 
 test('cf remote: sync CLI prints counts only (never the token) and exits 2 when not configured', async () => {

@@ -601,6 +601,33 @@ Kalshi needs a signed handshake even for public channels. That signing lives **o
 allowlists every outgoing frame. Tests enforce both. With no key, the card says so and no socket is opened.
 **Not tested live yet; no key existed.** Setup steps: [docs/kalshi-api-key.md](docs/kalshi-api-key.md).
 
+**Series are config, not code (miro a).** `RECORDER_KALSHI_SERIES` (default `KXBTC15M,KXETH15M,KXSOL15M,KXXRP15M`) and
+`RECORDER_KALSHI_EXTRA_SERIES` (default `KXNFLGAME,KXNBAGAME,KXNHLGAME,KXBTCD`) are comma lists. Add a series there and
+restart; no code change is needed.
+
+### Rebuilt index vs Kalshi official outcomes (H7, miro c)
+`server/recorder/agreement.js` averages each reference source (the rebuilt BRTI-style index from the free spot venues
+and, if enabled, Kalshi's `cfbenchmarks_value`) over the last 60 s before each 15m close. It then checks whether
+"average above strike" matches Kalshi's **official** result. The recorder card shows the agreement rate per source
+against the **> 99.5%** target. It stays "pending" until ≥ 200 settled markets, each with ≥ 50 samples in the window,
+exist. Rows go to the `agree` recorder stream. This is measurement only: nothing settles on it.
+
+### Reference price sources (H7)
+Short version, details in [docs/reference-price-sources.md](docs/reference-price-sources.md): no paid feed is needed.
+The free path is Kalshi's own `cfbenchmarks_value` channel over the read-only key (`KALSHI_WS_CF_INDEX=true`, opt-in,
+off by default) next to the rebuilt index from free spot websockets. Paid options checked: CF Benchmarks direct
+(enterprise), LMAX Digital (not free), CoinAPI (from about $79/mo) and Kaiko (about $1k+/mo). None is worth it for this
+test.
+
+### Cloudflare recorder (H7, design + skeleton, NOT deployed)
+`cloudflare/recorder/` is a Worker with a Durable Object whose alarm re-arms every 1 s (cron is too coarse). It polls
+only public Kalshi GET endpoints (allowlisted), writes gzipped JSONL to R2 (`hawse-recorder`), and records 429s and
+restarts as gap rows. The box would pull with a read-only R2 S3 token. The likely cost is about $5.25–7/mo, mostly the
+Workers Paid minimum. The main risk is Kalshi rate limits on shared Cloudflare egress IPs. `npm run deploy` refuses on
+purpose. The steps, the cost table and the list of what was tested are in
+[docs/cloudflare-recorder.md](docs/cloudflare-recorder.md). It passed a `wrangler` dry-run and a local `wrangler dev`
+run. **Nothing was deployed and no billable resource was created.**
+
 ## Kalshi H2 frozen forward paper test (H6 Stage C)
 
 This is miro's one surviving hypothesis (`kalshi-15m-payout-sweep.md` §7): on KXBTC15M / KXETH15M / KXSOL15M, at the
@@ -639,3 +666,21 @@ The verdict reads **"UNVERIFIED — not enough data"** until **both** ≥ 8 week
 are the 5 pass criteria applied. Fail-stops (mean ≤ 0 after 2,500, a 4-week loss > 60¢ per 100 signals, a fee or tick
 change) halt new signals and are written as `flag` rows. Weeks are calendar weeks since the first session. Box downtime
 counts as elapsed time but produces no signals.
+
+**miro's pass criteria (display only).** The H2 card also shows miro's criteria as pending / met / not met. They do
+not change the frozen v1 rule or its hash, and the frozen verdict logic is untouched:
+- mean net per contract after the 1-contract fee > 0;
+- ≥ 6 of 8 weeks positive. This can be decided early: met at 6, not met once 6 is out of reach. A complete week with
+  no settled fills counts as not positive;
+- ≥ 10 contracts at the ask in ≥ 80% of signals (best-ask size is logged at signal time).
+
+**Live P&L (H7 Stage K, display only).** Paper fills from the v1 ledger only, with the 1-contract fee:
+- a cumulative **realized** net P&L curve, by official settle time;
+- realized **today** (box-local day), **this test week** and **total**;
+- **open positions**, marked to the latest YES bid from the recorder books as **UNREALIZED**. The mark is net of the
+  entry fee and of the exit fee for selling at that bid. It is never added to realized. An open fill with no book seen
+  since entry shows "no book yet" rather than a guessed mark;
+- a **per-week table** (signals, settled, win rate, net, complete / positive). The same table drives the 6-of-8
+  criterion.
+
+The UNVERIFIED label stays until 8 weeks and 2,500 signals. Tests: `test/h2-pnl.test.js`.

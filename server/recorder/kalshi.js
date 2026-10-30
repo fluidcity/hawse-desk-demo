@@ -44,7 +44,8 @@ class KalshiRecorder {
     H('rec.kalshi.extra', 'Recorder · Kalshi sports/other series', `${this.c.extraSeries.join(', ')} · top ${this.c.extraTop} by 24h volume · book every ${this.c.extraBookMs / 1000}s`, 300000);
   }
   url(p, q) { return this.c.base + p + (q ? '?' + new URLSearchParams(q).toString() : ''); }
-  async call(id, p, q) { if (!this.bucket.take()) return null; try { return await this.get(this.url(p, q), { health: this.health, id }); } catch (e) { this.errors++; return null; } }
+  async call(id, p, q) { if (!this.bucket.take()) return null; try { return await this.get(this.url(p, q), { health: this.health, id }); } catch (e) { this.noteErr(id, e); return null; } }
+  noteErr(id, e) { this.errors++; const k = e && e.status ? 'HTTP ' + e.status : (e && /timeout|abort/i.test(e.message) ? 'timeout' : 'network'); (this.errKinds = this.errKinds || {})[k] = (this.errKinds[k] || 0) + 1; this.lastError = { at: this.now(), id, kind: k }; }
   on(kind, f) { this.listeners[kind].push(f); }
   emit(kind, x) { for (const f of this.listeners[kind]) { try { f(x); } catch (e) { this.log('[recorder] listener error: ' + e.message); } } }
   // One in-flight run per loop: a slow cycle is skipped (and later shows up as a measured gap), never stacked on itself.
@@ -157,7 +158,7 @@ class KalshiRecorder {
   }
   view() {
     const now = this.now();
-    return { polls: this.polls, errors: this.errors, rateSkipped: this.bucket.skipped, maxRps: this.c.maxRps, series: this.series,
+    return { polls: this.polls, errors: this.errors, errKinds: this.errKinds || {}, lastError: this.lastError || null, loopSkips: this.skipped || 0, rateSkipped: this.bucket.skipped, maxRps: this.c.maxRps, series: this.series,
       live: this.live('crypto').map((m) => ({ tk: m.tk, s: m.series, secLeft: m.close ? Math.round((m.close - now) / 1000) : null, strike: m.strike, books: m.books, bookRows: m.bookRows, trades: m.trades,
         ya: m.last && m.last.ya, yas: m.last && m.last.yas, yb: m.last && m.last.yb, bookAgeMs: m.lastBookOk ? now - m.lastBookOk : null })),
       extra: this.live('extra').length, tracked: this.markets.size, pendingSettle: [...this.markets.values()].filter((m) => !m.settled && m.close && now > m.close).length };

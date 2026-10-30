@@ -168,3 +168,19 @@ test('engine wiring: recorder mounts as a feed, constructs with no network and n
   const s = e.snapshot(); assert.equal(s.feeds.recorder.enabled, true); assert.ok(s.health.some((x) => x.id === 'rec.kalshi.book' && x.group === 'recorder'));
   const off = new Engine(config.build({ RECORDER_ENABLED: 'false' }), { modules }); assert.equal(off.feeds.recorder, undefined);
 });
+
+test('poll loops never stack: a slow cycle skips the next tick; request errors are counted by kind (no URLs/bodies kept)', async () => {
+  const h = new Health(); const store = { write() {} };
+  const k = new KalshiRecorder({ store, health: h, log: () => {}, get: async () => { const e = new Error('HTTP 429: slow down https://x'); e.status = 429; throw e; }, cfg: { series: [], extraSeries: [], maxRps: 1000 } });
+  let runs = 0, release; const gate = new Promise((r) => (release = r));
+  k.every(5, async () => { runs++; await gate; });
+  await new Promise((r) => setTimeout(r, 40));
+  assert.strictEqual(runs, 1, 'second run must not start while the first is in flight');
+  assert.ok(k.skipped >= 2);
+  release(); k.timers.forEach(clearInterval);
+  assert.strictEqual(await k.call('rec.kalshi.book', '/markets', {}), null);
+  const v = k.view();
+  assert.deepStrictEqual(v.errKinds, { 'HTTP 429': 1 });
+  assert.strictEqual(v.lastError.kind, 'HTTP 429'); assert.ok(!JSON.stringify(v.lastError).includes('http'));
+  assert.ok(v.loopSkips >= 2);
+});

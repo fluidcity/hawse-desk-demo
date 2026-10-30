@@ -26,7 +26,8 @@ class PolymarketRecorder {
     health.register('rec.poly.trades', { label: 'Recorder · Polymarket trades', group: 'recorder', note: 'public data-api /trades, deduped (wallet field dropped)', staleMs: 60000 });
     health.register('rec.poly.markets', { label: 'Recorder · Polymarket discovery + top markets', group: 'recorder', note: `public gamma-api; top ${this.c.topN} by 24h volume sampled every ${this.c.topMs / 1000}s`, staleMs: 180000 });
   }
-  async call(id, url) { if (!this.bucket.take()) return null; try { return await this.get(url, { health: this.health, id }); } catch { this.errors++; return null; } }
+  async call(id, url) { if (!this.bucket.take()) return null; try { return await this.get(url, { health: this.health, id }); } catch (e) { this.noteErr(id, e); return null; } }
+  noteErr(id, e) { this.errors++; const k = e && e.status ? 'HTTP ' + e.status : (e && /timeout|abort/i.test(e.message) ? 'timeout' : 'network'); (this.errKinds = this.errKinds || {})[k] = (this.errKinds[k] || 0) + 1; this.lastError = { at: this.now(), id, kind: k }; }
   // One in-flight run per loop: a slow cycle is skipped (and later shows up as a measured gap), never stacked on itself.
   every(ms, f) { let busy = false; const run = async () => { if (busy) { this.skipped = (this.skipped || 0) + 1; return; } busy = true; try { await f(); } catch (e) { this.log('[recorder] loop error: ' + e.message); } finally { busy = false; } };
     const t = setInterval(run, ms); if (t.unref) t.unref(); this.timers.push(t); }
@@ -100,6 +101,6 @@ class PolymarketRecorder {
       await this.book('poly.top', tok, { slug: m.slug, v24: m.v }, 'rec.poly.markets');
     }
   }
-  view() { const now = this.now(); return { polls: this.polls, errors: this.errors, rateSkipped: this.bucket.skipped, live: this.live().map((m) => ({ slug: m.slug, asset: m.asset, secLeft: Math.round((m.end - now) / 1000), bookRows: m.bookRows, trades: m.trades })), top: this.top.length }; }
+  view() { const now = this.now(); return { polls: this.polls, errors: this.errors, errKinds: this.errKinds || {}, lastError: this.lastError || null, loopSkips: this.skipped || 0, rateSkipped: this.bucket.skipped, live: this.live().map((m) => ({ slug: m.slug, asset: m.asset, secLeft: Math.round((m.end - now) / 1000), bookRows: m.bookRows, trades: m.trades })), top: this.top.length }; }
 }
 module.exports = { PolymarketRecorder, normPolyBook, windowStart };

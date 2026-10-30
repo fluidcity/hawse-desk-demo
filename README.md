@@ -554,3 +554,42 @@ network call, and source-scans `server/recorder` + `server/kalshi-h2` for signin
 **UI.** The "Market-data recorder" card shows markets tracked, rows/min, bytes, last write, disk vs cap, the per-day
 projection, gaps by reason and live 15m markets. Health rows appear in group `recorder` (Settings → Feeds) and as
 providers `kalshi-public`, `polymarket-public` and `ref-venues`.
+
+## Kalshi H2 frozen forward paper test (H6 Stage C)
+
+This is miro's one surviving hypothesis (`kalshi-15m-payout-sweep.md` §7): on KXBTC15M / KXETH15M / KXSOL15M, at the
+first moment with 6–10 minutes left where the YES ask is in [0.93, 0.979], buy 1 YES at the ask and hold it to
+settlement. Only one entry per market, and no other filters. It is **paper only**: there is no order code. The test
+listens to the recorder's public book and settlement events and appends to its own ledger. It never touches desk equity
+or strategies.
+
+**Freeze.** The rules live in `config/frozen/kalshi-h2-v1.json`. The SHA-256 of that file is pinned twice: in
+`server/kalshi-h2/index.js` (`FROZEN`) and separately in `test/kalshi-h2.test.js`. If the file is edited, the test fails
+and the module refuses to run. To change a rule, write `kalshi-h2-v2.json`, pin its new hash, and it gets its own ledger
+folder (`data/paper/kalshi-h2/v2/`), so v1 results stay separate. The file is marked `-text` in `.gitattributes` so line
+endings cannot change the hash.
+
+| Frozen choice | v1 |
+|---|---|
+| Entry | Uses Kalshi's own ask from the recorder's ~1 s book polls; the first book in the window wins. The spec says "first minute" (from minute candles); 1 s books are finer, never coarser. |
+| Coverage | A touch counts as a signal only if books were seen before 600 s left and never more than 5 s apart through the signal. Otherwise it is logged as a skip (`joined_late` / `incomplete_coverage`), never a signal. The VM pauses between sessions, so expect many of these. |
+| Fill (conservative) | Takes the ask on the **next** snapshot after the signal (≤ 5 s, else `fill_snapshot_too_late`). Walks the ask ladder up to signal ask + 1¢ (else `no_fill_within_limit`). The fill price is the worse of the signal ask and that VWAP. The spec-literal P&L at the signal ask is logged as a shadow column only. |
+| Fees | 1-lot `ceil(0.07·P·(1−P)·100)/100`; large-order `0.07·P·(1−P)`. Checks that the series still reports `quadratic ×1`. |
+| Ticks | Expects `tapered_deci_cent` (0.001 steps above 0.90). Any change is a fail-stop. |
+| Settlement | Kalshi's official `result` from `/markets/{t}`, with a 6 h timeout (logged). Our own reference index is never used. |
+| Sizing | 1 contract (P&L in cents), plus a shadow 1%-of-bankroll curve for reporting only. |
+
+**Ledger.** `data/paper/kalshi-h2/v1/ledger.jsonl` is append-only, and every row carries `v`. Row types are `session`
+(with the hash), `signal`, `fill`, `skip` (with a reason), `observed` (no touch), `settle` (with pnl1 / pnlL / pnlSpec),
+`settle_timeout` and `flag`. It is replayed on start.
+
+**Stats** (`server/kalshi-h2/stats.js`, read-only):
+- counts, and win rate with a Wilson 95% CI against the mean implied probability (fill price);
+- mean net with the 1-lot and the large-order fee, with a seeded day-block bootstrap 95% CI and a normal CI;
+- results per asset and per week; the share of signals with ask size ≥ 10; the worst rolling 4-week loss per 100 signals;
+- the shadow bankroll.
+
+The verdict reads **"UNVERIFIED — not enough data"** until **both** ≥ 8 weeks and ≥ 2,500 signals are reached. Only then
+are the 5 pass criteria applied. Fail-stops (mean ≤ 0 after 2,500, a 4-week loss > 60¢ per 100 signals, a fee or tick
+change) halt new signals and are written as `flag` rows. Weeks are calendar weeks since the first session. Box downtime
+counts as elapsed time but produces no signals.

@@ -96,6 +96,10 @@ function build(env = process.env) {
       eventsFile: env.MEMPOOL_EVENTS_FILE !== undefined ? (env.MEMPOOL_EVENTS_FILE || null) : path.join(__dirname, '..', 'data', 'mev', 'events.json'),
       duneFile: env.MEMPOOL_DUNE_FILE !== undefined ? (env.MEMPOOL_DUNE_FILE || null) : path.join(__dirname, '..', 'data', 'mev', 'dune-sandwiched.json'),
     },
+    kalshiH2: { // H6 Part C: frozen forward PAPER test of miro's H2 (config/frozen/kalshi-h2-v1.json). Needs the recorder's Kalshi stream.
+      enabled: env.KALSHI_H2_PAPER !== 'false',
+      dir: env.KALSHI_H2_DIR || path.join(__dirname, '..', 'data', 'paper', 'kalshi-h2'),
+    },
     recorder: { // H6 market-data RECORDER: public read-only endpoints, append-only files under data/recorder (gitignored)
       enabled: bool(env.RECORDER_ENABLED, true),
       dir: env.RECORDER_DIR || path.join(__dirname, '..', 'data', 'recorder'),

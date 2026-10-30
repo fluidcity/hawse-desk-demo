@@ -21,6 +21,7 @@ const { Strategy } = require('./strategies/base');
 const { MempoolFeed } = require('./feeds/mempool');
 const { MevLab } = require('./strategies/mev-lab');
 const { Recorder } = require('./recorder');
+const { KalshiH2Paper } = require('./kalshi-h2');
 
 module.exports = {
   whales(engine) {
@@ -70,6 +71,10 @@ module.exports = {
   recorder(engine) { // H6: record-only market data (public endpoints; no orders, no auth). Mounted after betting so it can tap the odds feed.
     const c = engine.cfg.recorder; if (!c || !c.enabled) return;
     engine.recorder = engine.addFeed('recorder', new Recorder({ health: engine.health, cfg: c, odds: engine.feeds.odds || null, log: engine.log || ((m) => console.log(m)) }));
+  },
+  kalshiH2(engine) { // H6 Part C: frozen forward paper test; paper ledger only, never desk equity, no order path.
+    const c = engine.cfg.kalshiH2; if (!c || !c.enabled || !engine.recorder || !engine.recorder.kalshi) return;
+    engine.kalshiH2 = engine.addFeed('kalshiH2', new KalshiH2Paper({ kalshi: engine.recorder.kalshi, health: engine.health, dir: c.dir, log: engine.log || ((m) => console.log(m)) }));
   },
   lab(engine) {
     const file = engine.cfg.lab && engine.cfg.lab.file !== undefined ? engine.cfg.lab.file : path.join(__dirname, '..', 'data', 'lab', 'strategies.json');

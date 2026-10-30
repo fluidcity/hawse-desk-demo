@@ -80,7 +80,7 @@ window.HAWSE.explain = (() => {
 
   function render() {
     renderHero(); renderTicker(); renderStrats(); renderRisk(); renderFunding(); renderAttr(); renderHealth(); renderTape();
-    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderRecorder(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
+    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderRecorder(); renderH2(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
   }
 
   // ---------- hero + animated curve ----------
@@ -432,6 +432,30 @@ window.HAWSE.explain = (() => {
     $('recMarkets').innerHTML = `<div class="row head" style="${cols}"><span>live 15m market</span><span>left</span><span>YES bid/ask</span><span>polls</span><span>rows</span><span>trades</span></div>` + ([...rowsK, ...rowsP].join('') || '<div class="dim mono sm">no live 15-minute market right now</div>');
     const gc = 'grid-template-columns:70px 110px 1.2fr 70px';
     $('recGaps').innerHTML = (G.recent || []).length ? `<div class="row head" style="${gc}"><span>at</span><span>reason</span><span>stream · key</span><span>length</span></div>` + G.recent.map((g) => `<div class="row" style="${gc}"><span class="dim">${hhmmss(g.to)}</span><span class="warn">${esc(g.reason)}</span><span class="sm">${esc(g.stream)} · ${esc(String(g.key))}</span><span>${ago(g.ms)}</span></div>`).join('') : '';
+  }
+  function renderH2() {
+    const H = S.feeds && S.feeds.kalshiH2; $('h2Card').hidden = !H; if (!H) return;
+    if (H.error || !H.stats) { $('h2Mode').innerHTML = badge('down'); $('h2Body').innerHTML = `<div class="neg mono sm">${esc(H.error || 'not started')}</div>`; $('h2Rows').innerHTML = ''; return; }
+    const st = H.stats, p = st.progress, ok = st.enough && !st.failStops.length;
+    const c = (x) => (x == null ? '—' : (x > 0 ? '+' : '') + x.toFixed(2) + '¢'), pc = (x) => (x == null ? '—' : (100 * x).toFixed(1) + '%');
+    $('h2Mode').innerHTML = `${badge(H.running ? 'live' : 'down')} v${esc(String(H.version).replace(/^v/, ''))} · sha256 ${esc((H.hash || '').slice(0, 12))}… · started ${H.startAt ? new Date(H.startAt).toISOString().slice(0, 10) : '—'}`;
+    const vcls = st.verdict.startsWith('PASS') ? 'pos' : st.verdict.startsWith('FAIL') ? 'neg' : 'warn';
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const bar = (frac, label) => `<div class="dim sm mono" style="margin:6px 0 3px">${label}</div><div class="bar"><i style="left:0;width:${(100 * Math.min(1, frac)).toFixed(1)}%;background:var(--accent,#5b8def)"></i></div>`;
+    $('h2Body').innerHTML = `<div class="subh">Paper ledger only (<code>data/paper/kalshi-h2/${esc(H.version)}/</code>); no order path exists. Rules come from a hashed, frozen config; the stats are read-only, with no tuning. Fills take the ask on the <b>next</b> book (≤ 5 s, limit +1¢). Settlement uses Kalshi's official result.</div>` +
+      `<div class="mono" style="margin:6px 0"><b class="${vcls}">${esc(st.verdict)}</b>${ok ? '' : ' <span class="badge stale">UNVERIFIED</span>'} ${st.failStops.map((f) => `<span class="neg sm">· ${esc(f)}</span>`).join(' ')}</div>` +
+      bar(p.signalPct, `signals ${p.signals.toLocaleString()} / ${p.targetSignals.toLocaleString()} (${pc(p.signalPct)})`) + bar(p.weeks / p.targetWeeks, `weeks ${p.weeks.toFixed(2)} / ${p.targetWeeks}`) +
+      `<div class="riskgrid" style="margin-top:8px">` +
+      meter('fills / settled', `${st.fills} / ${st.settled}`, `${st.unsettled} awaiting result · ${H.pending} pending fill`) +
+      meter('win rate', st.winRate ? pc(st.winRate.p) : '—', st.winRate ? `95% CI ${pc(st.winRate.lo)}–${pc(st.winRate.hi)} · implied ${pc(st.impliedProb)}` : 'no settled fills yet') +
+      meter('mean net / signal', c(st.meanPnlCents.oneLotFee), `1-lot fee · large-order fee ${c(st.meanPnlCents.largeOrderFee)} · at signal ask ${c(st.meanPnlCents.atSignalAskShadow)}`) +
+      meter('95% CI (day bootstrap)', st.ci95Cents.dayBootstrap.lo == null ? '—' : `${c(st.ci95Cents.dayBootstrap.lo)} … ${c(st.ci95Cents.dayBootstrap.hi)}`, `${st.ci95Cents.dayBootstrap.days} day(s)${st.ci95Cents.normal ? ` · normal ${c(st.ci95Cents.normal.lo)} … ${c(st.ci95Cents.normal.hi)}` : ''}`) +
+      meter('ask size ≥ 10', pc(st.askSize.share), `${st.askSize.measured} signals measured · pass needs ≥ 80%`) +
+      meter('skips (logged)', Object.values(st.skips).reduce((a, b) => a + b, 0), Object.entries(st.skips).map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || 'none') + `</div>` +
+      `<div class="subh">Per asset: ${Object.entries(st.perAsset).map(([a, x]) => `${esc(a)} n=${x.n} ${c(x.meanCents)}`).join(' · ') || '—'} · markets with no touch ${H.observed.noTouch}/${H.observed.markets} · shadow 1% bankroll ×${st.shadowBankroll.multiple} (reporting only)</div>`;
+    const cols = 'grid-template-columns:70px 80px 1.4fr 1.6fr';
+    const desc = (r) => r.t === 'signal' ? `ask ${r.ya} ×${r.yas} · ${r.secLeft}s left` : r.t === 'fill' ? `px ${r.px} (next ask ${r.nextAsk}, lag ${r.lagMs} ms) fee ${r.fee1}` : r.t === 'skip' ? `${r.reason}${r.ya ? ' · ask ' + r.ya : ''}` : r.t === 'settle' ? `${r.result.toUpperCase()} · ${c(r.pnl1 * 100)}` : r.t === 'observed' ? r.outcome : r.t === 'flag' ? r.reason : r.t === 'session' ? 'session start' : '';
+    $('h2Rows').innerHTML = `<div class="row head" style="${cols}"><span>at</span><span>event</span><span>market</span><span>detail</span></div>` + (H.recent || []).map((r) => `<div class="row" style="${cols}"><span class="dim">${hhmmss(r.at)}</span><span class="${r.t === 'skip' || r.t === 'flag' ? 'warn' : r.t === 'settle' ? (r.win ? 'pos' : 'neg') : ''}">${esc(r.t)}</span><span class="sm">${esc(r.tk || '')}</span><span class="sm mono">${esc(desc(r))}</span></div>`).join('');
   }
   function renderGaps() {
     const s = S.strategies.find((x) => x.id === 'gaps'); $('gapCard').hidden = !s; if (!s) return;

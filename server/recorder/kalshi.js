@@ -35,7 +35,7 @@ class KalshiRecorder {
       extraTop: 12, bookMs: 1000, tradesMs: 2000, discoverMs: 20000, extraDiscoverMs: 300000, extraBookMs: 30000, settleMs: 20000, seriesMs: 3600e3, depth: 10, maxRps: 10, gapMs: 5000, ...cfg };
     Object.assign(this, { store, health, gap, now, get, log });
     this.markets = new Map(); // ticker -> state
-    this.bucket = new Bucket(this.c.maxRps, now); this.listeners = { book: [], settle: [], market: [] };
+    this.bucket = new Bucket(this.c.maxRps, now); this.listeners = { book: [], settle: [], market: [], series: [] };
     this.polls = { book: 0, trades: 0, discover: 0, settle: 0, extra: 0 }; this.errors = 0; this.series = {}; this.timers = []; this.rr = 0; this.running = false;
     const H = (id, label, note, staleMs) => health.register(id, { label, group: 'recorder', note, staleMs });
     H('rec.kalshi.book', 'Recorder · Kalshi 15m order books', `public REST /orderbook every ${this.c.bookMs / 1000}s per live market (${this.c.series.join(', ')})`, 15000);
@@ -62,7 +62,7 @@ class KalshiRecorder {
   track(m, kind = 'crypto', series = null) {
     const tk = m.ticker; if (this.markets.has(tk)) return this.markets.get(tk);
     const st = { tk, series: series || m.series_ticker || tk.split('-')[0], kind, open: Date.parse(m.open_time) || null, close: Date.parse(m.close_time) || null, strike: num(m.floor_strike),
-      strikeType: m.strike_type || null, pls: m.price_level_structure || null, lastBookKey: null, lastBookOk: null, lastTradeOk: null, lastTradeEx: null, seen: new Set(), seenQ: [],
+      strikeType: m.strike_type || null, pls: m.price_level_structure || null, ranges: m.price_ranges || null, lastBookKey: null, lastBookOk: null, lastTradeOk: null, lastTradeEx: null, seen: new Set(), seenQ: [],
       settled: !!(m.result && (m.status === 'finalized' || m.status === 'settled')), settleTries: 0, books: 0, bookRows: 0, trades: 0, last: null, firstBookAt: null };
     this.markets.set(tk, st);
     if (m.open_time) {
@@ -150,6 +150,7 @@ class KalshiRecorder {
       const x = j.series; const v = { fee_type: x.fee_type || null, fee_multiplier: x.fee_multiplier != null ? +x.fee_multiplier : null, at: this.now() };
       const prev = this.series[s]; this.series[s] = v;
       if (!prev || prev.fee_type !== v.fee_type || prev.fee_multiplier !== v.fee_multiplier) this.store.write('kalshi.market', { t: 'series', s, ...v });
+      this.emit('series', { s, ...v });
     }
   }
   view() {

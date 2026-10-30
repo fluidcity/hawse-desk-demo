@@ -52,6 +52,11 @@ class MarketStream {
     this.clients.forEach((c) => c.start());
   }
   stop() { this.clients.forEach((c) => c.stop()); }
+  /** One watchdog entry per socket (two Binance perp sockets share the ws.binance row: restart both). ok-only activity: a WS that only errors is not alive. */
+  watchSpec() {
+    const by = new Map(); for (const c of this.clients) { if (!by.has(c.id)) by.set(c.id, []); by.get(c.id).push(c); }
+    return [...by].map(([id, cs]) => ({ key: id, ids: [id], intervalMs: Math.min(...cs.map((c) => c.idleMs)) / 3, activity: 'ok', restart: () => cs.forEach((c) => c.restart('watchdog')) }));
+  }
   /** Merge a partial WS update; publish to the funding store once bid/ask/mark/rate are all known. */
   merge(venue, symbol, patch) {
     const k = venue + '|' + symbol, r = (this.raw[k] ||= { intervalH: venue === 'hyperliquid' ? 1 : 8 });

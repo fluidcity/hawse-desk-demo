@@ -163,6 +163,8 @@ class FundingFeed {
   }
   start() { const run = () => this.pollAll().catch(() => {}); run(); this.timer = setInterval(run, this.pollMs); }
   stop() { clearInterval(this.timer); }
+  restart() { this.stop(); this.start(); }
+  watchSpec() { return { key: 'funding (REST poll)', ids: [...VENUES.map((v) => 'funding.' + v), ...(this.usePredicted ? ['funding.predicted'] : [])], intervalMs: this.pollMs, restart: () => this.restart() }; }
   snapshot() { return { venues: VENUES, labels: LABEL, symbols: this.symbols, rows: this.fresh(10 * 60e3), predicted: [...this.pred.values()].filter((r) => Date.now() - r.ts < 10 * 60e3).map(({ venue, symbol, hourly, nextFundingTime }) => ({ venue, symbol, hourly, nextFundingTime })) }; }
 }
 

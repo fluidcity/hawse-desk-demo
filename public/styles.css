@@ -122,6 +122,8 @@ button{font:inherit;color:inherit}
 .keynote code,.connect code{font-family:var(--mono);font-size:11px;padding:1px 4px;border-radius:4px;background:rgba(255,255,255,.05)}
 .connect{display:grid;gap:5px;padding:8px 10px;margin-top:4px;border-radius:8px;background:rgba(0,0,0,.25);border:1px dashed var(--line);line-height:1.5}
 .connect a{color:#7fd4ff}
+.stalechip{cursor:pointer;color:#ffcf5a;border-color:rgba(255,207,90,.55);background:rgba(255,207,90,.1)}
+.row.stale-row{background:rgba(255,207,90,.05)}
 .badge.stale{color:#ffcf5a;border-color:rgba(255,207,90,.45);background:rgba(255,207,90,.08)}
 .badge.missing{color:#ff8a65;border-color:rgba(255,138,101,.45);background:rgba(255,138,101,.08)}
 @media (max-width:760px){ .row.prov{grid-template-columns:1fr 92px !important} .row.prov>span:nth-child(3),.row.prov>span:nth-child(4){grid-column:1/-1} }

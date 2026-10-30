@@ -1,4 +1,5 @@
 'use strict';
+const { Watchdog } = require('./lib/watchdog');
 // HAWSE paper engine: wires feeds -> strategies -> paper broker -> ledger -> risk gates.
 const { Health } = require('./lib/health');
 const { Ledger } = require('./lib/ledger');
@@ -59,8 +60,10 @@ class Engine {
     this.loop = setInterval(() => this.tick(), 2000);
     this.sampler = setInterval(() => this.ledger.sample(), 5000);
     this.ledger.sample();
+    this.watchdog = new Watchdog({ health: this.health, log: this.log || ((m) => console.log(m)), ...(this.cfg.watchdog || {}) }).watchAll(this.feeds);
+    if (!this.cfg.watchdog || this.cfg.watchdog.enabled !== false) this.watchdog.start();
   }
-  stop() { clearInterval(this.loop); clearInterval(this.sampler); for (const f of Object.values(this.feeds)) f.stop && f.stop(); }
+  stop() { clearInterval(this.loop); clearInterval(this.sampler); this.watchdog && this.watchdog.stop(); for (const f of Object.values(this.feeds)) f.stop && f.stop(); }
   tick(now = Date.now()) {
     for (const s of this.strategies) {
       try { s.tick(now); } catch (e) { this.tape.push({ kind: 'error', strategy: s.id, msg: 'tick error: ' + e.message }); }
@@ -93,6 +96,9 @@ class Engine {
       funding: this.feeds.funding.snapshot(),
       feeds: Object.fromEntries(Object.entries(this.feeds).filter(([k]) => k !== 'funding').map(([k, f]) => [k, f.snapshot ? f.snapshot() : null])),
       prices, health: this.health.list(), providers: this.providers.list(), tape: this.tape.rows.slice(0, 150),
+      // Stale = a source that has delivered before but not within its staleMs. Shown as a top-bar badge + STALE tags.
+      stale: this.health.list().filter((h) => h.status === 'stale').map((h) => ({ id: h.id, label: h.label, ageMs: h.ageMs, staleMs: h.staleMs, mock: h.kind === 'mock' })),
+      watchdog: this.watchdog ? this.watchdog.view() : null, monoUptimeMs: Math.round(process.uptime() * 1000),
     };
   }
 }

@@ -23,6 +23,8 @@ class PerpBars {
   }
   start() { this.poll(); this.timer = setInterval(() => this.poll(), this.pollMs); }
   stop() { clearInterval(this.timer); }
+  restart() { this.stop(); this.start(); }
+  watchSpec() { return { key: 'perp bars (REST poll)', ids: ['candles.okx-swap'], intervalMs: this.pollMs, restart: () => this.restart() }; }
   async poll() { for (const s of this.symbols) { try { this.bars[s] = await fetchOkxBars({ symbol: s, bar: this.bar, limit: 200, health: this.health, id: 'candles.okx-swap' }); } catch {} } }
   closed(s) { const b = (this.bars[s] || []).filter((x) => x.closed); return b.length ? b : null; }
   snapshot() { return { bar: this.bar, symbols: Object.fromEntries(Object.entries(this.bars).map(([k, v]) => [k, v.length])) }; }

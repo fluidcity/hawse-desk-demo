@@ -43,6 +43,8 @@ class SpotFeed {
   }
   start() { const run = () => this.pollAll().catch(() => {}); run(); this.timer = setInterval(run, this.pollMs); }
   stop() { clearInterval(this.timer); }
+  restart() { this.stop(); this.start(); }
+  watchSpec() { return { key: 'spot books (REST poll)', ids: SPOT_VENUES.map((v) => 'spot.' + v), intervalMs: this.pollMs, restart: () => this.restart() }; }
   snapshot() { return { rows: [...this.data.values()].filter((r) => Date.now() - r.ts < 120000).map(({ venue, symbol, bid, ask }) => ({ venue, symbol, bid, ask })) }; }
 }
 module.exports = { SpotFeed, SPOT_VENUES, parseBinanceSpot, parseOkxSpot, parseBybitSpot };

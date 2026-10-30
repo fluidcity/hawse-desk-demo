@@ -99,6 +99,7 @@ window.HAWSE.explain = (() => {
     const gate = S.risk.real.ok && S.risk.sim.ok;
     $('gateChip').className = 'gatechip ' + (gate ? 'ok' : 'bad');
     $('gateChip').textContent = gate ? 'GATE OPEN' : 'GATE HALTED';
+    renderStaleChip();
     curveTarget = S.curve;
     if (S.curve.length) $('curveSpan').textContent = `· ${S.curve.length} samples · ${ago(S.now - S.curve[0].t)} window`;
   }
@@ -272,15 +273,27 @@ window.HAWSE.explain = (() => {
   document.querySelectorAll('[data-dtab]').forEach((b) => b.onclick = () => { dtab = b.dataset.dtab; document.querySelectorAll('[data-dtab]').forEach((x) => x.classList.toggle('on', x === b)); $('providers').hidden = dtab !== 'providers'; $('health').hidden = dtab !== 'feeds'; });
   const sb = $('settingsBtn'); if (sb) sb.onclick = () => $('dataSources').scrollIntoView({ behavior: 'smooth', block: 'start' });
   const openConnect = new Set();
+  // Top-bar warning: any source that delivered before but not within its staleMs (watchdog restarts it; see Data sources → Feeds).
+  function renderStaleChip() {
+    const el = $('staleChip'); if (!el) return; const st = S.stale || [];
+    el.hidden = !st.length; if (!st.length) return;
+    const worst = st.reduce((a, b) => (b.ageMs > a.ageMs ? b : a));
+    el.textContent = `⚠ ${st.length} STALE · ${ago(worst.ageMs)}`;
+    el.title = 'Stale feeds (no update within their window):\n' + st.map((x) => `${x.label}${x.mock ? ' [MOCK]' : ''}: last update ${ago(x.ageMs)} ago (window ${Math.round(x.staleMs / 1000)}s)`).join('\n');
+    el.onclick = () => { const b = document.querySelector('[data-dtab="feeds"]'); if (b) b.click(); $('dataSources').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+  }
   function renderHealth() {
     const h = S.health; const cnt = (st) => h.filter((x) => x.status === st).length;
-    $('healthSum').innerHTML = `<span class="pos">${cnt('live')} live</span> · <span class="warn">${cnt('stale')} stale</span> · <span class="warn">${cnt('mock')} mock</span> · <span class="neg">${cnt('down')} down</span>`;
+    const wd = S.watchdog; const wdTxt = wd ? ` · watchdog ${wd.restarts} restart(s)${wd.clockJumps && wd.clockJumps.length ? ` · last clock jump +${Math.round(wd.clockJumps[wd.clockJumps.length - 1].ms / 1000)}s` : ''}` : '';
+    $('healthSum').innerHTML = `<span class="pos">${cnt('live')} live</span> · <span class="warn">${cnt('stale')} stale</span> · <span class="warn">${cnt('mock')} mock</span> · <span class="neg">${cnt('down')} down</span>${esc(wdTxt)}`;
     const cols = 'grid-template-columns:1.4fr 44px 62px 56px 48px';
     $('health').innerHTML = `<div class="row head" style="${cols}"><span>feed</span><span>via</span><span>status</span><span>latency</span><span>age</span></div>` +
       h.map((x) => { const st = x.status === 'stale' ? 'stale' : x.kind === 'mock' ? 'mock' : x.status === 'live' ? 'live' : x.status === 'down' ? 'down' : 'pending';
-        return `<div class="row" style="${cols}" title="${esc(x.error || x.note || '')}"><span>${esc(x.label)}<br><span class="dim sm">${esc(x.error ? x.error.slice(0, 70) : x.note || x.group)}</span></span><span class="dim">${esc(x.transport || 'rest')}</span><span>${badge(st)}</span><span>${x.latencyMs == null ? '—' : x.latencyMs + 'ms'}</span><span>${ago(x.ageMs)}</span></div>`; }).join('');
+        return `<div class="row${st === 'stale' ? ' stale-row' : ''}" style="${cols}" title="${esc(x.error || x.note || '')}"><span>${esc(x.label)}<br><span class="dim sm">${esc(x.error ? x.error.slice(0, 70) : x.note || x.group)}</span></span><span class="dim">${esc(x.transport || 'rest')}</span><span>${badge(st)}${st === 'stale' && x.kind === 'mock' ? ' ' + badge('mock') : ''}</span><span>${x.latencyMs == null ? '—' : x.latencyMs + 'ms'}</span><span class="${st === 'stale' ? 'warn' : ''}">${ago(x.ageMs)}</span></div>`; }).join('');
     renderProviders();
   }
+  const staleFeeds = (p) => { const rows = (p.feeds || []).map((f) => (S.health || []).find((h) => h.id === f.id)).filter((h) => h && h.status === 'stale');
+    return rows.length ? `<br><span class="warn">⚠ STALE: ${rows.map((h) => esc(h.id) + ' ' + esc(ago(h.ageMs))).join(' · ')}</span>` : ''; };
   function renderProviders() {
     const P = S.providers || []; if (!P.length) { $('providers').innerHTML = '<div class="dim">provider registry unavailable</div>'; return; }
     const cols = 'grid-template-columns:1.5fr 92px 56px 1.6fr 78px';
@@ -289,7 +302,7 @@ window.HAWSE.explain = (() => {
       const how = p.keyless ? 'Works without a key.' : p.connect.anyOf ? 'Set any one of these env vars (server-side .env), then restart:' : 'Set these env vars (server-side .env), then restart:';
       const open = openConnect.has(p.id);
       return `<div class="row prov" style="${cols}"><span>${esc(p.name)}<br><span class="dim sm">${esc(p.category)}${p.fallback ? ' · fallback: ' + esc(p.fallback) : ''}</span></span><span>${badge(p.status)}</span><span>${p.latencyMs == null ? '—' : Math.round(p.latencyMs) + 'ms'}</span>
-        <span class="sm">${p.unlocks.map(esc).join(' · ')}${pythInfo(p)}${creditInfo(p)}</span><span><button type="button" class="btn sm" data-connect="${esc(p.id)}">${open ? 'Close' : p.keyless ? 'Details' : 'Connect'}</button></span>
+        <span class="sm">${p.unlocks.map(esc).join(' · ')}${pythInfo(p)}${creditInfo(p)}${staleFeeds(p)}</span><span><button type="button" class="btn sm" data-connect="${esc(p.id)}">${open ? 'Close' : p.keyless ? 'Details' : 'Connect'}</button></span>
         ${open ? `<div class="connect sm" style="grid-column:1/-1"><div>${how}</div><div class="mono">${vars}</div>${p.connect.signup ? `<div>Sign up / docs: <a href="${esc(p.connect.signup)}" target="_blank" rel="noopener">${esc(p.connect.signup)}</a></div>` : ''}${p.placeholder ? '<div class="warn">Placeholder: no adapter yet. Add one file in server/providers/adapters/ (see README).</div>' : ''}<div class="dim">feeds: ${p.feeds.map((f) => esc(f.id) + ' ' + esc(f.status) + ' via ' + esc(f.transport || 'rest')).join(' · ') || 'none'}</div></div>` : ''}</div>`; }).join('');
     $('providers').querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => { const id = b.dataset.connect; openConnect.has(id) ? openConnect.delete(id) : openConnect.add(id); renderProviders(); });
   }

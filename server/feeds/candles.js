@@ -18,6 +18,8 @@ class CandleFeed {
   }
   start() { this.poll(); this.pollTob(); this.t1 = setInterval(() => this.poll(), this.pollMs); this.t2 = setInterval(() => this.pollTob(), 10000); }
   stop() { clearInterval(this.t1); clearInterval(this.t2); }
+  restart() { this.stop(); this.start(); }
+  watchSpec() { return { key: 'candles (REST poll)', ids: ['candles.okx', 'candles.coinbase', 'candles.binance'], intervalMs: this.pollMs, restart: () => this.restart() }; }
   async poll() {
     for (const s of this.symbols) {
       let bars = null, src = null;

@@ -52,6 +52,8 @@ class DexFeed {
     this.t1 = setInterval(() => this.runSol(), this.c.solPollMs); this.t2 = setInterval(() => this.runEvm(), this.c.evmPollMs);
   }
   stop() { clearInterval(this.t1); clearInterval(this.t2); }
+  restart() { this.stop(); this.start(); }
+  watchSpec() { return { key: 'dex quotes (REST poll)', ids: ['dex.jupiter', 'dex.dexscreener', 'dex.paraswap'], intervalMs: Math.max(this.c.solPollMs, this.c.evmPollMs), restart: () => this.restart() }; }
   async jq(inputMint, outputMint, amount, dex) {
     // Metis /swap/v1/quote: still served on api.jup.ag but unmaintained. Kept because per-DEX direct-route quotes need it:
     // v2 /order ignores `dexes`, and v2 /build requires a taker wallet. Paper desk = quotes only, never a transaction.

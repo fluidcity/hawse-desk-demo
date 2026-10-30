@@ -10,6 +10,7 @@
 // The base URL and the token are secrets: they never appear in health notes, errors, logs or the client view.
 const fs = require('fs');
 const path = require('path');
+const { withTimeout } = require('../lib/net');
 
 const RETENTION_MS = 24 * 3.6e6;
 const clamp = (v, lo, hi, d) => { const n = +v; return Number.isFinite(n) && v !== '' && v != null ? Math.min(hi, Math.max(lo, n)) : d; };
@@ -47,19 +48,23 @@ class InboxPoller {
   schedule(ms) { if (this.stopped) return; if (this.timer) this.clearTimer(this.timer); this.stats.nextAt = this.now() + ms; this.timer = this.setTimer(() => { this.timer = null; this.tick().catch(() => {}); }, ms); if (this.timer && this.timer.unref) this.timer.unref(); }
   /** One poll cycle (all pages while more=true, up to maxPages). Returns the delay chosen for the next cycle. */
   async tick() {
-    if (this.busy) return this.pollMs; this.busy = true; let delay = this.pollMs;
+    if (this.busy) return this.pollMs; this.busy = true; let delay = this.pollMs; const g = this.gen;
     try {
       this.stats.polls++; this.stats.lastPollAt = this.now();
       for (let page = 0; page < this.maxPages; page++) {
         const r = await this.fetchPage();
+        if (g !== this.gen) return delay; // superseded by a watchdog restart
         if (!r.ok) { delay = this.backoff(r); break; }
         this.fails = 0; this.stats.backoffMs = 0;
         if (!r.more) break;
         if (page === this.maxPages - 1) delay = 1000; // still more: come back soon instead of waiting a full interval
       }
-    } finally { this.busy = false; }
-    this.schedule(delay); return delay;
+    } catch (e) { delay = this.backoff(this.fail('network', 'inbox poll error (' + ((e && (e.code || e.name)) || 'error') + ')')); }
+    finally { if (g === this.gen) { this.busy = false; this.schedule(delay); } } // always reschedule, whatever happened above
+    return delay;
   }
+  /** Watchdog hook: drop any in-flight poll and start a fresh loop now. */
+  restart() { if (!this.configured) return; this.gen = (this.gen || 0) + 1; this.busy = false; this.stopped = true; if (this.timer) this.clearTimer(this.timer); this.timer = null; this.start(); }
   backoff(r) {
     this.fails++; let ms;
     if (r.kind === 'auth') ms = Math.min(30 * 60e3, 5 * 60e3 * 2 ** (this.fails - 1));
@@ -74,7 +79,7 @@ class InboxPoller {
   async fetchPage() {
     const t0 = this.now(); let res;
     try {
-      res = await this.fetchImpl(`${this.baseUrl}/events?since=${this.state.cursor}&limit=${this.limit}`, { headers: { authorization: 'Bearer ' + this.readToken, accept: 'application/json', 'user-agent': 'hawse-paper-desk/2.0' }, signal: AbortSignal.timeout(this.timeoutMs) });
+      res = await withTimeout(this.fetchImpl(`${this.baseUrl}/events?since=${this.state.cursor}&limit=${this.limit}`, { headers: { authorization: 'Bearer ' + this.readToken, accept: 'application/json', 'user-agent': 'hawse-paper-desk/2.0' }, signal: AbortSignal.timeout(this.timeoutMs) }), this.timeoutMs + 1000);
     } catch (e) { return this.fail('network', 'inbox unreachable (' + ((e && (e.cause && e.cause.code || e.code || e.name)) || 'network error') + ')'); }
     const rtt = this.now() - t0; this.stats.lastRttMs = rtt;
     if (res.status === 401 || res.status === 403) { this.stats.authFails++; return this.fail('auth', `inbox auth rejected (HTTP ${res.status}): check HAWSE_READ_TOKEN`); }
@@ -83,7 +88,7 @@ class InboxPoller {
       const sec = ra != null && ra !== '' && isFinite(+ra) ? +ra : null; return this.fail('rate', `inbox rate-limited (HTTP 429)${sec != null ? `, retry after ${sec}s` : ''}`, { retryAfterMs: sec != null ? sec * 1000 : null });
     }
     if (!res.ok) return this.fail('server', `inbox HTTP ${res.status}`);
-    let j; try { j = JSON.parse(await res.text()); } catch { return this.fail('server', 'inbox returned invalid JSON'); }
+    let j; try { j = JSON.parse(await withTimeout(res.text(), this.timeoutMs + 1000)); } catch (e) { return e && e.code === 'ETIMEDOUT' ? this.fail('network', 'inbox response body timed out') : this.fail('server', 'inbox returned invalid JSON'); }
     if (!j || j.ok !== true || !Array.isArray(j.events)) return this.fail('server', 'inbox returned an unexpected shape');
     this.checkGap();
     let maxId = this.state.cursor;

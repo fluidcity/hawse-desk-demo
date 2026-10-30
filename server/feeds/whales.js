@@ -122,6 +122,7 @@ class SolanaWhaleFeed {
     else if (this.mode === 'inbox') this.inbox.start();
   }
   stop() { clearInterval(this.timer); this.inbox.stop(); }
+  watchSpec() { return this.mode === 'inbox' ? { key: 'whale.inbox (HAWSE inbox poll)', ids: ['whale.inbox'], intervalMs: this.inbox.pollMs, restart: () => this.inbox.restart() } : null; }
   /** One inbox event = one Helius delivery (an array of enhanced txs). Helius bills 1 credit per tx in it, dupes included. */
   ingestInboxEvent({ receivedAt, delivered, txs }) {
     const t = this.now(); const isTest = (tx) => /^HAWSE-TEST/i.test(tx.signature);
@@ -223,6 +224,12 @@ class EvmWhaleFeed {
     }
   }
   stop() { clearInterval(this.timer); this.ws && this.ws.stop(); }
+  watchSpec() {
+    if (this.mode !== 'live') return null;
+    const out = [{ key: this.hid + ' (RPC poll)', ids: [this.hid], intervalMs: this.c.pollMs, restart: () => { clearInterval(this.timer); this.busy = false; this.timer = setInterval(() => this.poll(), this.c.pollMs); this.poll(); } }];
+    if (this.ws) out.push({ key: this.ws.id, ids: [this.ws.id], intervalMs: this.ws.idleMs / 3, activity: 'ok', restart: () => this.ws.restart('watchdog') });
+    return out;
+  }
   async poll() {
     if (this.mode === 'mock') return this.mockTick();
     if (this.busy) return; this.busy = true;

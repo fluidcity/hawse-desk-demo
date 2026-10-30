@@ -8,6 +8,7 @@
 // from the rest of HAWSE. Uses host.cfg.betting, host ledger via BetBook, and the Strategy base API (arm/gate/log/view).
 const S = require('./scanner');
 const M = require('./math');
+const A = require('./anchor');
 const { explainStrategy, STRAT_RULES: R } = require('./explain');
 
 function defineStrategies(Strategy) {
@@ -17,7 +18,9 @@ class BetStrategy extends Strategy {
   dataMode() { return this.feed.mode === 'live' ? 'live' : this.feed.mode === 'mock' ? 'mock' : 'down'; }
   get simulated() { return this.feed.simulated; }
   caps() { return { maxStakePct: this.c.maxStakePct, maxEventPct: this.c.maxEventPct, maxOpenPct: this.c.maxOpenPct }; }
-  events() { return this.feed.upcoming(this.c.minMinutesToStart * 60e3); }
+  /** Time-to-start gate in minutes (the MOCK feed's accelerated schedule uses its own small value). */
+  minLeadMin() { return this.feed.simulated ? this.c.mockMinMinutesToStart : this.c.minMinutesToStart; }
+  events() { return this.feed.upcoming(this.minLeadMin() * 60e3); }
   evName(ev) { return `${ev.away} @ ${ev.home}`; }
   /** Size + cap-check + gate + book one single bet. Returns true when booked. */
   takeSingle(ev, o, kind) {
@@ -29,17 +32,18 @@ class BetStrategy extends Strategy {
     const cap = this.bk.check(this.id, { bankroll, simulated: sim, eventId: ev.id, stakes: [stake], ...this.caps() }); if (!cap.ok) { this.skip('exposure cap', cap.reason); return false; }
     const g = this.gate(sim); if (!g.ok) { this.skip('risk gate: ' + g.reason); return false; }
     this.taken.add(k);
-    this.bk.place(this.id, ev, [{ ...o, stake }], { kind });
-    this.log(`${sim ? '[SIM] ' : ''}PAPER BET ${this.evName(ev)} · ${o.label} @ ${o.book} ${o.dec.toFixed(2)} · fair ${(1 / o.fairProb).toFixed(2)} · EV ${o.evPct.toFixed(1)}% · ${(this.c.kellyFraction)}× Kelly → $${stake.toFixed(2)}`, { simulated: sim });
+    const meta = o.anchor ? { anchor: o.anchor, pFair: o.fairProb, dTaken: o.dec, priceAgeSec: o.priceAgeSec ?? null, anchorAgeSec: o.anchorAgeSec ?? null, holdPct: o.holdPct ?? null } : {};
+    this.bk.place(this.id, ev, [{ ...o, stake }], { kind, meta });
+    this.log(`${sim ? '[SIM] ' : ''}PAPER BET ${this.evName(ev)} · ${o.label} @ ${o.book} ${o.dec.toFixed(2)} · fair ${(1 / o.fairProb).toFixed(2)}${o.anchor ? ` (${o.anchor === 'consensus' ? 'consensus' : o.anchor + ' no-vig'})` : ''} · EV ${o.evPct.toFixed(1)}% · ${(this.c.kellyFraction)}× Kelly → $${stake.toFixed(2)}`, { simulated: sim });
     return true;
   }
   tick(now) {
     if (now - this.lastEval < R.scanMs) return; this.lastEval = now;
     this.bk.settle(now);
     if (this.feed.mode === 'pending') { this.opps = []; return this.armed && this.skip('odds feed connecting'); }
-    this.opps = this.scan();
+    this.opps = this.scan(now);
     if (!this.armed) return;
-    if (!this.events().length) return this.skip('no upcoming events', `need > ${this.c.minMinutesToStart} min to start`);
+    if (!this.events().length) return this.skip('no upcoming events', `need > ${this.minLeadMin()} min to start`);
     this.act(now);
   }
   explain() { return explainStrategy(this); }
@@ -47,17 +51,39 @@ class BetStrategy extends Strategy {
 }
 
 class BetEV extends BetStrategy {
-  constructor(engine, feed, book) { super(engine, feed, book, { id: 'bet_ev', name: 'Sports +EV (line shopping)', desc: 'Best price across books vs no-vig consensus of the others · fractional Kelly · exposure caps · CLV tracked', allocPct: 0.06, chains: ['Sportsbooks'] }); }
-  params() { return { minEdgePct: this.c.minEdgePct, minBooks: this.c.minBooks, kellyFraction: this.c.kellyFraction, maxDecimalOdds: this.c.maxOddsDec, method: this.c.fairMethod }; }
-  scan() {
-    return this.events().flatMap((ev) => S.evOpportunities(ev, { minEdgePct: 0, minBooks: this.c.minBooks, maxDecimalOdds: this.c.maxOddsDec, method: this.c.fairMethod }).map((o) => ({ ...o, event: this.evName(ev), commence: ev.commence, simulated: !!ev.simulated })))
-      .sort((a, b) => b.evPct - a.evPct);
+  constructor(engine, feed, book) { super(engine, feed, book, { id: 'bet_ev', name: 'Sports +EV vs Pinnacle', desc: 'Soft-book price vs Pinnacle no-vig fair (falls back to the consensus of other books) · named gates · fractional Kelly · CLV scoreboard', allocPct: 0.06, chains: ['Sportsbooks'] }); this.gates = {}; }
+  anchorBook() { return this.feed.simulated ? A.MOCK_ANCHOR : this.c.anchorBook; }
+  gateCfg() { const c = this.c; return { anchor: this.anchorBook(), method: c.anchorMethod, minEdgePct: c.minEdgePct, minEdgeSpreadsPct: c.minEdgeSpreadsPct, minEdgeLongshotPct: c.minEdgeLongshotPct, longshotDec: c.longshotDec,
+    maxPriceAgeSec: c.maxPriceAgeSec, maxAgeGapSec: c.maxAgeGapSec, maxHoldPct: c.maxHoldPct, minMinutes: this.minLeadMin(), maxHours: c.maxHoursToStart, maxDecimalOdds: c.maxOddsDec }; }
+  params() { const c = this.c; return { anchor: c.anchor === 'pinnacle' ? this.anchorBook() : 'consensus', minEdgePct: c.minEdgePct, minEdgeSpreadsPct: c.minEdgeSpreadsPct, minEdgeLongshotPct: c.minEdgeLongshotPct, longshotDec: c.longshotDec,
+    maxPriceAgeSec: c.maxPriceAgeSec, maxAgeGapSec: c.maxAgeGapSec, maxHoldPct: c.maxHoldPct, minMinutesToStart: this.minLeadMin(), maxHoursToStart: c.maxHoursToStart, minBooks: c.minBooks, kellyFraction: c.kellyFraction, maxDecimalOdds: c.maxOddsDec, method: c.anchor === 'pinnacle' ? c.anchorMethod : c.fairMethod }; }
+  consensus(ev) {
+    return S.evOpportunities(ev, { minEdgePct: 0, minBooks: this.c.minBooks, maxDecimalOdds: this.c.maxOddsDec, method: this.c.fairMethod })
+      .map((o) => ({ ...o, anchor: 'consensus', needPct: this.c.minEdgePct, ok: o.evPct >= this.c.minEdgePct, reason: o.evPct >= this.c.minEdgePct ? undefined : `EV ${o.evPct.toFixed(2)}% < ${this.c.minEdgePct}%` }));
+  }
+  scan(now = Date.now()) {
+    const gates = {}, add = (r) => { const k = r.replace(/[\d.]+/g, '#'); gates[k] = (gates[k] || 0) + 1; };
+    const out = this.events().flatMap((ev) => {
+      let os;
+      if (this.c.anchor === 'pinnacle') {
+        const r = A.anchoredOpportunities(ev, this.gateCfg(), now);
+        for (const s of r.skips) add(s.reason);
+        os = r.skips.some((s) => s.reason === 'no anchor book') ? this.consensus(ev).map((o) => ({ ...o, fallback: true })) : r.cands; // fallback ONLY when the anchor has no prices at all
+        if (r.skips.length && !os.length) return [];
+      } else os = this.consensus(ev);
+      for (const o of os) if (!o.ok && o.reason) add(o.reason);
+      return os.map((o) => ({ ...o, event: this.evName(ev), commence: ev.commence, simulated: !!ev.simulated }));
+    });
+    this.gates = gates;
+    return out.sort((a, b) => (b.ok - a.ok) || b.evPct - a.evPct);
   }
   act() {
-    const hits = this.opps.filter((o) => o.evPct >= this.c.minEdgePct);
-    if (!hits.length) { const t = this.opps[0]; return this.skip('no +EV price above threshold', t ? `best ${t.label} @${t.book} EV ${t.evPct.toFixed(2)}% < ${this.c.minEdgePct}%` : 'no comparable markets'); }
+    const hits = this.opps.filter((o) => o.ok);
+    if (!hits.length) { const g = Object.entries(this.gates).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, n]) => `${k} ×${n}`).join('; '); const t = this.opps[0];
+      return this.skip('no price passed the gates', (t ? `best ${t.label} @${t.book} EV ${t.evPct.toFixed(2)}%` : 'no comparable markets') + (g ? ` · gates: ${g}` : '')); }
     let n = 0; for (const o of hits) { if (n >= R.evMaxPerScan) break; const ev = this.feed.events.get(o.eventId); if (ev && this.takeSingle(ev, o, 'ev')) n++; }
   }
+  view() { return { ...super.view(), gates: this.gates, scoreboard: this.bk.scoreboard(this.id) }; }
 }
 
 class BetSpread extends BetStrategy {

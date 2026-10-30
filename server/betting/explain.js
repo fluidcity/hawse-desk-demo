@@ -30,13 +30,32 @@ function common(s) {
 function explainStrategy(s) {
   const c = s.c, base = common(s), R = STRAT_RULES;
   const settle = 'Held to settlement and graded from final scores; closing-line value (CLV) is recorded at kickoff';
-  if (s.id === 'bet_ev') return explanation(`Line shopping: for each game it compares every sportsbook's price with a fair price built from the
+  if (s.id === 'bet_ev') {
+    const anchored = c.anchor === 'pinnacle';
+    if (!anchored) return explanation(`Line shopping: for each game it compares every sportsbook's price with a fair price built from the
     other books after removing their margin (the "vig"). When one book pays clearly more than that fair price, it books a small
-    paper bet sized by fractional Kelly, inside strict exposure caps.`, { ...base,
-    Signal: [`Fair probability = no-vig consensus of the other books (${c.fairMethod} method), needs ≥ ${c.minBooks} books quoting`,
-      `Expected value at the best price ≥ ${pct(c.minEdgePct)}`, `Ignores prices longer than ${num(c.maxOddsDec)} decimal odds`],
-    Entry: [`Stake = ${c.kellyFraction}× Kelly of the sleeve, capped at ${pct(c.maxStakePct, 1)}`, `Up to ${R.evMaxPerScan} new bets per scan (every ${R.scanMs / 1000} s); one bet per selection`],
-    Exit: [settle] });
+    paper bet sized by fractional Kelly, inside strict exposure caps. (BET_ANCHOR=consensus: the Pinnacle anchor is switched off.)`, { ...base,
+      Signal: [`Fair probability = no-vig consensus of the other books (${c.fairMethod} method), needs ≥ ${c.minBooks} books quoting`,
+        `Expected value at the best price ≥ ${pct(c.minEdgePct)}`, `Ignores prices longer than ${num(c.maxOddsDec)} decimal odds`],
+      Entry: [`Stake = ${c.kellyFraction}× Kelly of the sleeve, capped at ${pct(c.maxStakePct, 1)}`, `Up to ${R.evMaxPerScan} new bets per scan (every ${R.scanMs / 1000} s); one bet per selection`],
+      Exit: [settle] });
+    return explanation(`Uses Pinnacle as the "true price". Pinnacle accepts big bets from sharp bettors, so its odds with the margin
+    removed are the best free estimate of each side's real chance. When a recreational sportsbook pays clearly more than that, it books
+    a small paper bet. Success is judged by closing-line value (CLV): did the price we took beat Pinnacle's final fair price before
+    the game started? That is a faster, less noisy test than win/loss. If Pinnacle has no prices for a game, it falls back to the
+    consensus of the other books (marked "consensus").`, { ...base,
+      Markets: [...base.Markets.slice(0, 2), `Only games starting ${num(c.minMinutesToStart, 0)} min to ${num(c.maxHoursToStart, 0)} h from now (MOCK feed: ${num(c.mockMinMinutesToStart, 0)} min, its schedule is accelerated)`],
+      Signal: [`Fair probability = ${c.anchorBook} with its margin removed (${c.anchorMethod} method), at the exact same line on every side`,
+        `EV ≥ ${pct(c.minEdgePct)} on moneylines, ≥ ${pct(c.minEdgeSpreadsPct)} on spreads/totals, ≥ ${pct(c.minEdgeLongshotPct)} for prices above ${num(c.longshotDec)}`,
+        `Skips when Pinnacle's own margin is above ${pct(c.maxHoldPct, 1)} (a thin or uncertain market)`,
+        `Skips stale prices: both prices ≤ ${num(c.maxPriceAgeSec / 60, 1)} min old and ≤ ${num(c.maxAgeGapSec / 60, 1)} min apart`,
+        `Ignores prices longer than ${num(c.maxOddsDec)} decimal odds; every skip is logged with its reason`],
+      Entry: [`Stake = ${c.kellyFraction}× Kelly of the sleeve, capped at ${pct(c.maxStakePct, 1)}`, `Up to ${R.evMaxPerScan} new bets per scan (every ${R.scanMs / 1000} s); one bet per selection`],
+      Exit: [`Held to settlement and graded from final scores`, `Closing line = the last ${c.anchorBook} snapshot taken ≤ ${num(c.closeWithinMin, 0)} min before start; CLV = our price ÷ that no-vig closing price − 1`,
+        'Scoreboard: mean CLV with a 95% bootstrap interval, % of bets that beat the same book\'s closing price, by sport and by book',
+        'Verdict after ≥ 300 bets: pass if mean CLV ≥ 1%, interval above 0 and beat-close ≥ 52%; ROI only counts after 1,500 bets'],
+      Data: [...base.Data, `Free plan: ${c.anchorBook} sits in the eu region but is requested by name with the US books, so it still costs 1 credit per market per snapshot`] });
+  }
   if (s.id === 'bet_spread') return explanation(`Looks for a sportsbook hanging a better point spread than the market consensus (a stale or soft
     line). Each point of difference is converted into extra win probability using a fixed ASSUMPTION, not an estimate, and it books a
     small fractional-Kelly paper bet when the resulting edge clears the threshold.`, { ...base,

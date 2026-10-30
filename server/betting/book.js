@@ -8,6 +8,7 @@
 //  - CLV: at commence the last pre-game snapshot is the (approximate) closing line; CLV = taken price vs no-vig close.
 const S = require('./scanner');
 const M = require('./math');
+const CLV = require('./clv');
 
 let seq = 0;
 class BetBook {
@@ -43,7 +44,7 @@ class BetBook {
     const booked = [];
     for (const b of this.bets) {
       if (b.status !== 'open') continue;
-      if (!b.close && now >= b.commence) { const cl = this.feed.closeOf(b.event); if (cl) b.close = closeFor(b, cl, this.c.fairMethod); }
+      if (!b.close && now >= b.commence) { const cl = this.feed.closeOf(b.event); if (cl) this.capture(b, cl); }
       const sc = this.feed.scoreOf(b.event); if (!sc) continue;
       const ev = this.feed.events.get(b.event) || { home: b.home, away: b.away };
       b.result = S.grade(b, ev, sc); b.pnl = +S.payout(b.result, b.stake, b.dec).toFixed(2); b.status = 'settled'; b.settledAt = now; b.score = `${sc.away}-${sc.home}`;
@@ -53,6 +54,22 @@ class BetBook {
     const groups = {}; for (const b of this.bets) if (b.group) (groups[b.group] = groups[b.group] || []).push(b);
     for (const legs of Object.values(groups)) if (legs.every((l) => l.status === 'settled') && !legs[0].booked) booked.push(this.book(legs));
     return booked;
+  }
+  /** Closing line for one bet. Anchored bets (H1) use the anchor's no-vig close; others the old consensus close. */
+  capture(b, cl) {
+    if (b.anchor && b.anchor !== 'consensus') {
+      const r = CLV.clvFor(b, cl, { anchor: b.anchor, method: this.c.anchorMethod || 'power', closeWithinMin: this.c.closeWithinMin ?? 10 });
+      b.clv = r; b.dCloseFair = r.dCloseFair ?? null; b.clvPct = r.clvPct; b.beatClose = r.beatClose;
+      b.close = { fairDec: r.dCloseFair ?? null, bestDec: r.dCloseSoft, clvPct: r.clvPct, note: r.note, at: cl.capturedAt };
+    } else {
+      b.close = closeFor(b, cl, this.c.fairMethod);
+      b.clv = { clvPct: b.close.clvPct, closeOk: true, beatClose: b.close.bestDec ? b.dec > b.close.bestDec : null, anchor: 'consensus' }; b.clvPct = b.close.clvPct;
+    }
+  }
+  /** H1 CLV scoreboard (real and simulated kept apart). */
+  scoreboard(strategy) {
+    const mine = this.bets.filter((b) => b.strategy === strategy);
+    return { closeWithinMin: this.c.closeWithinMin ?? 10, real: CLV.summarize(mine.filter((b) => !b.simulated)), sim: CLV.summarize(mine.filter((b) => b.simulated)) };
   }
   book(legs) {
     const pnl = legs.reduce((a, l) => a + l.pnl, 0), b0 = legs[0];
@@ -69,7 +86,7 @@ class BetBook {
   }
   view(strategy) {
     const mine = this.bets.filter((b) => b.strategy === strategy);
-    const strip = (b) => ({ id: b.id, t: b.t, group: b.group, event: b.eventLabel, commence: b.commence, label: b.label, book: b.book, dec: b.dec, stake: b.stake, evPct: b.evPct, simulated: b.simulated, status: b.status, result: b.result || null, pnl: b.pnl, score: b.score || null, clvPct: b.close ? b.close.clvPct : null, closeNote: b.close ? b.close.note : null });
+    const strip = (b) => ({ id: b.id, t: b.t, group: b.group, event: b.eventLabel, commence: b.commence, label: b.label, book: b.book, dec: b.dec, stake: b.stake, evPct: b.evPct, simulated: b.simulated, status: b.status, result: b.result || null, pnl: b.pnl, score: b.score || null, clvPct: b.close ? b.close.clvPct : null, closeNote: b.close ? b.close.note : null, anchor: b.anchor || null, beatClose: b.beatClose ?? null, priceAgeSec: b.priceAgeSec ?? null });
     return { open: mine.filter((b) => b.status === 'open').slice(0, 20).map(strip), settled: mine.filter((b) => b.status === 'settled').slice(0, 20).map(strip),
       counts: { open: mine.filter((b) => b.status === 'open').length, settled: mine.filter((b) => b.status === 'settled').length }, clv: { real: this.clvStats(strategy, false), sim: this.clvStats(strategy, true) } };
   }

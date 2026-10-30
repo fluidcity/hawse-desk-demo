@@ -32,7 +32,13 @@ function fromEnv(env = {}) {
     pollSec: num(env.ODDS_POLL_SEC, 900), scoresPollSec: num(env.ODDS_SCORES_POLL_SEC, 1800),
     minEdgePct: num(env.BET_MIN_EDGE_PCT, 2), minBooks: num(env.BET_MIN_BOOKS, 3), maxOddsDec: num(env.BET_MAX_ODDS_DEC, 6), fairMethod: env.BET_FAIR_METHOD === 'power' ? 'power' : 'multiplicative',
     kellyFraction: num(env.BET_KELLY_FRACTION, 0.25), maxStakePct: num(env.BET_MAX_STAKE_PCT, 2), maxEventPct: num(env.BET_MAX_EVENT_PCT, 4), maxOpenPct: num(env.BET_MAX_OPEN_PCT, 25), minStakeUsd: num(env.BET_MIN_STAKE_USD, 5),
-    minMinutesToStart: num(env.BET_MIN_MINUTES_TO_START, 2), minPointEdge: num(env.BET_MIN_POINT_EDGE, 1), pointValuePct: num(env.BET_POINT_VALUE_PCT, 2.5),
+    // H1: Pinnacle-anchored +EV (BET_ANCHOR=consensus restores the old consensus-of-other-books fair price).
+    anchor: env.BET_ANCHOR === 'consensus' ? 'consensus' : 'pinnacle', anchorBook: env.BET_ANCHOR_BOOK || 'pinnacle', anchorMethod: env.BET_ANCHOR_METHOD === 'multiplicative' ? 'multiplicative' : 'power',
+    minEdgeSpreadsPct: num(env.BET_MIN_EDGE_SPREADS_PCT, 2.5), minEdgeLongshotPct: num(env.BET_MIN_EDGE_LONGSHOT_PCT, 4), longshotDec: num(env.BET_LONGSHOT_DEC, 4),
+    maxPriceAgeSec: num(env.BET_MAX_PRICE_AGE_SEC, 600), maxAgeGapSec: num(env.BET_MAX_AGE_GAP_SEC, 300), maxHoldPct: num(env.BET_MAX_HOLD_PCT, 5),
+    maxHoursToStart: num(env.BET_MAX_HOURS_TO_START, 36), closeWithinMin: num(env.BET_CLOSE_WITHIN_MIN, 10),
+    // Time-to-start gate. The MOCK feed runs an accelerated schedule (games 3-25 min out), so it uses its own small value.
+    minMinutesToStart: num(env.BET_MIN_MINUTES_TO_START, 20), mockMinMinutesToStart: num(env.BET_MOCK_MIN_MINUTES_TO_START, 2), minPointEdge: num(env.BET_MIN_POINT_EDGE, 1), pointValuePct: num(env.BET_POINT_VALUE_PCT, 2.5),
     minArbPct: num(env.BET_MIN_ARB_PCT, 0.5), arbStakePct: num(env.BET_ARB_STAKE_PCT, 6), middleMaxCostPct: num(env.BET_MIDDLE_MAX_COST_PCT, 3),
     mockEvents: num(env.ODDS_MOCK_EVENTS, 8), mockTickMs: num(env.ODDS_MOCK_TICK_MS, 5000), mockLeadMin: [3, 25], mockGameMin: num(env.ODDS_MOCK_GAME_MIN, 4),
     // Stage 10: rules → signals → slips

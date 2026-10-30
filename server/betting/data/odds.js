@@ -24,7 +24,8 @@ class DiskCache {
 }
 
 const BASE = 'https://api.the-odds-api.com/v4';
-const MOCK_BOOKS = ['mockbook_a', 'mockbook_b', 'mockbook_c', 'mockbook_d', 'mockbook_e', 'mockbook_f'];
+const MOCK_SHARP = 'mock_sharp'; // Pinnacle-like MOCK anchor: low vig, never stale, less noise (see betting/anchor.js)
+const MOCK_BOOKS = [MOCK_SHARP, 'mockbook_a', 'mockbook_b', 'mockbook_c', 'mockbook_d', 'mockbook_e', 'mockbook_f'];
 const MOCK_TEAMS = { basketball_nba: ['Harbor Hawks', 'Mesa Comets', 'River Kings', 'Summit Owls', 'Bay Lynx', 'Iron Foxes', 'Prairie Bison', 'Coast Herons'],
   americanfootball_nfl: ['North Rams', 'Delta Gulls', 'Canyon Elk', 'Metro Bolts', 'Lake Otters', 'Forge Titans'],
   icehockey_nhl: ['Glacier Wolves', 'Port Pilots', 'Ridge Moose', 'Steel Ravens'] };
@@ -40,6 +41,7 @@ const inv = (p) => { let lo = -8, hi = 8; for (let i = 0; i < 60; i++) { const m
 function normalizeOddsApi(e) {
   return { id: e.id, sport: e.sport_key, sportTitle: e.sport_title, home: e.home_team, away: e.away_team, commence: Date.parse(e.commence_time), simulated: false,
     books: (e.bookmakers || []).map((b) => ({ key: b.key, title: b.title, lastUpdate: Date.parse(b.last_update) || null,
+      marketUpdates: Object.fromEntries((b.markets || []).filter((m) => m.last_update).map((m) => [m.key, Date.parse(m.last_update) || null])),
       markets: Object.fromEntries((b.markets || []).map((m) => [m.key, (m.outcomes || []).map((o) => ({ name: o.name, dec: +o.price, ...(o.point != null ? { point: +o.point } : {}) }))])) })) };
 }
 /** Final score from a /scores row, or null if not completed. */
@@ -207,15 +209,16 @@ class OddsFeed {
     const n = () => { let s = 0; for (let i = 0; i < 6; i++) s += this.rng(); return (s - 3) / Math.SQRT2; }; // ~N(0,1)
     const books = [];
     for (const key of MOCK_BOOKS) {
-      if (T.stale[key] == null || this.rng() < 0.08) T.stale[key] = this.rng() < 0.12 ? 1 : 0; // ~12% of books lag the market at any time
-      const lag = T.stale[key] ? 2.5 : 1, vig = 0.04 + this.rng() * 0.025;
+      const sharp = key === MOCK_SHARP;
+      if (T.stale[key] == null || this.rng() < 0.08) T.stale[key] = !sharp && this.rng() < 0.12 ? 1 : 0; // ~12% of soft books lag the market at any time
+      const lag = T.stale[key] ? 2.5 : sharp ? 0.4 : 1, vig = sharp ? 0.02 + this.rng() * 0.005 : 0.04 + this.rng() * 0.025;
       const mu = T.mu + n() * 0.25 * lag, tot = T.total + n() * 0.5 * lag;
       const pH = Math.min(0.95, Math.max(0.05, cdf(mu / T.sg.margin) + n() * 0.006 * lag));
       const price = (p) => Math.max(1.01, +(1 / (p * (1 + vig))).toFixed(2));
       const spread = half(-mu + (this.rng() < 0.15 * lag ? (this.rng() < 0.5 ? -0.5 : 0.5) : 0)); // home line
       const pCover = Math.min(0.95, Math.max(0.05, cdf((mu + spread) / T.sg.margin) + n() * 0.01 * lag));
       const line = half(tot), pOver = Math.min(0.95, Math.max(0.05, 1 - cdf((line - T.total) / T.sg.total) + n() * 0.01 * lag));
-      books.push({ key, title: key.replace('mockbook_', 'MockBook ').toUpperCase() + ' (MOCK)', lastUpdate: this.now(), markets: {
+      books.push({ key, title: sharp ? 'Sharp anchor (MOCK, Pinnacle-like)' : key.replace('mockbook_', 'MockBook ').toUpperCase() + ' (MOCK)', lastUpdate: this.now(), markets: {
         h2h: [{ name: ev.home, dec: price(pH) }, { name: ev.away, dec: price(1 - pH) }],
         spreads: [{ name: ev.home, point: spread, dec: price(pCover) }, { name: ev.away, point: -spread, dec: price(1 - pCover) }],
         totals: [{ name: 'Over', point: line, dec: price(pOver) }, { name: 'Under', point: line, dec: price(1 - pOver) }] } });

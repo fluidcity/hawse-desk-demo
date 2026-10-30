@@ -122,6 +122,43 @@
         <div id="health" class="tbl" hidden></div>
       </section>
 
+      <section class="card a-lab" id="labCard">
+        <div class="card-h"><h2>Strategy lab · editor · backtest · side-by-side paper runs</h2>
+          <div class="tabs" role="tablist">
+            <button type="button" class="tab on" data-ltab="library">Templates</button>
+            <button type="button" class="tab" data-ltab="mine">My strategies</button>
+            <button type="button" class="tab" data-ltab="import">Import</button>
+            <button type="button" class="tab" data-ltab="runs">Paper runs</button>
+          </div>
+        </div>
+        <p class="dim sm keynote">Backtests replay <b>public OKX candles</b> (plus OKX funding history for perps). They charge fees and slippage, fill at the next bar open, and let stops win ties. Results are hypothetical, never blended into desk equity, and are not a forecast. Imported strategies stay <span class="badge unverified">unverified</span> until you backtest them here. Schema: <a href="/schema/strategy.schema.json" target="_blank" rel="noopener">strategy.schema.json</a></p>
+        <div id="labLibrary" class="lab-pane"></div>
+        <div id="labMine" class="lab-pane" hidden></div>
+        <div id="labImport" class="lab-pane" hidden>
+          <div class="lab-import">
+            <label class="subh" for="labImportText">Paste strategy JSON or a plain-text description</label>
+            <textarea id="labImportText" class="code" rows="8" spellcheck="false" placeholder='{"schemaVersion":1,...}  or  "Trend following on ETH 4h: buy when the 9 and 21 EMA cross up, stop 3%"'></textarea>
+            <div class="lab-actions"><button type="button" class="btn sm" id="labImportJson">Import JSON</button><button type="button" class="btn sm" id="labImportPlain">Import text</button></div>
+            <div id="labImportOut" class="mono sm"></div>
+          </div>
+        </div>
+        <div id="labRuns" class="lab-pane" hidden></div>
+        <div id="labEditor" class="lab-editor" hidden>
+          <div class="card-h"><h2 id="labEdTitle">Edit</h2><span class="mono sm dim" id="labEdMeta"></span></div>
+          <textarea id="labEdText" class="code" rows="16" spellcheck="false"></textarea>
+          <div class="lab-actions">
+            <button type="button" class="btn sm" id="labSave">Save as new version</button>
+            <button type="button" class="btn sm" id="labBacktest">Backtest (1000 bars)</button>
+            <button type="button" class="btn sm" id="labDup">Duplicate</button>
+            <button type="button" class="btn sm" id="labRun">Start paper run</button>
+            <button type="button" class="btn sm ghost" id="labExport">Export JSON</button>
+            <button type="button" class="btn sm ghost" id="labClose">Close</button>
+          </div>
+          <div id="labEdOut" class="mono sm"></div>
+          <div id="labBt"></div>
+        </div>
+      </section>
+
       <section class="card a-tape">
         <div class="card-h"><h2>Live tape</h2>
           <div class="chips" id="tapeChips">
@@ -143,5 +180,6 @@
     <iframe id="demoFrame" title="HAWSE demo simulator" src="about:blank"></iframe>
   </main>
   <script src="app.js"></script>
+  <script src="lab.js"></script>
 </body>
 </html>

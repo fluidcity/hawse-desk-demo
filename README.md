@@ -214,6 +214,65 @@ every registry entry (unique id, https signup URL, adapter file loads) and that 
 - **Gap / MEV-style arb:** co-located or bare-metal nodes, private relays / bundles (Jito on Solana, Flashbots-style builders on Ethereum), and a latency model in the backtest. Without those, treat scanner output as research only.
 - **Oracle prices:** Pyth Hermes now needs `PYTH_API_KEY`; see pyth.network.
 
+## Strategy lab: editor, templates, backtests, side-by-side paper runs
+
+The **Strategy lab** card (below the desk) lets you write strategies as data, test them on real public history, and paper-run several next to each other. **Lab results live in their own books.** They are never added to the desk's equity curve or attribution.
+
+**Schema.** Every strategy is one JSON object that follows [`schema/strategy.schema.json`](schema/strategy.schema.json) (JSON Schema draft 2020-12). The running server also serves it at `/schema/strategy.schema.json`. Unknown fields are rejected.
+
+| field | meaning |
+|---|---|
+| `schemaVersion` | always `1` |
+| `name`, `description` | free text |
+| `kind` | `funding_arb`, `basis_carry`, `ma_cross`, `bollinger_revert`, `orb`, `dca_grid` or `volatility_breakout` |
+| `market` | `{symbol, bar: 1m\|5m\|15m\|1H\|4H\|1D, venue: okx, instrument: swap\|spot}` |
+| `params` | per-kind fields; the schema's `$defs` list them (for example `ma_cross`: `fast`, `slow`, `maType`) |
+| `entry` | `{allowShort}` |
+| `exit` | `{stopPct, takePct, maxHoldBars}` |
+| `risk` | `{positionPct, capitalUsd, maxDrawdownPct}` |
+| `costs` | `{feeRate, slippageBps}`, charged on every fill |
+| `riskNotes`, `source`, `status`, `id`, `version` | managed by the lab; `status` is `unverified` or `backtested` |
+
+The validator (`server/lab/validate.js`) has zero dependencies. It implements only the schema keywords the file uses and refuses to load if the schema starts using one it doesn't know. On top of the schema it runs semantic checks: `fast < slow`, ORB needs an intraday bar, a grid is spot-only, and basis is long-carry only.
+
+**Versioning.** Saving an existing id creates the next version, and every earlier version is kept. Any edit resets the status to `unverified`. *Duplicate* forks a version into a new id. Configs are stored in `data/lab/strategies.json`, which is gitignored and written atomically.
+
+**Templates (7).** Funding-rate arbitrage, cash-and-carry basis, MA crossover, Bollinger mean reversion, opening-range breakout, DCA/grid and volatility breakout. Each comes with a plain-language description and risk notes. None of them makes a performance claim.
+
+**Backtest semantics** (`server/lab/backtest.js`, deterministic):
+- Data is public OKX candles: `history-candles`, about 1000 closed bars.
+- Perps also replay OKX funding-rate history; if none is available, the result says "funding not modeled".
+- A signal is taken on a bar's close and filled at the next bar's open, with slippage applied.
+- Each fill pays the configured fee.
+- If one bar touches both the stop and the target, the **stop wins**.
+- The report shows net, return, max drawdown, trades (W/L), fees, slippage, funding, exposure, buy-and-hold over the same window and an equity curve.
+
+Limits:
+- No order book, partial fills, liquidation or funding-interval changes.
+- Grid lots are equal-sized spot buys.
+- `funding_arb` returns **"not supported"**, because there is no single public multi-venue funding history. Evaluate it as a live paper run on the desk instead.
+- Past bars are not a forecast.
+
+**Forward paper runs.** *Start paper run* replays the same rules on fresh closed OKX bars every 60 s, with entries allowed only after the start time. Several runs show side by side in the *Paper runs* tab.
+
+**Import, which is always `unverified` until you backtest it here:**
+- **JSON:** paste or upload a strategy object. `id`, `version`, `status`, `source` and any `performance`, `results`, `pnl`, `winRate` or `returns` fields are dropped, and the drop is reported as a warning. A missing `schemaVersion` is assumed to be 1, also with a warning. Invalid input returns every validation error.
+- **Plain text:** `server/lab/text-import.js` maps a description to a config with **deterministic keyword rules**, not an LLM.
+  - Recognized: strategy type, symbol or alias, timeframe, MA periods and type, Bollinger period and std, ORB minutes and HH:MM UTC, grid spacing and levels, ATR multiple, stop, target, max hold, position %, capital $.
+  - Not mappable: RSI, MACD, leverage, trailing stops, sentiment and similar. These are listed under "could not map" and left at the template defaults.
+  - Performance claims ("made 300% last year", "guaranteed") are ignored with a warning.
+  - If no strategy type is found, the import fails and lists the supported types.
+
+**ReelRipper → candidate JSON.** A transcript from ReelRipper (or any video or post about a strategy) can be turned into candidate JSON by an LLM outside this app: give the LLM the schema file and the transcript and ask for one object. Then paste that object into *Import → Import JSON*. It still lands `unverified`, any performance numbers in it are discarded, and the validator shows exactly what doesn't fit. You can also paste the transcript as-is into *Import text*, and the deterministic mapper will show what it understood.
+
+**API:**
+- `GET /api/lab` returns templates, configs and runs.
+- `GET /api/lab/configs/:id[?v=N]`
+- `GET /api/lab/configs/:id/export[?v=N]`
+- `POST /api/lab/configs` with `{config}` or `{fromTemplate}`
+- `POST /api/lab/configs/:id/duplicate|backtest|run|delete` (`backtest` takes `{version, limit<=1500}`; `run` takes `{on:false}` to stop)
+- `POST /api/lab/import` with `{json}` or `{text}`
+
 ## Risk gate
 
 - **Daily loss halt** (`RISK_DAILY_LOSS_PCT`) blocks new entries until the next UTC day.

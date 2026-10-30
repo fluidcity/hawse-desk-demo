@@ -9,6 +9,8 @@ const { GapScanner } = require('./strategies/gaps');
 const { TradovateFeed } = require('./feeds/tradovate');
 const { OpeningRangeBreakout } = require('./strategies/orb');
 const { PerpBars } = require('./feeds/perp-bars');
+const { Lab } = require('./lab/lab');
+const path = require('path');
 const { PerpMomentum, PerpBasis } = require('./strategies/perps');
 
 module.exports = {
@@ -35,5 +37,9 @@ module.exports = {
     const bars = engine.addFeed('perpbars', new PerpBars({ health: engine.health, symbols: engine.cfg.perps.symbols, bar: engine.cfg.perps.momentum.bar }));
     engine.addStrategy(new PerpMomentum(engine, bars));
     engine.addStrategy(new PerpBasis(engine));
+  },
+  lab(engine) {
+    const file = engine.cfg.lab && engine.cfg.lab.file !== undefined ? engine.cfg.lab.file : path.join(__dirname, '..', 'data', 'lab', 'strategies.json');
+    engine.lab = engine.addFeed('lab', new Lab({ file, health: engine.health }));
   },
 };

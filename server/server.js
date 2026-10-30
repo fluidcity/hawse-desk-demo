@@ -11,10 +11,30 @@ const modules = require('./modules');
 const PUB = path.join(__dirname, '..', 'public');
 const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png', '.json': 'application/json', '.ico': 'image/x-icon' };
 
+async function labRoute(lab, req, p, url, body) {
+  if (!lab) return [404, { error: 'lab module disabled' }];
+  let m; const G = req.method === 'GET', P = req.method === 'POST';
+  if (G && p === '/api/lab') return [200, lab.list()];
+  if ((m = p.match(/^\/api\/lab\/configs\/([a-z0-9-]+)(?:\/(export|duplicate|backtest|run|delete))?$/))) {
+    const [, id, act] = m, v = url.searchParams.get('v') || undefined;
+    if (G && !act) { const c = lab.get(id, v); return c ? [200, { config: c, versions: lab.db.configs[id].map((x) => ({ version: x.version, status: x.status, savedAt: x.savedAt })) }] : [404, { error: 'not found' }]; }
+    if (G && act === 'export') { const c = lab.exportJson(id, v); return c ? [200, c] : [404, { error: 'not found' }]; }
+    if (!P) return [405, { error: 'method' }];
+    const b = await body(req);
+    if (act === 'duplicate') return [200, lab.duplicate(id, b.version)];
+    if (act === 'backtest') return [200, await lab.backtest(id, b.version, { limit: Math.min(1500, +b.limit || 1000) })];
+    if (act === 'run') return [200, b.on === false ? lab.stopRun(id) : lab.startRun(id, b.version)];
+    if (act === 'delete') return [200, lab.remove(id)];
+  }
+  if (P && p === '/api/lab/configs') { const b = await body(req); const r = b.fromTemplate ? lab.fromTemplate(b.fromTemplate) : lab.save(b.config || {}); return [r.ok ? 200 : 422, r]; }
+  if (P && p === '/api/lab/import') { const b = await body(req); const r = lab.importAny(b); return [r.ok ? 200 : 422, r]; }
+  return null;
+}
+
 function createServer(engine, flags) {
   const send = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); };
   const body = (req) => new Promise((resolve, reject) => {
-    let d = ''; req.on('data', (c) => { d += c; if (d.length > 1e4) { reject(new Error('body too large')); req.destroy(); } });
+    let d = ''; req.on('data', (c) => { d += c; if (d.length > 2e5) { reject(new Error('body too large')); req.destroy(); } });
     req.on('end', () => { try { resolve(d ? JSON.parse(d) : {}); } catch (e) { reject(e); } });
   });
   return http.createServer(async (req, res) => {
@@ -23,6 +43,8 @@ function createServer(engine, flags) {
     try {
       if (p === '/api/state' && req.method === 'GET') return send(res, 200, engine.snapshot(flags));
       if (p === '/api/providers' && req.method === 'GET') return send(res, 200, engine.providers.list());
+      if (p === '/schema/strategy.schema.json') { res.writeHead(200, { 'content-type': 'application/json' }); return fs.createReadStream(path.join(__dirname, '..', 'schema', 'strategy.schema.json')).pipe(res); }
+      if (p.startsWith('/api/lab')) { const r = await labRoute(engine.lab, req, p, url, body); if (r) return send(res, r[0], r[1]); }
       if (p === '/api/stream') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
         const push = () => res.write('data: ' + JSON.stringify(engine.snapshot(flags)) + '\n\n');

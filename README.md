@@ -33,6 +33,8 @@ You need Node ≥ 22. There are no npm dependencies. One Node process proxies ev
 | 3 | 1% mode | OKX spot candles (15m) and spot top-of-book | — | Coinbase, then Binance data-api candles. With no candles the strategy shows NO DATA and does not trade. |
 | 4 | DEX gap scanner | Jupiter lite-api per-DEX quotes (Solana), DexScreener pool prices, ParaSwap quotes, `eth_gasPrice` via public RPC (Ethereum, Base, Arbitrum) | optional `JUPITER_API_BASE`, EVM RPC vars | If Jupiter is down, Solana falls back to DexScreener mid prices, labeled **INDICATIVE**, which are never traded. EVM mid-price gaps are always indicative. |
 | 5 | ORB · MES/MNQ | Tradovate **demo** API (auth + md websocket), used only when all `TRADOVATE_*` vars are set | `TRADOVATE_USERNAME`, `TRADOVATE_PASSWORD`, `TRADOVATE_APP_ID`, `TRADOVATE_CID`, `TRADOVATE_SECRET` | The default is a **SIMULATED** accelerated session replay, labeled in the UI. All of its PnL goes to the SIM book. |
+| 6 | Perp momentum | OKX swap candles (REST, closed bars only); execution on the freshest perp quote (Hyperliquid / Binance / Bybit / OKX websockets, REST fallback) | — | With no closed bars or no fresh quote it skips and logs why. It never trades on mock data. |
+| 7 | Perp basis (cash and carry) | Spot books from OKX, Binance and Bybit spot websockets, plus perp books from all four venues | — | It needs a fresh spot book **and** a fresh perp book (15 s or less), otherwise it skips. |
 
 More stages are added below as they land.
 
@@ -100,6 +102,31 @@ In practice, gaps between public quotes almost never survive costs. Expect skip 
 * **Default is SIMULATED.** The Tradovate adapter (`server/feeds/tradovate.js`) only authenticates against the *demo* environment, and only when username, password, app ID, CID and secret are all set. It has no order endpoint.
 * Without those vars, or if demo auth or market data fails within 60s, the module runs an accelerated random-walk session (one bar every `TRADOVATE_SIM_BAR_MS`). It is labeled **SIMULATED** everywhere and books only to the SIM book.
 
+### 6. Perp momentum (crypto-perp paper trading)
+
+- **Signal:** on each new closed OKX swap bar (5m by default), the strategy goes long when the close breaks the prior 20-bar high and EMA20 is above EMA50. The short side is the mirror image.
+- **Volatility band:** ATR% must sit between 0.10% and 2.5%. Outside that band it skips and logs `volatility too low` or `volatility too high`.
+- **Exits:** stop at 1.5×ATR, target at 3×ATR, time stop after 6 h.
+- **Cost check before entry:**
+  - Round-trip cost = taker fee ×2 at the executing venue + modeled slippage ×2 (half spread + size impact).
+  - The target must be at least **3× round-trip cost**, otherwise it skips and logs `target … < 3× round-trip cost`.
+  - Expected funding over the max hold is also subtracted. When funding erases the edge it skips.
+- **Funding while a position is open** is settled discretely at each venue's funding timestamp (`ledger.cashflow`), the same as the funding arb. It shows on the strategy's own PnL line.
+- **Sizing:** risk-based. Notional = min(50% of sleeve, 1% of sleeve ÷ stop distance).
+- **Execution:** on the venue the engine's best-quote picker returns, normally Hyperliquid over WS. The `via ws|rest` tag is logged on every fill.
+
+### 7. Perp basis (cash and carry)
+
+- **Trade:** buy spot at the ask and short the perp at the bid, choosing the best of spot ∈ {OKX, Binance, Bybit} × perp ∈ {HL, Binance, Bybit, OKX}.
+- **Expected net (bps):** basis − exit target + expected funding over `BASIS_HOLD_H` − (spot fee + perp fee)×2 − 4×slippage.
+  - Spot taker fee is 0.10%; perp fees are per venue.
+- **Entry threshold:** `BASIS_MIN_NET_BPS` (5bp by default).
+- **Exit:** when the basis is back at or under `BASIS_EXIT_BPS`, or at the time stop `BASIS_MAX_HOLD_H`. Funding is settled while the position is open.
+- **What to expect:** on a normal day the majors trade within a few bp of spot. Four taker fees are about 30 to 35bp. So the strategy mostly **skips**, and it logs exactly by how much it missed (e.g. `best net −36.7bp < 5bp`). That outcome is correct, not a bug. Carry pays when funding and basis are elevated, or with maker or VIP fees, which this paper model does not assume.
+- **Limits:**
+  - Long spot / short perp only. No spot shorting or borrow is modeled.
+  - Cross-venue carry is shown, but it ignores transfer time and the fact that collateral sits on two venues.
+
 ## Data path: websockets first, REST as the labelled fallback
 
 | Venue / source | Transport | What it carries | Health row |
@@ -165,6 +192,28 @@ module.exports.create = ({ env, health }) => {
 The engine starts the adapter as feed `provider.acme`; the Data sources panel picks it up automatically. `npm test` checks
 every registry entry (unique id, https signup URL, adapter file loads) and that no env value appears in the client view.
 
+## D. Which feeds are fast enough for which strategy (plain language)
+
+| Strategy | What it needs | What this repo uses | Good enough? |
+|---|---|---|---|
+| Funding arb | Funding rates change slowly (hourly to 8-hourly). Second-level data is plenty. | WS mark/funding plus REST every 30 s | **Yes.** Data speed is not the bottleneck; fees and venue risk are. |
+| 1% mode | Decides on closed 15m candles | REST candles plus top of book | **Yes.** |
+| Perp momentum | Decides on closed 5m bars and executes on a fresh quote | REST bars plus WS quotes | **Yes for paper.** Live trading would add a few hundred ms of order latency, which the slippage model only approximates. |
+| Perp basis | Fresh spot and perp books at the same moment | WS on both, staleness guard of 15 s or less | **Mostly.** Real carry desks quote both legs within milliseconds. Here, a stale leg means a skip. |
+| Whale flow | Sees transactions soon after they land | Helius WS `logsSubscribe` (Solana) and EVM `newHeads` WS, with REST/RPC polling as fallback | **WS is needed.** Polling public RPC is seconds late, and public endpoints rate-limit. |
+| DEX gap / triangular scanning | Sub-second or same-block data and execution | Public quote APIs polled every ~20 s | **No, not for real edge.** Real gaps close in milliseconds to one block, and competitors run co-located nodes and private order flow. A paper scanner on public data **overstates** the edge. That is why this one models gas, tips and failure risk, and labels mid-price gaps INDICATIVE. Its PnL should be read as an upper bound. |
+| ORB (MES/MNQ) | One-minute bars and a market-data WS during the cash open | Tradovate demo WS when configured, otherwise a SIMULATED replay | Real data needs a Tradovate API key (not provided here). |
+
+**What you would need to upgrade** (check current pricing with each provider; prices change, so none are listed here):
+
+- **Solana:** a paid Helius plan (higher rate limits; enhanced WebSockets / LaserStream gRPC), or a dedicated node from Helius, Triton or QuickNode.
+- **EVM:** a paid Alchemy, Infura or QuickNode plan for reliable WS subscriptions, or your own Ethereum / Base / Arbitrum node. Public publicnode endpoints are best-effort.
+- **CEX perps:**
+  - Public WS is already real time.
+  - Serious execution would mean API keys (not supported here: paper only), maker fee tiers, and hosting close to the matching engines. Binance and Bybit run on AWS Tokyo / Singapore; check each venue's docs for current locations.
+- **Gap / MEV-style arb:** co-located or bare-metal nodes, private relays / bundles (Jito on Solana, Flashbots-style builders on Ethereum), and a latency model in the backtest. Without those, treat scanner output as research only.
+- **Oracle prices:** Pyth Hermes now needs `PYTH_API_KEY`; see pyth.network.
+
 ## Risk gate
 
 - **Daily loss halt** (`RISK_DAILY_LOSS_PCT`) blocks new entries until the next UTC day.
@@ -197,6 +246,9 @@ test/                     node:test suites
 ```
 
 ## Known limits
+
+- Binance perp funding interval is assumed to be 8 h because REST `fundingInfo` is geo-blocked from the test box. Symbols with 4 h intervals would show a halved hourly rate.
+- Pyth Hermes requires an API key (since 2026-08). The Pyth adapter is idle without `PYTH_API_KEY`, and it has not been tested with a key.
 
 - From some regions Binance returns HTTP 451 and Bybit returns 403. They then show NO DATA and the arb runs on the venues that answer.
 - Funding arb fills are modeled at the observed top of book plus impact. Real queue position, partial fills and venue downtime are not modeled.

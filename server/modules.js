@@ -8,6 +8,8 @@ const { DexFeed } = require('./feeds/dex');
 const { GapScanner } = require('./strategies/gaps');
 const { TradovateFeed } = require('./feeds/tradovate');
 const { OpeningRangeBreakout } = require('./strategies/orb');
+const { PerpBars } = require('./feeds/perp-bars');
+const { PerpMomentum, PerpBasis } = require('./strategies/perps');
 
 module.exports = {
   whales(engine) {
@@ -28,5 +30,10 @@ module.exports = {
   orb(engine) {
     const feed = engine.addFeed('futures', new TradovateFeed({ health: engine.health, cfg: engine.cfg.tradovate }));
     engine.addStrategy(new OpeningRangeBreakout(engine, feed));
+  },
+  perps(engine) {
+    const bars = engine.addFeed('perpbars', new PerpBars({ health: engine.health, symbols: engine.cfg.perps.symbols, bar: engine.cfg.perps.momentum.bar }));
+    engine.addStrategy(new PerpMomentum(engine, bars));
+    engine.addStrategy(new PerpBasis(engine));
   },
 };

@@ -9,7 +9,7 @@ const { openPos, managePos } = require('./directional');
 const WINDOW = 15 * 60e3;
 class WhaleFollow extends Strategy {
   constructor(engine, feeds) {
-    super(engine, { id: 'whale', name: 'Whale Flow', desc: 'Large-tx monitor (Solana · Ethereum · Base · Arbitrum) → follows one-sided whale swap flow', allocPct: 0.15, chains: ['Solana', 'Ethereum', 'Base', 'Arbitrum'] });
+    super(engine, { id: 'whale', name: 'Whale Flow', desc: 'Large-tx monitor (Solana · Ethereum · Base · Arbitrum) → follows one-sided whale swap flow', allocPct: 0.1, chains: ['Solana', 'Ethereum', 'Base', 'Arbitrum'] });
     this.feeds = feeds; this.minUsd = engine.cfg.helius.minUsd; this.signalUsd = this.minUsd * 2; this.cool = {};
   }
   dataMode() { const m = new Set(this.feeds.map((f) => f.mode)); return m.size > 1 ? 'mixed' : [...m][0]; }

@@ -58,6 +58,12 @@ function build(env = process.env) {
       appId: env.TRADOVATE_APP_ID || '', cid: env.TRADOVATE_CID || '', secret: env.TRADOVATE_SECRET || '',
       appVersion: env.TRADOVATE_APP_VERSION || '1.0', symbols: list(env.TRADOVATE_SYMBOLS, null), simBarMs: num(env.TRADOVATE_SIM_BAR_MS, 1500),
     },
+    perps: {
+      symbols: list(env.PERP_SYMBOLS, ['BTC', 'ETH', 'SOL']),
+      momentum: { bar: env.PERP_MOM_BAR || '5m', lookback: num(env.PERP_MOM_LOOKBACK, 20), slAtr: num(env.PERP_MOM_SL_ATR, 1.5), tpAtr: num(env.PERP_MOM_TP_ATR, 3),
+        riskPct: num(env.PERP_MOM_RISK_PCT, 0.01), sizePct: num(env.PERP_MOM_SIZE_PCT, 0.5), maxHoldH: num(env.PERP_MOM_MAX_HOLD_H, 6) },
+      basis: { minNetBps: num(env.BASIS_MIN_NET_BPS, 5), exitBps: num(env.BASIS_EXIT_BPS, 2), holdH: num(env.BASIS_HOLD_H, 24), maxHoldH: num(env.BASIS_MAX_HOLD_H, 72), sizePct: num(env.BASIS_SIZE_PCT, 0.45), maxPositions: num(env.BASIS_MAX_POSITIONS, 2) },
+    },
     onepct: { symbols: list(env.ONEPCT_SYMBOLS, ['BTC', 'ETH', 'SOL']), targetNetPct: num(env.ONEPCT_TARGET_NET_PCT, 1), minScore: num(env.ONEPCT_MIN_SCORE, 80) },
     jupiter: { base: env.JUPITER_API_BASE || 'https://lite-api.jup.ag' },
     orb: { minutes: num(env.ORB_MINUTES, 15), targetR: num(env.ORB_TARGET_R, 1.5), feePerSide: num(env.ORB_FEE_PER_SIDE, 0.72), maxRiskPct: num(env.ORB_MAX_RISK_PCT, 8),

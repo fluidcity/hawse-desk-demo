@@ -57,7 +57,7 @@
 
   function render() {
     renderHero(); renderTicker(); renderStrats(); renderRisk(); renderFunding(); renderAttr(); renderHealth(); renderTape();
-    renderWhales(); renderGaps(); renderOnePct(); renderFutures();
+    renderWhales(); renderGaps(); renderOnePct(); renderPerps(); renderFutures();
   }
 
   // ---------- hero + animated curve ----------
@@ -279,6 +279,16 @@
     $('onepct').innerHTML = `<div class="riskgrid"><div class="meter"><div class="label">completed cycles</div><div class="v mono">${v.cycles} <span class="dim sm">(${v.wins}W/${v.losses}L)</span></div></div><div class="meter"><div class="label">sleeve compounding</div><div class="v mono ${v.growthPct >= 0 ? 'pos' : 'neg'}">${pct(v.growthPct)}</div><div class="dim sm mono">target ${v.targetPct}% net/cycle</div></div></div>` +
       `<div class="tbl"><div class="row head" style="grid-template-columns:50px 50px 1fr 64px"><span>sym</span><span>score</span><span>gate</span><span>price</span></div>` +
       (v.setups || []).map((x) => `<div class="row ${x.pass ? 'ok' : ''}" style="grid-template-columns:50px 50px 1fr 64px"><span>${esc(x.symbol)}</span><span class="${x.pass ? 'pos' : 'dim'}">${x.score ?? '—'}</span><span class="${x.pass ? 'pos' : 'dim'}">${esc(x.pass ? 'TOP-QUALITY SETUP' : x.reason)}</span><span>${x.price ? pxFmt(x.price) : '—'}</span></div>`).join('') + '</div>';
+  }
+  function renderPerps() {
+    const m = S.strategies.find((x) => x.id === 'perpmom'), b = S.strategies.find((x) => x.id === 'basis'); $('perpCard').hidden = !m && !b; if (!m && !b) return;
+    $('perpMode').innerHTML = (m ? 'momentum ' + badge(m.dataMode) : '') + (b ? ' basis ' + badge(b.dataMode) : '');
+    const G = 'grid-template-columns:44px 70px 1fr 58px 58px';
+    $('perpMom').innerHTML = m ? `<div class="subh">Momentum · ${esc(m.view.bar || '')} OKX swap bars · Donchian + EMA20/50</div><div class="row head" style="${G}"><span>sym</span><span>exec</span><span>signal / skip</span><span>ATR</span><span>cost</span></div>` +
+      Object.entries(m.view.signals || {}).map(([k, x]) => `<div class="row ${x.side ? 'ok' : ''}" style="${G}"><span>${esc(k)}</span><span>${esc(x.venue || '')} <span class="dim sm">${esc(x.transport || '')}</span></span><span class="${x.side ? 'pos' : 'dim'}">${esc(x.reason)}</span><span>${x.atrPct != null ? x.atrPct.toFixed(2) + '%' : '—'}</span><span>${x.costPct != null ? x.costPct.toFixed(3) + '%' : '—'}</span></div>`).join('') || '<div class="dim mono sm">waiting for closed bars…</div>' : '';
+    const B = 'grid-template-columns:44px 1fr 62px 62px 62px 62px';
+    $('perpBasis').innerHTML = b ? `<div class="subh">Cash &amp; carry · long spot / short perp · net after 4 taker fees + slippage</div><div class="row head" style="${B}"><span>sym</span><span>spot / perp</span><span>basis</span><span>funding</span><span>costs</span><span>net</span></div>` +
+      (b.view.table || []).slice(0, 8).map((x) => `<div class="row ${x.netBps > 0 ? 'ok' : ''}" style="${B}"><span>${esc(x.symbol)}</span><span>${esc(x.spotVenue)} / ${esc(x.perpVenue)} <span class="dim sm">${esc(x.transport || '')}</span></span><span>${x.basisBps.toFixed(1)}bp</span><span>${x.fundingBps.toFixed(1)}bp</span><span>${x.costsBps.toFixed(1)}bp</span><span class="${x.netBps > 0 ? 'pos' : 'neg'}">${x.netBps.toFixed(1)}bp</span></div>`).join('') || '<div class="dim mono sm">needs fresh WS spot + perp books…</div>' : '';
   }
   function renderFutures() {
     const s = S.strategies.find((x) => x.id === 'orb'); $('futCard').hidden = !s; if (!s) return;

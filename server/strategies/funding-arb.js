@@ -12,7 +12,7 @@ const DEPTH = { BTC: 5e6, ETH: 3e6, SOL: 1.5e6 }; // conservative top-of-book de
 
 class FundingArb extends Strategy {
   constructor(engine) {
-    super(engine, { id: 'funding', name: 'Funding Arb', desc: 'Cross-venue perp funding (Binance · Bybit · OKX · Hyperliquid)', allocPct: 0.3, chains: ['CEX', 'Hyperliquid'] });
+    super(engine, { id: 'funding', name: 'Funding Arb', desc: 'Cross-venue perp funding (Binance · Bybit · OKX · Hyperliquid)', allocPct: 0.25, chains: ['CEX', 'Hyperliquid'] });
     this.cfg = engine.cfg.funding; this.maxPositions = 2; this.maxHoldH = 72; this.best = [];
   }
   feed() { return this.e.feeds.funding; }

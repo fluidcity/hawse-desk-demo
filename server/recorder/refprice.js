@@ -26,7 +26,7 @@ class RefPriceRecorder {
   constructor({ store, health, cfg = {}, now = () => Date.now(), WebSocketImpl, log = (m) => console.log(m) }) {
     this.c = { assets: ASSETS, venues: ['coinbase', 'kraken', 'bitstamp', 'gemini', 'cryptocom', 'bullish'], freshMs: 10000, everyMs: 1000, ...cfg };
     Object.assign(this, { store, health, now, log, WebSocketImpl });
-    this.last = {}; for (const a of this.c.assets) this.last[a] = {}; this.rows = 0; this.timers = []; this.clients = []; this.ticks = {}; this.running = false; this.latest = {};
+    this.last = {}; for (const a of this.c.assets) this.last[a] = {}; this.rows = 0; this.timers = []; this.clients = []; this.ticks = {}; this.running = false; this.latest = {}; this.listeners = [];
     for (const v of this.c.venues) { this.ticks[v] = 0; health.register('rec.ref.' + v, { label: `Recorder · ref price · ${v}`, group: 'recorder', note: 'free public WebSocket, last trade/ticker → 1 s BRTI-like median (not the CF index)', staleMs: 90000 }); }
     health.register('rec.ref', { label: 'Recorder · 1 s reference median', group: 'recorder', note: `median of fresh (≤${this.c.freshMs / 1000}s) venue prices per asset; research only, not Kalshi's settlement source`, staleMs: 10000 });
   }
@@ -60,7 +60,7 @@ class RefPriceRecorder {
   }
   tick() {
     const now = this.now(); let any = false;
-    for (const a of this.c.assets) { const r = this.snapshotRow(a, now); if (!Object.keys(r.venues).length) continue; this.store.write('ref', r); this.rows++; this.latest[a] = { med: r.med, n: r.n }; if (r.n) any = true; }
+    for (const a of this.c.assets) { const r = this.snapshotRow(a, now); if (!Object.keys(r.venues).length) continue; this.store.write('ref', r); this.rows++; for (const f of this.listeners) { try { f(r, now); } catch { /* display-only consumer */ } } this.latest[a] = { med: r.med, n: r.n }; if (r.n) any = true; }
     if (any) this.health.ok('rec.ref', null); else this.health.fail('rec.ref', 'no fresh venue prices');
   }
   view() { return { rows: this.rows, latest: this.latest, venues: this.clients.reduce((o, { venue, c }) => { const v = c.view(); const p = o[venue] || { open: 0, sockets: 0, msgs: 0, reconnects: 0 }; p.sockets++; if (v.open) p.open++; p.msgs += v.msgs; p.reconnects += v.reconnects; p.ticks = this.ticks[venue]; o[venue] = p; return o; }, {}) }; }

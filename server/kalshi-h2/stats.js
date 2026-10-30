@@ -67,6 +67,19 @@ function summarize({ cfg, startAt, now, signals, fills, trades, skips, unsettled
     positiveAssets: Object.values(assets).filter((a) => a.meanCents > 0).length >= P.positiveAssetsMinOf3,
     askDepth: sized.length > 0 && deep / sized.length >= P.askSizeShareMin,
   };
+  // miro's pass criteria, shown honestly (DISPLAY ONLY: thresholds come from the frozen config; the verdict above is unchanged).
+  // 'pending' = cannot be decided yet; 'met' / 'not met' = decided. Weeks are counted by week number, so a complete week
+  // with no settled trades counts as not positive.
+  const completeWeeks = Math.min(8, Math.floor(weeksElapsed)), posWeeks = weekList.filter((w) => w.complete && w.week <= 8 && w.pnl > 0).length;
+  const needW = P.positiveWeeksMinOf8, askShare = sized.length ? deep / sized.length : null;
+  const miro = [
+    { key: 'meanNetOneLot', label: 'mean net per contract after 1-contract fee > 0', value: c(m1), unit: '¢', target: '> 0', so: `${n} settled`,
+      status: !enough ? 'pending' : m1 != null && m1 > P.meanPnlOneLotFeeGt ? 'met' : 'not met' },
+    { key: 'positiveWeeks', label: `>= ${needW} of 8 weeks positive`, value: posWeeks, unit: ` of ${completeWeeks} complete`, target: `>= ${needW} of 8`, so: `${8 - completeWeeks} week(s) still to come`,
+      status: posWeeks >= needW ? 'met' : completeWeeks - posWeeks > 8 - needW ? 'not met' : 'pending' },
+    { key: 'askDepth', label: `>= ${P.askSizeAtLeast} contracts at the ask in >= ${Math.round(P.askSizeShareMin * 100)}% of signals`, value: askShare == null ? null : r6(askShare), unit: 'share', target: `>= ${P.askSizeShareMin}`,
+      so: `${sized.length} signals with ask size logged (best-ask size at signal time)`, status: !enough || !sized.length ? 'pending' : askShare >= P.askSizeShareMin ? 'met' : 'not met' },
+  ];
   const failStops = [];
   if (nSig >= F.meanLteZeroAfterSignals && m1 != null && m1 <= 0) failStops.push(`mean <= 0 after ${F.meanLteZeroAfterSignals} signals`);
   if (worst4 != null && worst4 > F.rolling4WeekLossPer100SignalsGtCents) failStops.push(`rolling 4 weeks lost ${worst4.toFixed(1)}c per 100 signals (> ${F.rolling4WeekLossPer100SignalsGtCents})`);
@@ -80,7 +93,7 @@ function summarize({ cfg, startAt, now, signals, fills, trades, skips, unsettled
     askSize: { measured: sized.length, atLeast: P.askSizeAtLeast, share: sized.length ? r6(deep / sized.length) : null },
     shadowBankroll: { multiple: r6(bank), maxDrawdown: r6(mdd), note: 'reporting only, 1% of bankroll per signal' },
     progress: { signals: nSig, targetSignals: T.minSignals, signalPct: r6(Math.min(1, nSig / T.minSignals)), weeks: r6(weeksElapsed), targetWeeks: T.minWeeks },
-    criteria, enough, failStops,
+    criteria, miro, enough, failStops,
     verdict: failStops.length ? 'FAIL-STOP' : !enough ? 'UNVERIFIED — not enough data' : Object.values(criteria).every(Boolean) ? 'PASS (all criteria met)' : 'FAIL (criteria not met)',
   };
 }

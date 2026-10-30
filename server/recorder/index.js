@@ -17,6 +17,7 @@ const { KalshiRecorder } = require('./kalshi');
 const { PolymarketRecorder } = require('./polymarket');
 const { RefPriceRecorder } = require('./refprice');
 const { KalshiWsRecorder } = require('./kalshi-ws');
+const { IndexAgreement } = require('./agreement');
 
 class Recorder {
   constructor({ health, cfg, now = () => Date.now(), mono = () => performance.now(), log = (m) => console.log(m), odds = null, deps = {} }) {
@@ -28,6 +29,13 @@ class Recorder {
     this.ref = cfg.ref && cfg.ref.enabled ? deps.ref || new RefPriceRecorder({ store: this.store, health, cfg: cfg.ref, now, log }) : null;
     // H7: optional authenticated read-only WebSocket (off by default). deps.kalshiWsAuth is the handshake-header function from server/kalshi-auth.
     this.kws = cfg.kalshiWs && cfg.kalshiWs.enabled ? deps.kws || new KalshiWsRecorder({ store: this.store, health, cfg: cfg.kalshiWs, auth: deps.kalshiWsAuth || null, kalshi: this.kalshi, gap, now, log, WebSocketImpl: deps.WebSocketImpl }) : null;
+    // miro add-on: rebuilt-index vs official-outcome agreement (display only). Needs the ref median and Kalshi settle rows.
+    this.agree = this.ref && this.kalshi ? new IndexAgreement({ store: this.store, cfg: cfg.agree || {} }) : null;
+    if (this.agree) {
+      if (Array.isArray(this.ref.listeners)) this.ref.listeners.push((r, at) => this.agree.onRef(r, at));
+      if (typeof this.kalshi.on === 'function') this.kalshi.on('settle', (row) => this.agree.onSettle(row));
+      if (this.kws) (this.kws.cfListeners = this.kws.cfListeners || []).push((r, at) => this.agree.onCf(r, at));
+    }
     this.gaps = { n: 0, byReason: {}, recent: [] }; this.pauses = []; this.timers = []; this.running = false; this.startedAt = null; this.oddsRows = 0; this.oddsSeen = new Map();
     health.register('rec.store', { label: 'Recorder · disk writer', group: 'recorder', note: `append-only JSONL under data/recorder · hourly/${Math.round(cfg.maxFileBytes / 2 ** 20)} MiB rotation + gzip · cap ${(cfg.capBytes / 2 ** 30).toFixed(1)} GiB at start, adjustable live in the Storage panel (oldest files evicted)`, staleMs: 15000 });
     if (cfg.odds && cfg.odds.enabled) health.register('rec.odds', { label: 'Recorder · sports odds (The Odds API tap)', group: 'recorder', note: 'records the betting feed’s own live snapshots; zero extra API credits; nothing recorded from MOCK odds', staleMs: 24 * 3600e3 });
@@ -78,7 +86,7 @@ class Recorder {
   snapshot() {
     const o = this.odds; const oddsMode = o ? o.mode : 'absent';
     return { enabled: true, running: this.running, startedAt: this.startedAt, store: this.store.view(), projection: this.projection(), gaps: this.gaps,
-      kalshi: this.kalshi ? this.kalshi.view() : null, kalshiWs: this.kws ? this.kws.view() : null, poly: this.poly ? this.poly.view() : null, ref: this.ref ? this.ref.view() : null,
+      kalshi: this.kalshi ? this.kalshi.view() : null, kalshiWs: this.kws ? this.kws.view() : null, poly: this.poly ? this.poly.view() : null, ref: this.ref ? this.ref.view() : null, agree: this.agree ? this.agree.view() : null,
       odds: { enabled: !!(this.cfg.odds && this.cfg.odds.enabled), feedMode: oddsMode, rows: this.oddsRows, credits: o && o.quota ? { remaining: o.quota.remaining, used: o.quota.used } : null,
         note: oddsMode === 'mock' ? 'betting feed is on MOCK odds: nothing recorded (mock is never written as real data)' : 'records the betting feed’s live snapshots (no extra credits; budget guard unchanged)' } };
   }

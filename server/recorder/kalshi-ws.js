@@ -94,7 +94,7 @@ class KalshiWsRecorder {
       this.n.cf++; let v = null, src = null; try { const d = JSON.parse(m.data); v = num(d.value); src = num(d.time); } catch { /* raw frame kept below */ }
       const a60 = m.avg_60s_data ? num(m.avg_60s_data.value) : null; const q = m.last_60s_windowed_average_15min;
       const row = { t: 'cf', id: m.index_id, v, src, kalshiRx: num(m.received_at), ex, avg60: a60, q15: q ? { v: num(q.value), n: q.window_size, from: q.window_start_ts_ms, to: q.window_end_ts_exclusive } : null };
-      this.store.write('kalshi.ws.cf', row); this.lastCf[m.index_id] = { v, avg60: a60, at: rx }; return src || ex;
+      this.store.write('kalshi.ws.cf', row); this.lastCf[m.index_id] = { v, avg60: a60, at: rx }; for (const f of this.cfListeners || []) { try { f(row, rx); } catch { /* display-only consumer */ } } return src || ex;
     }
     return null;
   }

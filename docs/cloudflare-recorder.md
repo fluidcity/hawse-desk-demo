@@ -99,7 +99,7 @@ costs a Worker request, and the bearer token has to live on the box anyway. The 
   - the token gate;
   - the GET-only path allowlist.
 - `wrangler deploy --dry-run` bundles cleanly (6.2 KiB) with the expected bindings.
-- Local `wrangler dev --local` run (2026-10-30, about 3:12 PM PT, from the box IP, with a throwaway local token outside the repo):
+- Local `wrangler dev --local` run (2026-10-30, about 2:45 PM PT, from the box IP, with a throwaway local token outside the repo):
   - ~65 s: 86 alarm polls, 339 book rows across the 4 live 15m markets, 0 errors.
   - 1 R2 flush of 249 rows. It was gzip and decoded correctly, and the first row was the `do-start` gap.
   - 1 × 429, recorded as a gap row. The box desk recorder was polling from the same IP at the time, so this is a hint of the shared-IP risk.

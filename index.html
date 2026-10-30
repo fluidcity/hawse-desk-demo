@@ -2,86 +2,149 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
-  <meta name="theme-color" content="#0c0f0c" />
-  <title>HAWSE · Desk Reference</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1" />
+  <meta name="theme-color" content="#0a0d0a" />
+  <title>HAWSE</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Schibsted+Grotesk:wght@500;600;700&display=swap" rel="stylesheet" />
-  <link rel="stylesheet" href="styles.css" />
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet" />
+  <style>
+    :root {
+      --bg: #0a0d0a; --bg2: #0e120e; --panel: rgba(16, 22, 16, 0.92);
+      --panel-edge: rgba(163, 255, 0, 0.08); --line: #1a211a; --line2: #243024;
+      --fg: #e8ebe6; --muted: #6f7a6f; --lime: #b8ff2e;
+      --lime-dim: rgba(184, 255, 46, 0.14); --hot: #ff3d5a;
+      --hot-dim: rgba(255, 61, 90, 0.12); --cyan: #5ce1ff;
+      --radius: 14px; --touch: 44px;
+      --sans: "Outfit", system-ui, sans-serif;
+      --mono: "IBM Plex Mono", ui-monospace, monospace;
+      --glow: 0 0 24px rgba(184, 255, 46, 0.15);
+    }
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body { min-height: 100%; background: var(--bg); color: var(--fg); font-family: var(--sans); -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; }
+    body {
+      background-image: radial-gradient(ellipse 80% 50% at 50% -20%, rgba(184, 255, 46, 0.07), transparent),
+        radial-gradient(ellipse 60% 40% at 100% 100%, rgba(255, 61, 90, 0.04), transparent);
+      padding: max(12px, env(safe-area-inset-top)) 14px max(28px, env(safe-area-inset-bottom));
+    }
+    .shell { max-width: 980px; margin: 0 auto; }
+    .top { display: flex; align-items: center; justify-content: space-between; margin-bottom: 16px; gap: 12px; }
+    .brand { display: flex; align-items: center; gap: 10px; }
+    .logo { font-weight: 700; font-size: 17px; letter-spacing: 0.14em; background: linear-gradient(135deg, var(--lime), #7dffb3); -webkit-background-clip: text; background-clip: text; color: transparent; }
+    .pill { font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.06em; padding: 5px 10px; border-radius: 999px; border: 1px solid rgba(184, 255, 46, 0.35); background: var(--lime-dim); color: var(--lime); box-shadow: var(--glow); }
+    .status { display: flex; align-items: center; gap: 8px; font-size: 12px; font-family: var(--mono); color: var(--muted); }
+    .pulse { width: 8px; height: 8px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 0 0 rgba(184, 255, 46, 0.5); animation: pulse 2s infinite; }
+    .pulse.halt { background: var(--hot); animation: pulse-hot 2s infinite; }
+    @keyframes pulse { 0% { box-shadow: 0 0 0 0 rgba(184, 255, 46, 0.45); } 70% { box-shadow: 0 0 0 10px rgba(184, 255, 46, 0); } 100% { box-shadow: 0 0 0 0 rgba(184, 255, 46, 0); } }
+    @keyframes pulse-hot { 0% { box-shadow: 0 0 0 0 rgba(255, 61, 90, 0.45); } 70% { box-shadow: 0 0 0 10px rgba(255, 61, 90, 0); } 100% { box-shadow: 0 0 0 0 rgba(255, 61, 90, 0); } }
+    .hero { position: relative; overflow: hidden; background: var(--panel); border: 1px solid var(--panel-edge); border-radius: 18px; padding: 18px 18px 10px; margin-bottom: 14px; box-shadow: 0 8px 40px rgba(0,0,0,0.35), inset 0 1px 0 rgba(255,255,255,0.03); }
+    .hero::before { content: ""; position: absolute; inset: 0; background: linear-gradient(135deg, rgba(184,255,46,0.04), transparent 40%); pointer-events: none; }
+    .hero-label { font-size: 11px; font-weight: 600; letter-spacing: 0.12em; text-transform: uppercase; color: var(--muted); margin-bottom: 4px; }
+    .hero-eq { font-family: var(--mono); font-size: clamp(32px, 8vw, 42px); font-weight: 600; letter-spacing: -0.02em; line-height: 1.1; }
+    .hero-pnl { font-family: var(--mono); font-size: 14px; margin-top: 6px; margin-bottom: 12px; }
+    .pos { color: var(--lime); } .neg { color: var(--hot); }
+    .track { height: 5px; border-radius: 3px; background: var(--line); overflow: hidden; margin-bottom: 6px; }
+    .track > i { display: block; height: 100%; border-radius: 3px; background: linear-gradient(90deg, var(--lime), var(--cyan)); box-shadow: 0 0 12px rgba(184, 255, 46, 0.4); transition: width 0.4s ease; }
+    .track-meta { display: flex; justify-content: space-between; font-family: var(--mono); font-size: 10px; color: var(--muted); margin-bottom: 8px; }
+    #chart { width: 100%; height: 110px; display: block; margin: 0 -4px -4px; }
+    .grid { display: grid; gap: 12px; }
+    @media (min-width: 860px) {
+      .grid { grid-template-columns: 1.25fr 0.95fr; grid-template-areas: "strats risk" "venues risk" "tape tape"; }
+      .a-strats { grid-area: strats; } .a-risk { grid-area: risk; } .a-venues { grid-area: venues; } .a-tape { grid-area: tape; }
+    }
+    .card { background: var(--panel); border: 1px solid var(--line); border-radius: var(--radius); padding: 14px; box-shadow: 0 4px 24px rgba(0,0,0,0.25); }
+    .card-h { display: flex; align-items: center; justify-content: space-between; margin-bottom: 12px; gap: 8px; }
+    .card-h h2 { font-size: 11px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); }
+    .btn { font-family: var(--sans); font-weight: 600; font-size: 13px; min-height: var(--touch); padding: 0 14px; border-radius: 10px; border: 1px solid var(--line2); background: var(--bg2); color: var(--fg); cursor: pointer; transition: transform 0.1s; }
+    .btn:active { transform: scale(0.97); } .btn:disabled { opacity: 0.35; cursor: not-allowed; }
+    .btn.sm { min-height: 34px; padding: 0 12px; font-size: 12px; }
+    .btn.lime { color: var(--lime); border-color: rgba(184, 255, 46, 0.35); background: var(--lime-dim); }
+    .btn.hot { color: var(--hot); border-color: rgba(255, 61, 90, 0.4); background: var(--hot-dim); }
+    .btn.ghost { background: transparent; }
+    .strat { display: grid; grid-template-columns: 1fr auto; gap: 4px 12px; padding: 12px 14px; margin-bottom: 8px; border-radius: 12px; border: 1px solid var(--line); background: linear-gradient(180deg, rgba(20,26,20,0.9), rgba(12,16,12,0.9)); transition: border-color 0.2s, box-shadow 0.2s; }
+    .strat.armed { border-color: rgba(184, 255, 46, 0.4); box-shadow: 0 0 20px rgba(184, 255, 46, 0.08), inset 0 0 20px rgba(184, 255, 46, 0.03); }
+    .strat-name { font-weight: 600; font-size: 14px; }
+    .strat-meta { font-size: 11px; color: var(--muted); grid-column: 1 / -1; }
+    .strat-stats { display: flex; gap: 14px; font-family: var(--mono); font-size: 12px; grid-column: 1 / -1; margin-top: 2px; }
+    .toggle { min-width: 72px; min-height: 34px; border-radius: 999px; border: 1px solid var(--line2); background: transparent; font-family: var(--mono); font-size: 10px; font-weight: 600; letter-spacing: 0.04em; color: var(--muted); cursor: pointer; transition: all 0.2s; }
+    .toggle.on { color: #0a0d0a; background: var(--lime); border-color: var(--lime); box-shadow: 0 0 16px rgba(184, 255, 46, 0.35); }
+    .slider-block { margin-bottom: 18px; }
+    .slider-top { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 8px; }
+    .slider-label { font-size: 11px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+    .slider-val { font-family: var(--mono); font-size: 13px; font-weight: 600; color: var(--lime); }
+    .slider-hint { font-family: var(--mono); font-size: 11px; color: var(--muted); margin-top: 6px; }
+    input[type="range"] { -webkit-appearance: none; appearance: none; width: 100%; height: 6px; border-radius: 3px; background: linear-gradient(90deg, var(--line2), var(--line)); outline: none; }
+    input[type="range"]::-webkit-slider-thumb { -webkit-appearance: none; appearance: none; width: 22px; height: 22px; border-radius: 50%; background: var(--lime); box-shadow: 0 0 0 4px rgba(184, 255, 46, 0.2), 0 0 16px rgba(184, 255, 46, 0.45); cursor: pointer; border: 2px solid #0a0d0a; }
+    input[type="range"]::-moz-range-thumb { width: 22px; height: 22px; border-radius: 50%; background: var(--lime); border: 2px solid #0a0d0a; box-shadow: 0 0 16px rgba(184, 255, 46, 0.45); cursor: pointer; }
+    .actions { display: flex; gap: 8px; margin-top: 4px; } .actions .btn { flex: 1; }
+    .m-row { display: grid; grid-template-columns: 1.15fr 1fr 1fr; gap: 6px; align-items: center; font-size: 12px; padding: 10px 12px; margin-bottom: 6px; border-radius: 10px; background: var(--bg2); border: 1px solid var(--line); font-family: var(--mono); }
+    .m-row.head { background: transparent; border: none; color: var(--muted); font-family: var(--sans); font-size: 10px; font-weight: 600; letter-spacing: 0.08em; text-transform: uppercase; padding: 0 12px 4px; }
+    .best { margin-top: 10px; padding: 14px; border-radius: 12px; border: 1px solid rgba(184, 255, 46, 0.25); background: linear-gradient(135deg, rgba(184, 255, 46, 0.08), rgba(92, 225, 255, 0.04)); }
+    .best-t { font-size: 10px; font-weight: 600; letter-spacing: 0.1em; text-transform: uppercase; color: var(--muted); margin-bottom: 8px; }
+    .best-b { font-family: var(--mono); font-size: 13px; line-height: 1.5; margin-bottom: 12px; }
+    .tape { max-height: 200px; overflow-y: auto; font-family: var(--mono); font-size: 12px; }
+    .tape-row { display: grid; grid-template-columns: 62px 1fr auto; gap: 8px; padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .tape-row:last-child { border-bottom: none; }
+    .foot { text-align: center; margin-top: 20px; font-family: var(--mono); font-size: 10px; color: var(--muted); }
+  </style>
 </head>
 <body>
-  <div id="app" class="shell">
+  <div class="shell">
     <header class="top">
-      <div class="brand">
-        <span class="mark">HAWSE</span>
-        <span class="mode-pill" id="modePill">PAPER</span>
-      </div>
-      <div class="status-row">
-        <span class="dot live" id="liveDot"></span>
-        <span class="mono muted" id="clock">00:00:00</span>
-        <span class="sep">·</span>
-        <span class="mono" id="regime">Quiet</span>
-      </div>
+      <div class="brand"><span class="logo">HAWSE</span><span class="pill">PAPER</span></div>
+      <div class="status"><span class="pulse" id="pulse"></span><span id="clock">00:00:00</span><span>·</span><span id="regime">Quiet</span></div>
     </header>
-    <section class="equity-plate">
-      <div class="equity-main">
-        <div class="label">Equity</div>
-        <div class="equity-val mono" id="equity">$1,000.00</div>
-        <div class="pnl mono" id="pnlDay"><span class="pos">+$0.00</span> today</div>
-      </div>
-      <div class="goal">
-        <div class="goal-bar"><div class="goal-fill" id="goalFill" style="width:0.1%"></div></div>
-        <div class="goal-meta mono muted">
-          <span>$1k</span><span class="mid">→</span><span>$1M ref</span>
-        </div>
-      </div>
-      <canvas id="spark" width="600" height="80" aria-label="Equity curve"></canvas>
+    <section class="hero">
+      <div class="hero-label">Equity</div>
+      <div class="hero-eq" id="equity">$1,000.00</div>
+      <div class="hero-pnl" id="pnlDay"><span class="pos">+$0.00</span> today</div>
+      <div class="track"><i id="goalFill" style="width:0.12%"></i></div>
+      <div class="track-meta"><span>$1,000 start</span><span>$1M reference</span></div>
+      <canvas id="chart" width="900" height="110" aria-label="Equity curve"></canvas>
     </section>
     <main class="grid">
-      <section class="panel strats">
-        <div class="panel-h">
-          <h2>Strategies</h2>
-          <button type="button" class="btn ghost sm" id="armRec">Arm recommended</button>
-        </div>
-        <div class="strat-list" id="stratList"></div>
+      <section class="card a-strats">
+        <div class="card-h"><h2>Strategies</h2><button type="button" class="btn ghost sm" id="armRec">Arm recommended</button></div>
+        <div id="stratList"></div>
       </section>
-      <section class="panel risk">
-        <div class="panel-h"><h2>Risk</h2></div>
-        <div class="field">
-          <div class="field-label">Pace</div>
-          <div class="seg" id="paceSeg" role="group" aria-label="Pace"></div>
-          <p class="hint mono muted" id="paceHint">Steady · normal queue</p>
+      <section class="card a-risk">
+        <div class="card-h"><h2>Risk controls</h2></div>
+        <div class="slider-block">
+          <div class="slider-top"><span class="slider-label">Pace</span><span class="slider-val" id="paceVal">Steady</span></div>
+          <input type="range" id="pace" min="1" max="10" step="1" value="5" />
+          <p class="slider-hint" id="paceHint">Normal queue · size 1.0×</p>
         </div>
-        <div class="field">
-          <div class="field-label">Aggression</div>
-          <div class="seg five" id="aggSeg" role="group" aria-label="Aggression"></div>
+        <div class="slider-block">
+          <div class="slider-top"><span class="slider-label">Aggression</span><span class="slider-val" id="aggVal">Desk</span></div>
+          <input type="range" id="agg" min="1" max="5" step="1" value="3" />
+          <p class="slider-hint" id="aggHint">Balanced clip size</p>
         </div>
-        <div class="field">
-          <div class="field-label">Breaker</div>
-          <div class="seg" id="ddSeg" role="group" aria-label="Drawdown limit"></div>
+        <div class="slider-block">
+          <div class="slider-top"><span class="slider-label">Drawdown breaker</span><span class="slider-val" id="ddVal">30%</span></div>
+          <input type="range" id="dd" min="10" max="50" step="5" value="30" />
+          <p class="slider-hint">Halt new risk at this peak drawdown</p>
         </div>
-        <div class="risk-actions">
-          <button type="button" class="btn hot" id="haltBtn" aria-label="Halt desk">Halt</button>
-          <button type="button" class="btn ghost" id="resetBtn">Reset paper</button>
+        <div class="actions">
+          <button type="button" class="btn hot" id="haltBtn">Halt</button>
+          <button type="button" class="btn ghost" id="resetBtn">Reset</button>
         </div>
       </section>
-      <section class="panel venues">
-        <div class="panel-h"><h2>SOL funding</h2><span class="mono muted sm" id="fundTs">—</span></div>
-        <div class="matrix" id="matrix"></div>
-        <div class="best-card" id="bestCard">
-          <div class="best-title">Best pair</div>
-          <div class="best-body mono" id="bestBody">Scanning…</div>
+      <section class="card a-venues">
+        <div class="card-h"><h2>SOL funding</h2><span class="slider-hint" id="fundTs" style="margin:0">—</span></div>
+        <div id="matrix"></div>
+        <div class="best">
+          <div class="best-t">Best pair</div>
+          <div class="best-b" id="bestBody">Scanning…</div>
           <button type="button" class="btn lime sm" id="armBest" disabled>Arm pair</button>
         </div>
       </section>
-      <section class="panel tape">
-        <div class="panel-h"><h2>Tape</h2></div>
-        <div class="tape-list mono" id="tape" aria-live="polite"></div>
+      <section class="card a-tape">
+        <div class="card-h"><h2>Tape</h2></div>
+        <div class="tape" id="tape" aria-live="polite"></div>
       </section>
     </main>
-    <footer class="foot muted mono">UI reference demo · simulated paper · not live trading</footer>
+    <p class="foot">HAWSE UI reference · simulated paper · not live trading</p>
   </div>
-  <script src="app.js"></script>
+  <script src="app-v2.js"></script>
 </body>
 </html>

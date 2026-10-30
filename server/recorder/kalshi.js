@@ -99,7 +99,7 @@ class KalshiRecorder {
   }
   async pollTrades() {
     for (const m of this.live('crypto')) {
-      const q = { ticker: m.tk, limit: 1000 }; // API max (1001 → HTTP 400); 200 forced 2-3 pages per BTC poll and drew HTTP 429s if (m.lastTradeEx) q.min_ts = Math.floor(m.lastTradeEx / 1000) - 5;
+      const q = { ticker: m.tk, limit: 1000 }; if (m.lastTradeEx) q.min_ts = Math.floor(m.lastTradeEx / 1000) - 5; // API max (1001 → HTTP 400); 200 forced 2-3 pages per BTC poll and drew HTTP 429s
       let j = await this.call('rec.kalshi.trades', '/markets/trades', q); if (!j) continue;
       const rx = this.now(); this.polls.trades++;
       if (m.lastTradeOk != null && rx - m.lastTradeOk > this.c.gapMs * 2) this.gap('kalshi.trade', m.tk, m.lastTradeOk, rx);

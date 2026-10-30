@@ -194,5 +194,12 @@ test('kalshi: trades polled at the API max page (1000); an HTTP 429 pauses the c
   assert.equal(urls.length, 1); c.adv(2100);
   assert.deepStrictEqual(await k.call('rec.kalshi.trades', '/markets/trades', { ticker: 'X' }), { trades: [] }); assert.equal(urls.length, 2);
   assert.equal(k.view().coolSkipped, 1);
-  const src = fs.readFileSync(path.join(__dirname, '../server/recorder/kalshi.js'), 'utf8'); assert.match(src, /ticker: m\.tk, limit: 1000/);
+  // behavioural: after the first poll, later polls must ask only for new prints (min_ts), at limit=1000
+  const t0 = c.now(); const seenUrls = [];
+  const k2 = new KalshiRecorder({ store: { write() {} }, health: h, log: () => {}, now: c.now, cfg: { series: [], extraSeries: [], maxRps: 1000 },
+    get: async (u) => { seenUrls.push(u); return { trades: [{ trade_id: 'a' + seenUrls.length, ticker: 'KXBTC15M-X', created_time: new Date(c.now() - 1000).toISOString(), yes_price_dollars: '0.95', count_fp: '1' }] }; } });
+  k2.markets.set('KXBTC15M-X', { tk: 'KXBTC15M-X', kind: 'crypto', series: 'KXBTC15M', open: t0 - 60000, close: t0 + 600000, seen: new Set(), seenQ: [], trades: 0, lastTradeEx: null, lastTradeOk: null });
+  await k2.pollTrades(); c.adv(2000); await k2.pollTrades();
+  assert.match(seenUrls[0], /limit=1000/); assert.doesNotMatch(seenUrls[0], /min_ts/);
+  assert.match(seenUrls[1], /limit=1000&min_ts=\d+/, 'second poll must carry min_ts');
 });

@@ -25,6 +25,7 @@ const { makeWsAuth } = require('./kalshi-auth/ws-sign');
 const { StorageMonitor, readRuntimeCap } = require('./storage');
 const { CfRecorderRemote } = require('./recorder/cf-remote');
 const { KalshiH2Paper } = require('./kalshi-h2');
+const { KalshiH2V2 } = require('./kalshi-h2/v2');
 
 module.exports = {
   whales(engine) {
@@ -84,6 +85,8 @@ module.exports = {
   kalshiH2(engine) { // H6 Part C: frozen forward paper test; paper ledger only, never desk equity, no order path.
     const c = engine.cfg.kalshiH2; if (!c || !c.enabled || !engine.recorder || !engine.recorder.kalshi) return;
     engine.kalshiH2 = engine.addFeed('kalshiH2', new KalshiH2Paper({ kalshi: engine.recorder.kalshi, health: engine.health, dir: c.dir, log: engine.log || ((m) => console.log(m)) }));
+    // v2 arm (config/frozen/kalshi-h2-v2.json): a frozen PAPER filter on v1's signals. Added after v1 so it starts after v1; it only observes v1.
+    if (c.v2) engine.kalshiH2v2 = engine.addFeed('kalshiH2v2', new KalshiH2V2({ v1: engine.kalshiH2, kalshi: engine.recorder.kalshi, ref: engine.recorder.ref || null, health: engine.health, dir: c.dir, recorderDir: engine.cfg.recorder.dir, log: engine.log || ((m) => console.log(m)) }));
   },
   cfRecorder(engine) { // H7 Stage L: status + pull client for the always-on Cloudflare recorder. READ token stays server-side.
     const c = engine.cfg.cfRecorder; if (!c || !c.enabled) return;

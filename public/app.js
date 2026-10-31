@@ -80,7 +80,7 @@ window.HAWSE.explain = (() => {
 
   function render() {
     renderHero(); renderTicker(); renderStrats(); renderRisk(); renderFunding(); renderAttr(); renderHealth(); renderTape();
-    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderRecorder(); renderStorage(); renderH2(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
+    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderRecorder(); renderStorage(); renderH2(); renderH2v2(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
   }
 
   // ---------- hero + animated curve ----------
@@ -488,6 +488,50 @@ window.HAWSE.explain = (() => {
     const cols = 'grid-template-columns:70px 80px 1.4fr 1.6fr';
     const desc = (r) => r.t === 'signal' ? `ask ${r.ya} ×${r.yas} · ${r.secLeft}s left` : r.t === 'fill' ? `px ${r.px} (next ask ${r.nextAsk}, lag ${r.lagMs} ms) fee ${r.fee1}` : r.t === 'skip' ? `${r.reason}${r.ya ? ' · ask ' + r.ya : ''}` : r.t === 'settle' ? `${r.result.toUpperCase()} · ${c(r.pnl1 * 100)}` : r.t === 'observed' ? r.outcome : r.t === 'flag' ? r.reason : r.t === 'session' ? 'session start' : '';
     $('h2Rows').innerHTML = `<div class="row head" style="${cols}"><span>at</span><span>event</span><span>market</span><span>detail</span></div>` + (H.recent || []).map((r) => `<div class="row" style="${cols}"><span class="dim">${hhmmss(r.at)}</span><span class="${r.t === 'skip' || r.t === 'flag' ? 'warn' : r.t === 'settle' ? (r.win ? 'pos' : 'neg') : ''}">${esc(r.t)}</span><span class="sm">${esc(r.tk || '')}</span><span class="sm mono">${esc(desc(r))}</span></div>`).join('');
+  }
+  // Frozen v2 arm (config/frozen/kalshi-h2-v2.json): a paper filter on v1's signals; display only. UNPROVEN until the pre-registered test is met.
+  function renderH2v2() {
+    const H = S.feeds && S.feeds.kalshiH2v2; $('h2v2Card').hidden = !H; if (!H) return;
+    if (H.error || !H.stats) { $('h2v2Mode').innerHTML = badge('down'); $('h2v2Body').innerHTML = `<div class="neg mono sm">${esc(H.error || 'not started')}</div>`; $('h2v2Rows').innerHTML = ''; return; }
+    const st = H.stats, P = st.passTest, v = st.v2, K = st.kept, Sk = st.skipped;
+    const c = (x) => (x == null ? '—' : (x > 0 ? '+' : '') + x.toFixed(2) + '¢'), pc = (x) => (x == null ? '—' : (100 * x).toFixed(1) + '%'), ci = (w) => (w && w.lo != null ? `95% CI ${pc(w.lo)}–${pc(w.hi)}` : '');
+    const tone = (x) => (x == null ? '' : x > 0 ? 'pos' : x < 0 ? 'neg' : '');
+    $('h2v2Badge').textContent = P.label; $('h2v2Badge').className = 'badge ' + (P.status === 'met' ? 'live' : P.status === 'not met' ? 'down' : 'stale');
+    $('h2v2Mode').innerHTML = `${badge(H.running ? 'live' : 'down')} ${esc(H.name || '')} · sha256 ${esc((H.hash || '').slice(0, 12))}… · on v1 ${esc(((H.base && H.base.sha256) || '').slice(0, 12))}…`;
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const B = H.backfill;
+    let svg = '<div class="dim sm mono">no settled v2 trades yet</div>'; const cv = st.curve || [];
+    if (cv.length) {
+      const W = 560, Hh = 110, pad = 6, xs = cv.map((p) => p.at), ys = [0, ...cv.map((p) => p.cumCents)];
+      const x0 = xs[0] - 60e3, x1 = Math.max(Date.now(), xs[xs.length - 1]), y0 = Math.min(...ys), y1 = Math.max(...ys, y0 + 1);
+      const X = (t) => pad + ((t - x0) / Math.max(1, x1 - x0)) * (W - 2 * pad), Y = (q) => Hh - pad - ((q - y0) / (y1 - y0)) * (Hh - 2 * pad);
+      let d = `M${X(x0).toFixed(1)},${Y(0).toFixed(1)}`; for (const p of cv) d += ` H${X(p.at).toFixed(1)} V${Y(p.cumCents).toFixed(1)}`; d += ` H${X(x1).toFixed(1)}`;
+      const last = cv[cv.length - 1].cumCents;
+      svg = `<svg id="h2v2Curve" viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:${W}px;height:${Hh}px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="v2 cumulative net P&L after fees">` +
+        `<line x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>` +
+        `<path d="${d}" fill="none" stroke="${last >= 0 ? 'var(--mint,#3dffb0)' : 'var(--hot,#ff3d5a)'}" stroke-width="1.6"/>` +
+        cv.map((p) => `<circle cx="${X(p.at).toFixed(1)}" cy="${Y(p.cumCents).toFixed(1)}" r="2.2" fill="${p.pnlCents >= 0 ? 'var(--mint,#3dffb0)' : 'var(--hot,#ff3d5a)'}"><title>${esc(p.tk)} ${c(p.pnlCents)} → ${c(p.cumCents)}</title></circle>`).join('') +
+        `<text x="${W - pad}" y="12" text-anchor="end" fill="currentColor" font-size="10" class="mono">${esc(c(last))} · ${cv.length} settled</text></svg>`;
+    }
+    $('h2v2Body').innerHTML = `<div class="subh">Paper only, own ledger (<code>data/paper/kalshi-h2/v2/</code>); no order path. Every v1 signal is logged here with <code>max_earlier_ask</code> and the v2 decision, skipped ones included. v2 reuses v1's paper fill and Kalshi's official result, so both arms are compared on the same signals. v1 is unchanged. <b>Unknown</b> = the recorded books do not cover every earlier minute (not traded, not in the test).</div>` +
+      `<div class="mono" style="margin:6px 0"><span class="badge ${P.status === 'met' ? 'live' : P.status === 'not met' ? 'down' : 'stale'}">${esc(P.label)}</span> <span class="dim sm">pre-registered test: ${P.have.toLocaleString()} / ${P.need.toLocaleString()} settled signals with a known decision</span></div>` +
+      `<div class="bar"><i style="left:0;width:${(100 * P.progress).toFixed(1)}%;background:var(--accent,#5b8def)"></i></div>` +
+      P.parts.map((m) => `<div class="mono sm" style="margin:2px 0"><span class="badge ${m.status === 'met' ? 'live' : m.status === 'not met' ? 'down' : 'stale'}">${esc(m.status.toUpperCase())}</span> ${esc(m.label)} · now ${m.value == null ? '—' : m.key === 'kept' ? c(m.value) : m.key === 'fisher' ? 'p=' + m.value : m.value.toLocaleString()}</div>`).join('') +
+      `<div class="riskgrid" style="margin-top:8px">` +
+      meter('v2 trades taken', `${v.taken}`, `${v.settled} settled · ${v.open} open · v1 signals ${st.v1Signals}`) +
+      meter('v2 win rate', v.winRate && v.winRate.p != null ? pc(v.winRate.p) : '—', `${v.wins}W / ${v.losses}L · ${ci(v.winRate)}`) +
+      meter('v2 net / contract', `<span class="${tone(v.meanNetCents)}">${c(v.meanNetCents)}</span>`, `after the fee charged · total ${c(v.totalNetCents)}`) +
+      meter('kept loss rate', pc(K.lossRate), `${K.losses}/${K.n} · ${ci(K.lossCi)}`) +
+      meter('skipped loss rate', pc(Sk.lossRate), `${Sk.losses}/${Sk.n} · ${ci(Sk.lossCi)}`) +
+      meter('Fisher p (one-sided)', st.fisherP == null ? '—' : String(st.fisherP), 'H1: skipped lose more often') +
+      meter('decisions', `${st.decisions.take} take · ${st.decisions.skip} skip`, `${st.decisions.unknown || 0} unknown · ${st.backfilled} backfilled from recorded books`) +
+      meter('watch only', `${st.watch.dBpsBelow} · ${st.watch.dask1Above}`, `d_bps &lt; 16 · dask1 &gt; 9¢ (not a rule)`) + `</div>` +
+      `<div class="dim sm mono" style="margin:6px 0 3px">v2 cumulative net P&amp;L after the 1-contract fee (¢ per 1-contract test, kept trades only) <span class="badge live">PAPER</span></div>${svg}` +
+      (B ? `<div class="dim sm mono" style="margin-top:4px">backfill at start: ${B.needed} of ${B.v1Signals} v1 signal(s) decided from ${B.files} recorded file(s)${B.truncated ? ' · <span class="warn">read cap hit</span>' : ''}</div>` : '');
+    const cols = 'grid-template-columns:1.5fr 54px 70px 64px 70px 60px 70px 80px 70px';
+    const dc = (d) => (d === 'take' ? 'pos' : d === 'skip' ? 'warn' : 'dim');
+    $('h2v2Rows').innerHTML = `<div class="row head" style="${cols}"><span>market</span><span>ask</span><span>max earlier</span><span>dask1</span><span>d_bps</span><span>depth</span><span>v2</span><span>books</span><span>result</span></div>` +
+      (H.signals || []).map((x) => `<div class="row" style="${cols}" title="${esc(x.why || '')}"><span class="sm">${esc(x.tk)}</span><span>${x.ya}</span><span>${x.maxEarlierAsk == null ? 'none' : x.maxEarlierAsk}</span><span>${x.dask1 == null ? '—' : x.dask1}</span><span>${x.dBps == null ? '—' : x.dBps.toFixed(1)}</span><span>${x.askDepth == null ? '—' : Math.round(x.askDepth)}</span><span class="${dc(x.decision)}">${esc(String(x.decision).toUpperCase())}</span><span class="dim sm">${esc(x.coverage)}${x.backfill ? ' · backfill' : ''}</span><span class="${x.pnlCents == null ? 'dim' : tone(x.pnlCents)}">${x.result ? esc(x.result) : 'open'}${x.pnlCents == null ? '' : ' ' + c(x.pnlCents)}</span></div>`).join('');
   }
   // Live P&L for the frozen H2 test (display only, paper fills only). Realized and unrealized are kept apart.
   function h2Pnl(H, c, pc) {

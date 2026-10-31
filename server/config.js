@@ -103,6 +103,7 @@ function build(env = process.env) {
     kalshiH2: { // H6 Part C: frozen forward PAPER test of miro's H2 (config/frozen/kalshi-h2-v1.json). Needs the recorder's Kalshi stream.
       enabled: env.KALSHI_H2_PAPER !== 'false',
       dir: env.KALSHI_H2_DIR || path.join(__dirname, '..', 'data', 'paper', 'kalshi-h2'),
+      v2: env.KALSHI_H2_V2 !== 'false', // frozen v2 arm (no-jump filter), paper only, own ledger at <dir>/v2/
     },
     recorder: { // H6 market-data RECORDER: public read-only endpoints, append-only files under data/recorder (gitignored)
       enabled: bool(env.RECORDER_ENABLED, true),

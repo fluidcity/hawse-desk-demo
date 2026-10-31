@@ -9,7 +9,15 @@ class Ledger {
     this.books = new Map();
     this.curve = [];
     this.closed = [];
+    this.flows = new Map(); // display only: per (id, book) realized-P&L events [t, amount], same amounts as `realized` (see flow())
   }
+  /** Display-only history of every realized change (close, charge, cashflow). Never read by totals(), gates or strategies. */
+  flow(id, simulated, amount, t = Date.now()) {
+    const k = id + (simulated ? '|sim' : '|real'); let a = this.flows.get(k); if (!a) { a = []; this.flows.set(k, a); }
+    a.push([t, amount]);
+    if (a.length > 4000) { a[1] = [a[1][0], a[0][1] + a[1][1]]; a.shift(); } // bounded: merge the two oldest (sum preserved)
+  }
+  flowsOf(id, simulated) { return this.flows.get(id + (simulated ? '|sim' : '|real')) || []; }
   book(id) {
     if (!this.books.has(id)) this.books.set(id, { id, real: blank(), sim: blank(), unrealReal: 0, unrealSim: 0 });
     return this.books.get(id);
@@ -21,7 +29,7 @@ class Ledger {
     if (typeof simulated !== 'boolean') throw new TypeError('Ledger.close: simulated flag is required');
     if (!isFinite(pnl)) throw new RangeError('Ledger.close: pnl must be finite');
     const b = this.book(id)[simulated ? 'sim' : 'real'];
-    b.realized += pnl; b.fees += fees; b.slippage += slippage; b.trades += 1;
+    b.realized += pnl; b.fees += fees; b.slippage += slippage; b.trades += 1; this.flow(id, simulated, pnl);
     if (total > 0) b.wins += 1; else b.losses += 1;
     const rec = { t: Date.now(), strategy: id, pnl: total, booked: pnl, fees, slippage, simulated, ...meta };
     this.closed.unshift(rec); if (this.closed.length > 500) this.closed.pop();
@@ -30,10 +38,10 @@ class Ledger {
   /** Fees paid on an opening fill are charged immediately so equity is never flattered. */
   charge(id, { amount, simulated, kind = 'fee' }) {
     const b = this.book(id)[simulated ? 'sim' : 'real'];
-    b.realized -= amount; if (kind === 'fee') b.fees += amount; else b.slippage += amount;
+    b.realized -= amount; this.flow(id, simulated, -amount); if (kind === 'fee') b.fees += amount; else b.slippage += amount;
   }
   /** Funding or other cashflows on open positions. */
-  cashflow(id, { amount, simulated }) { const b = this.book(id)[simulated ? 'sim' : 'real']; b.realized += amount; b.funding += amount; }
+  cashflow(id, { amount, simulated }) { const b = this.book(id)[simulated ? 'sim' : 'real']; b.realized += amount; b.funding += amount; this.flow(id, simulated, amount); }
   setUnrealized(id, { real = 0, sim = 0 }) { const b = this.book(id); b.unrealReal = real; b.unrealSim = sim; }
   totals() {
     let real = 0, sim = 0, realU = 0, simU = 0;

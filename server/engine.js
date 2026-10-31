@@ -4,6 +4,7 @@ const { Watchdog } = require('./lib/watchdog');
 // HAWSE paper engine: wires feeds -> strategies -> paper broker -> ledger -> risk gates.
 const { Health } = require('./lib/health');
 const { Ledger } = require('./lib/ledger');
+const { pnlBoard } = require('./lib/pnl-board');
 const { RiskGate } = require('./lib/risk');
 const { PaperBroker, LiveBroker } = require('./lib/broker');
 const { Tape } = require('./lib/tape');
@@ -123,6 +124,7 @@ class Engine {
       totals: { ...t, start: this.cfg.paperStartEquity },
       risk: { real: this.gates.real.status(), sim: this.gates.sim.status() },
       curve: this.ledger.curve.slice(-720), attribution: this.ledger.attribution(), closed: this.ledger.closed.slice(0, 50),
+      pnlBoard: pnlBoard(this.ledger, this.strategies, { now: Date.now(), since: this.started || Date.now() }), // display only
       strategies: this.strategies.map((s) => s.snapshot()),
       funding: this.feeds.funding.snapshot(),
       feeds: Object.fromEntries(Object.entries(this.feeds).filter(([k]) => k !== 'funding').map(([k, f]) => [k, f.snapshot ? f.snapshot() : null])),

@@ -40,7 +40,19 @@ window.HAWSE.explain = (() => {
     const a = Math.min(1, Math.abs(v) / scale);
     return v >= 0 ? `rgba(61,255,176,${0.08 + a * 0.55})` : `rgba(255,61,90,${0.08 + a * 0.55})`;
   };
-  const post = (url, body = {}) => fetch(url, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json());
+  // Operator POSTs (same-origin JSON; works directly and through scripts/auth-proxy.js, whose CSRF check wants JSON + Origin).
+  // Never throws: -> the JSON body, or { ok:false, error } on a refusal, which is shown as a toast (e.g. not on the proxy allowlist).
+  const toast = (msg) => {
+    let t = document.getElementById('opToast'); if (!t) { t = document.createElement('div'); t.id = 'opToast'; t.setAttribute('role', 'status'); t.style.cssText = 'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:50;max-width:90vw;padding:8px 12px;border-radius:6px;background:#2a0f16;color:#ffb3c0;border:1px solid #ff3d5a;font:12px ui-monospace,monospace'; document.body.appendChild(t); }
+    t.textContent = msg; t.hidden = false; clearTimeout(t._h); t._h = setTimeout(() => { t.hidden = true; }, 6000);
+  };
+  const post = (url, body = {}) => fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    .then(async (r) => {
+      let j = {}; try { j = await r.json(); } catch {}
+      if (r.status === 401) { location.href = '/login'; return { ok: false, error: 'signed out' }; }
+      if (!r.ok || j.ok === false) { const e = j.error || 'HTTP ' + r.status; toast(`${url.replace(/^\/api\//, '')} refused: ${e}`); return { ...j, ok: false, error: e }; }
+      return j;
+    }, () => { toast(`${url.replace(/^\/api\//, '')} failed: desk unreachable`); return { ok: false, error: 'unreachable' }; });
 
   let S = null, tapeFilter = 'all', lastTapeId = 0;
 
@@ -65,7 +77,7 @@ window.HAWSE.explain = (() => {
   $('strats').onclick = (e) => {
     const b = e.target.closest('[data-arm]'); if (!b) return;
     const s = S && S.strategies.find((x) => x.id === b.dataset.arm); if (!s) return;
-    post(`/api/strategy/${encodeURIComponent(s.id)}/arm`, { armed: !s.armed }).then(() => { s.armed = !s.armed; renderStrats(); });
+    const want = !s.armed; post(`/api/strategy/${encodeURIComponent(s.id)}/arm`, { armed: want }).then((r) => { if (r && r.ok) { s.armed = want; renderStrats(); } });
   };
 
   // ---------- stream ----------

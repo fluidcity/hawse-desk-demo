@@ -450,16 +450,35 @@ node scripts/auth-proxy.js          # http://127.0.0.1:8789 -> http://127.0.0.1:
 | `HAWSE_PROXY_PORT` | `8789` | Port the proxy listens on. |
 | `HAWSE_PROXY_HOST` | `127.0.0.1` | Bind address. Keep it on loopback and reach it through an HTTPS tunnel. |
 | `HAWSE_PROXY_UPSTREAM` | `http://127.0.0.1:8788` | Must be a plain-http loopback origin. Anything else is refused. |
-| `HAWSE_PROXY_ALLOW_POST` | (empty = read-only) | Comma list taken from `halt, resume, reset-breaker, risk, arm`. Unknown names are refused at startup. |
+| `HAWSE_PROXY_ALLOW_POST` | (empty = read-only) | Comma list taken from `halt, resume, reset-breaker, risk, arm`. Unknown names are refused at startup. **Recommended for the phone: `arm,halt,resume`** (strategy arm toggles plus HALT / Resume). Leave `reset-breaker` and `risk` desk-only. |
 | `HAWSE_PROXY_INSECURE_COOKIE` | off | `1` drops the `Secure` flag. Use it only for plain-http testing; see below. |
 
 - **Login.** `GET /login` serves a form. A correct token gets a random session id in an `HttpOnly; Secure; SameSite=Strict` cookie (7 days). `Authorization: Bearer <token>` also works for scripts. Comparison is constant-time (sha256 + `timingSafeEqual`). The login POST refuses cross-origin `Origin` / `sec-fetch-site`. `POST /logout` ends the session.
 - **Rate limit.** After 5 failed attempts in 15 minutes from one remote address, that address gets `429` until the window passes, even with the right token. Behind a tunnel all clients share the tunnel's address, so one bad actor can lock you out for 15 minutes. That is deliberate (fail closed); restarting the proxy clears it.
 - **Read-only by default.** GET and HEAD are forwarded. POST is forwarded only for routes named in `HAWSE_PROXY_ALLOW_POST`, matched by exact path. `/api/live-order` (which always refuses anyway), `/api/storage/recorder-cap`, lab writes and betting writes are **never** forwarded. PUT, PATCH, DELETE and OPTIONS return 405. The desk's mutating UI routes are `/api/halt`, `/api/resume`, `/api/reset-breaker`, `/api/risk` and `/api/strategy/:id/arm` (gates for the paper strategies only; the H2 forward tests have their own fail-stop), plus recorder-cap (loopback-only in the desk itself), lab and betting POSTs.
+- **CSRF / same-origin on every forwarded POST.** Besides the allowlist and the token (cookie or Bearer), a forwarded POST must be `Content-Type: application/json` (else `415`) and carry an `Origin` whose host equals the request `Host`, or, when the browser sends no `Origin`, `Sec-Fetch-Site: same-origin`. A cross-origin, `null` or missing Origin on a cookie session gets `403` before it reaches the desk. A Bearer client that sends neither header (curl, scripts) is accepted; a Bearer request with a foreign `Origin` is not. This is the same Origin-vs-Host rule the login form uses, so it works through Tailscale Serve and `cloudflared`, which keep the public `Host`. The dashboard's buttons send exactly this (same-origin `fetch`, JSON body, cookie), and a refused POST now shows a red toast ("…/arm refused: read-only proxy: this POST is not on HAWSE_PROXY_ALLOW_POST") instead of silently flipping the toggle.
+- **Phone controls (arm, halt, resume).**
+
+  ```bash
+  set -a; . /home/box/secrets/hawse-proxy.env; set +a
+  HAWSE_PROXY_ALLOW_POST=arm,halt,resume node scripts/auth-proxy.js   # :8789 -> :8788, Tailscale Serve already points at :8789
+  ```
+
+  With that, `POST /api/strategy/:id/arm`, `/api/halt` and `/api/resume` work from the phone. `/api/reset-breaker`, `/api/risk`, `/api/storage/recorder-cap`, `/api/live-order`, lab and betting writes stay `403`. Everything is paper: arming only lets a paper strategy open paper positions under the same risk gates.
 - **Streams.** SSE (`/api/stream`) is passed through unbuffered. WebSocket upgrades are authenticated, refused cross-origin, then piped both ways (the desk serves none today).
 - **Headers and logs.** The session cookie and `Authorization` are stripped before forwarding, so the desk never sees them. Every response gets `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, COOP/CORP same-origin, a Permissions-Policy and `frame-ancestors 'none'`. The log has the startup line (allowlist and cookie mode) and `lockout active for <ip>`. It never logs tokens, cookies, headers or bodies.
 - **HTTPS.** Browsers keep a `Secure` cookie over `https://` and `http://localhost` only. From a PC or phone, reach the proxy through an HTTPS tunnel (for example `cloudflared tunnel --url http://127.0.0.1:8789` or Tailscale Serve). Do not bind `0.0.0.0` over plain http; if you must test that way, `HAWSE_PROXY_INSECURE_COOKIE=1` sends the cookie, and the token, in clear text.
 - Tests: `test/auth-proxy.test.js` runs against a scratch desk (temp dirs, engine not started) plus fake upstreams for header and WebSocket checks.
+
+## Armed state survives restarts (Stage S)
+
+Each strategy's armed on/off is saved to `data/state/armed.json` (gitignored under `/data/`) on every arm or disarm call, by an atomic write (temp file in the same directory, fsync, rename). On `start()` the desk loads it right after "Desk online" and re-arms the saved strategies through each strategy's own `arm()`, the same path as the dashboard toggle. Nothing else is armed, and there is no order path; it is paper only. The tape shows one line:
+
+- `Restored armed state: armed funding_arb, … · N disarmed (paper)` when the file is good;
+- `Restored armed state: no saved state (… missing) · all strategies disarmed` on first run;
+- `Restored armed state: saved state unusable (…) · all strategies disarmed · kept as armed.json.corrupt-<ts>` when the file is corrupt (the bad file is renamed, never deleted, and replaced on the next arm/disarm).
+
+Saved ids for strategies that are not loaded this run (a module toggled off) are kept in the file. HALT, resume and the drawdown breaker are **not** persisted and behave as before (a restart comes up un-halted, as it always has). `ARMED_STATE_FILE=` (empty) turns persistence off; a path moves the file. An engine that was never started (tests, tools) never writes the file. If a save fails, the arm still applies, the API returns `persisted:false`, and the tape logs `armed state not saved`. Tests: `test/armed-state.test.js`.
 
 ## Environment variables
 

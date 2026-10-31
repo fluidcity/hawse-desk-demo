@@ -35,7 +35,7 @@ class KalshiWsRecorder {
   constructor({ store, health, cfg = {}, auth = null, kalshi = null, gap = () => {}, now = () => Date.now(), WebSocketImpl, log = (m) => console.log(m) }) {
     this.c = { url: 'wss://api.elections.kalshi.com/trade-api/ws/v2', env: 'prod', cfIndex: false, indexIds: ['BRTI', 'ETHUSD_RTI', 'SOLUSD_RTI', 'XRPUSD_RTI'], syncMs: 5000, kinds: ['crypto'], ...cfg };
     Object.assign(this, { store, health, auth, kalshi, gap, now, log, WebSocketImpl });
-    this.n = { snap: 0, delta: 0, trade: 0, cf: 0, seqGaps: 0, tradeSeqGaps: 0, errors: 0, sent: 0 }; this.errCodes = {}; this.sids = {}; this.seq = {}; this.subscribed = new Set(); this.pending = new Set();
+    this.n = { snap: 0, delta: 0, trade: 0, cf: 0, seqGaps: 0, tradeSeqGaps: 0, outages: 0, outageMs: 0, errors: 0, sent: 0 }; this.errCodes = {}; this.sids = {}; this.seq = {}; this.subscribed = new Set(); this.pending = new Set();
     this.msgId = 0; this.timers = []; this.running = false; this.lastCf = {}; this.downSince = null;
     this.problem = !auth ? 'no Kalshi key configured (set KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH or _PEM; see docs/kalshi-api-key.md)' : !isKalshiWsUrl(this.c.url) ? 'KALSHI_WS_URL is not a Kalshi WebSocket URL' : null;
     health.register('rec.kalshi.ws', { label: 'Recorder · Kalshi WebSocket (orderbook_delta + trade' + (this.c.cfIndex ? ' + CF index' : '') + ')', group: 'recorder',
@@ -48,7 +48,7 @@ class KalshiWsRecorder {
   start() {
     if (this.running || this.problem) return; this.running = true;
     this.client = new WsClient({ url: this.c.url, health: this.health, id: 'rec.kalshi.ws', label: 'recorder kalshi ws', WebSocketImpl: this.WebSocketImpl, log: this.log, idleMs: 90000, headers: this.auth,
-      onOpen: (cl) => this.onOpen(cl), onMessage: (s) => this.onFrame(JSON.parse(s)) });
+      onOpen: (cl) => this.onOpen(cl), onMessage: (s) => this.onFrame(JSON.parse(s)), onDown: (why, t) => { if (this.downSince == null) { this.downSince = t; this.downWhy = why; } } });
     this.client.start();
     const t = setInterval(() => this.sync(), this.c.syncMs); if (t.unref) t.unref(); this.timers.push(t);
   }
@@ -56,7 +56,7 @@ class KalshiWsRecorder {
   restart() { if (this.client) this.client.restart('watchdog'); }
   watchSpec() { return this.problem ? [] : [{ key: 'recorder kalshi ws', ids: ['rec.kalshi.ws'], intervalMs: 60000, restart: () => this.restart() }]; }
   onOpen(cl) {
-    const t = this.now(); if (this.downSince != null) this.gap('kalshi.ws', 'socket', this.downSince, t, null); this.downSince = null;
+    const t = this.now(); if (this.downSince != null) { this.n.outages++; this.n.outageMs += t - this.downSince; this.gap('kalshi.ws', 'socket', this.downSince, t, 'ws-down ' + (this.downWhy || 'closed')); } this.downSince = null; this.downWhy = null;
     this.sids = {}; this.seq = {}; this.subscribed = new Set(); this.pending = new Set();
     const tks = this.wanted();
     if (tks.length) { this.send(cl, { id: this.next(), cmd: 'subscribe', params: { channels: ['orderbook_delta'], market_tickers: tks } }); this.send(cl, { id: this.next(), cmd: 'subscribe', params: { channels: ['trade'], market_tickers: tks } }); for (const x of tks) this.pending.add(x); }

@@ -92,6 +92,10 @@ test('KalshiWsRecorder (fake socket): handshake headers per connect, subscribes 
   for (const f of s.sent) checkOutgoing(f); // every frame actually sent passes the allowlist
   rx({ type: 'error', id: 3, msg: { code: 9, msg: 'Authentication required' } }); assert.equal(r.n.errors, 1); assert.equal(r.errCodes['9'], 1); assert.equal(out.filter((x) => x.t === 'ws_error')[0].code, 9);
   r.client.restart('test'); assert.deepEqual(FakeWS.last.opts.headers, { 'X-Handshake': 'h2' }, 'fresh timestamped headers on every connect');
+  // a server/network drop of an OPEN socket (seen live with ss -K): counted, the outage starts at the close, the gap is written on reopen
+  const s2 = FakeWS.last; s2.onopen(); const g0 = gaps.length; s2.onclose(); assert.equal(r.client.closes, 1); assert.equal(r.downSince != null, true, 'outage marked at close time, not at the next sync');
+  assert.equal(r.client.view().reconnects, 2); assert.equal(r.client.view().closes, 1);
+  r.onOpen({ send: () => {} }); const g = gaps.slice(g0).find((x) => x[1] === 'socket'); assert.ok(g, 'socket outage gap written on reopen'); assert.equal(g[4], 'ws-down closed'); assert.equal(r.n.outages, 2, 'the restart and the close'); assert.equal(r.downSince, null);
   r.stop();
 });
 

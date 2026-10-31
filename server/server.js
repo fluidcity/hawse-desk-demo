@@ -67,7 +67,7 @@ function createServer(engine, flags) {
       if (req.method === 'POST' && p.startsWith('/api/')) {
         const b = await body(req);
         let m;
-        if ((m = p.match(/^\/api\/strategy\/([\w-]+)\/arm$/))) { engine.arm(m[1], b.armed !== false); return send(res, 200, { ok: true }); }
+        if ((m = p.match(/^\/api\/strategy\/([\w-]+)\/arm$/))) { if (!engine.strategy(m[1])) return send(res, 404, { ok: false, error: 'unknown strategy' }); const r = engine.arm(m[1], b.armed !== false); return send(res, 200, { ok: true, persisted: r.persisted }); }
         if (p === '/api/risk') { engine.setRisk({ dailyLossPct: b.dailyLossPct, maxDrawdownPct: b.maxDrawdownPct }); return send(res, 200, { ok: true }); }
         if (p === '/api/halt') { engine.halt(); return send(res, 200, { ok: true }); }
         if (p === '/api/resume') { engine.resume(); return send(res, 200, { ok: true }); }

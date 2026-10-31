@@ -34,6 +34,8 @@ function build(env = process.env) {
     host: env.HOST || '127.0.0.1',
     port: num(env.PORT, 8787),
     paperStartEquity: num(env.PAPER_START_EQUITY, 10000),
+    // Strategy armed on/off persisted across restarts (atomic write on every arm/disarm; loaded at start). '' = off (not persisted).
+    armedState: { file: env.ARMED_STATE_FILE !== undefined ? (env.ARMED_STATE_FILE || null) : path.join(__dirname, '..', 'data', 'state', 'armed.json') },
     // Hard-coded: this build has no live trading. Setting this env var to
     // anything other than "paper" makes the server refuse to start.
     tradingMode: env.TRADING_MODE || 'paper',

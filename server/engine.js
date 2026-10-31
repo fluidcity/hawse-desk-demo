@@ -1,4 +1,5 @@
 'use strict';
+const path = require('path');
 const { Watchdog } = require('./lib/watchdog');
 // HAWSE paper engine: wires feeds -> strategies -> paper broker -> ledger -> risk gates.
 const { Health } = require('./lib/health');
@@ -11,6 +12,7 @@ const { SpotFeed } = require('./feeds/spot');
 const { FundingArb } = require('./strategies/funding-arb');
 const { MarketStream } = require('./feeds/market-ws');
 const { Providers } = require('./providers');
+const { loadArmed, saveArmed, quarantine } = require('./lib/armed-state');
 
 class Engine {
   constructor(cfg, { modules = {} } = {}) {
@@ -57,6 +59,7 @@ class Engine {
   start() {
     for (const f of Object.values(this.feeds)) f.start && f.start();
     this.tape.push({ kind: 'info', msg: 'Desk online · PAPER mode · live order path disabled' });
+    this.restoreArmed();
     this.loop = setInterval(() => this.tick(), 2000);
     this.sampler = setInterval(() => this.ledger.sample(), 5000);
     this.ledger.sample();
@@ -77,7 +80,35 @@ class Engine {
     }
   }
   // ---- operator actions ----
-  arm(id, on) { const s = this.strategy(id); if (!s) throw new Error('unknown strategy'); s.arm(on); }
+  arm(id, on) { const s = this.strategy(id); if (!s) throw new Error('unknown strategy'); s.arm(on); return { persisted: this.persistArmed() }; }
+  // ---- armed state on disk (cfg.armedState.file, default data/state/armed.json) ----
+  // Active only after start() has loaded the file, so an engine that was never started (tests, tools) never writes it.
+  // Restore goes through each strategy's own arm(): no extra arming path, no order path. Halt/breaker state is not persisted.
+  restoreArmed() {
+    const file = this.cfg.armedState && this.cfg.armedState.file; if (!file) { this.armedStore = null; return null; }
+    const r = loadArmed(file); this.armedStore = { file, other: {} };
+    const rel = path.relative(process.cwd(), file) || file;
+    if (r.status === 'missing') { this.tape.push({ kind: 'info', msg: `Restored armed state: no saved state (${rel} missing) · all strategies disarmed` }); return r; }
+    if (r.status === 'corrupt') {
+      const kept = quarantine(file);
+      this.tape.push({ kind: 'risk', msg: `Restored armed state: saved state unusable (${r.error}) · all strategies disarmed${kept ? ' · kept as ' + path.basename(kept) : ''}` }); return r;
+    }
+    const armed = [], failed = [];
+    for (const [id, on] of Object.entries(r.armed)) {
+      const s = this.strategy(id);
+      if (!s) { this.armedStore.other[id] = on; continue; } // strategy not loaded this run (toggle off): keep its saved value
+      if (!on) continue;
+      try { s.arm(true); armed.push(s.id); } catch (e) { failed.push(id); this.tape.push({ kind: 'error', strategy: id, msg: 'restore arm failed: ' + e.message }); }
+    }
+    const off = this.strategies.filter((s) => !s.armed).length, other = Object.keys(this.armedStore.other).length;
+    this.tape.push({ kind: 'risk', msg: `Restored armed state: ${armed.length ? 'armed ' + armed.join(', ') : 'nothing armed'} · ${off} disarmed${other ? ` · ${other} saved id(s) not loaded` : ''}${failed.length ? ' · failed ' + failed.join(', ') : ''} (paper)` });
+    return { ...r, restored: armed, failed };
+  }
+  persistArmed() {
+    if (!this.armedStore) return false;
+    const m = { ...this.armedStore.other }; for (const s of this.strategies) m[s.id] = !!s.armed;
+    try { saveArmed(this.armedStore.file, m); return true; } catch (e) { this.tape.push({ kind: 'error', msg: 'armed state not saved: ' + (e.code || e.message) }); return false; }
+  }
   halt() { for (const g of Object.values(this.gates)) g.halt(); this.tape.push({ kind: 'risk', msg: 'Operator HALT: no new risk' }); }
   resume() { for (const g of Object.values(this.gates)) { g.resume(); } this.tape.push({ kind: 'risk', msg: 'Operator resume' }); }
   resetBreaker() { for (const g of Object.values(this.gates)) g.resetBreaker(); this.tape.push({ kind: 'risk', msg: 'Drawdown breaker reset (peak re-based)' }); }

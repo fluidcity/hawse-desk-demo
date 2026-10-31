@@ -769,3 +769,26 @@ If the test is not met at 1,500, the arm is marked **retired**.
 This is far too little data to say anything. The arm is **UNPROVEN**.
 
 Tests: `test/kalshi-h2-v2.test.js`.
+
+#### v2 audit against miro's autopsy §5 (display/logging only; the frozen rule is unchanged)
+`server/kalshi-h2/v2-audit.js` adds everything the autopsy asks the forward test to log, without touching `decide()` or the frozen file:
+- Per signal (kept and skipped): `entryM`, `minutesLeft`, asset, month, `nEarlierQuotes` / `expectedEarlier` (= 14 − entry m) and `partialHistory`. It also logs max_earlier_ask, dask1, d_bps, the decision, the fill price, size, fee, depth and result, and the settlement value vs strike in bps (`settle_value` rows, live or from the recorded `kalshi.market` stream).
+- **miro-exact shadow** (display only, never re-decides). The as-of YES ask is read at each minute boundary k·60 s for m = 14..entry+1. The entry minute is excluded, there are no intra-minute spikes, and only valid two-sided quotes count (bid > 0, ask < 1, ask > bid). An unchanged (deduped) minute carries forward only when the recorder provably kept watching: same session, no gap row, and ≤ 5 s for live rows. Each signal shows whether the shadow agrees with the frozen decision.
+- Watch-only flags (not rules): d_bps < 16 and dask1 > 9¢.
+- Fees: per order `roundup_to_cent(0.07·C·P·(1−P))`. Every paper fill is checked against the formula. Kept EV is shown under the actual fee, flat 1¢ and flat 2¢. The pass test uses the actual fee.
+- Pass test: **only the first look** at 1,500 settled known-decision signals counts. It is persisted once as a `verdict` row and later rows are ignored. Interim values are display only. Results are shown with and without `partialHistory` signals. Until the first look, the status is UNPROVEN.
+- Card: live vs backtest reference lines (skip ~18%; skipped loss 6.3% vs kept 3.0%; kept win 97.0% vs v1 96.4%; OOS EV +0.54¢ → +1.04¢; flat 2¢ +0.04¢; in-sample −0.45¢) with Wilson CIs. It also has kept vs skipped by asset, month and test week, running Fisher p and running kept EV (3 fee models) vs signal count, and equity curves for v1, v2-kept and skipped (labeled HYPOTHETICAL). The card lists these caveats:
+  - Jun–Oct was already seen.
+  - The spot features were Coinbase proxies.
+  - Fills and depth were untested.
+  - Do not retune 0.87; any change is a v3.
+- Old ledger rows get one `annot` row each, recomputed from the recorded books. It adds only the new fields and never a decision.
+
+**Gaps between the frozen text and miro's backtest. Not fixed in v2; proposed for a v3:**
+1. The frozen rule has no bid/ask validity filter. miro's panel drops quotes unless bid > 0, ask < 1 and ask > bid.
+2. Frozen takes the last ask *recorded inside* each minute; miro takes the as-of close at the boundary, so a null or one-sided ask at minute end can differ.
+3. Frozen counts a deduped, unchanged minute as missing, so it can return "unknown" where miro would carry the prior quote.
+4. The frozen file does not say that only the first look counts. This is implemented in the verdict logic and display only.
+5. v1 samples at minute boundaries, so live entry minutes are 5..9 vs miro's 6..10. This is a v1 sampling property and is unchanged.
+
+On the 10 live signals so far, the shadow agrees with every frozen decision. An independent Python recompute from the recorded books reproduces every max_earlier_ask, decision, entry m, quote count and settle bps exactly. 2 of the 10 signals are partial_history.

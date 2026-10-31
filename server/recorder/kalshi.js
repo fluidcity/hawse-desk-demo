@@ -35,7 +35,7 @@ class KalshiRecorder {
       extraTop: 12, bookMs: 1000, tradesMs: 2000, discoverMs: 20000, extraDiscoverMs: 300000, extraBookMs: 30000, settleMs: 20000, seriesMs: 3600e3, depth: 10, maxRps: 10, gapMs: 5000, ...cfg };
     Object.assign(this, { store, health, gap, now, get, log });
     this.markets = new Map(); // ticker -> state
-    this.bucket = new Bucket(this.c.maxRps, now); this.listeners = { book: [], settle: [], market: [], series: [] };
+    this.bucket = new Bucket(this.c.maxRps, now); this.listeners = { book: [], settle: [], market: [], series: [], trade: [] }; // 'trade': public prints, read-only (v3 paper sizing)
     this.polls = { book: 0, trades: 0, discover: 0, settle: 0, extra: 0 }; this.errors = 0; this.series = {}; this.timers = []; this.rr = 0; this.running = false;
     const H = (id, label, note, staleMs) => health.register(id, { label, group: 'recorder', note, staleMs });
     H('rec.kalshi.book', 'Recorder · Kalshi 15m order books', `public REST /orderbook every ${this.c.bookMs / 1000}s per live market (${this.c.series.join(', ')})`, 15000);
@@ -111,7 +111,7 @@ class KalshiRecorder {
         if (!t.trade_id || m.seen.has(t.trade_id)) continue;
         m.seen.add(t.trade_id); m.seenQ.push(t.trade_id); if (m.seenQ.length > 5000) m.seen.delete(m.seenQ.shift());
         const r = normTrade(t); m.trades++; if (r.ex && (!m.lastTradeEx || r.ex > m.lastTradeEx)) m.lastTradeEx = r.ex;
-        this.store.write('kalshi.trade', { ...r, s: m.series });
+        this.store.write('kalshi.trade', { ...r, s: m.series }); if (this.listeners.trade.length) this.emit('trade', { ...r, s: m.series, rx });
       }
     }
   }

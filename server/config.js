@@ -104,6 +104,7 @@ function build(env = process.env) {
       enabled: env.KALSHI_H2_PAPER !== 'false',
       dir: env.KALSHI_H2_DIR || path.join(__dirname, '..', 'data', 'paper', 'kalshi-h2'),
       v2: env.KALSHI_H2_V2 !== 'false', // frozen v2 arm (no-jump filter), paper only, own ledger at <dir>/v2/
+      v3: env.KALSHI_H2_V3 !== 'false', // frozen v3 arm (v2 decisions + size caps, 3% and 7% lines), paper only, own ledgers at <dir>/v3/
     },
     recorder: { // H6 market-data RECORDER: public read-only endpoints, append-only files under data/recorder (gitignored)
       enabled: bool(env.RECORDER_ENABLED, true),

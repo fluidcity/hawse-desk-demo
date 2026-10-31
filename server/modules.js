@@ -26,6 +26,7 @@ const { StorageMonitor, readRuntimeCap } = require('./storage');
 const { CfRecorderRemote } = require('./recorder/cf-remote');
 const { KalshiH2Paper } = require('./kalshi-h2');
 const { KalshiH2V2 } = require('./kalshi-h2/v2');
+const { KalshiH2V3 } = require('./kalshi-h2/v3');
 
 module.exports = {
   whales(engine) {
@@ -87,6 +88,8 @@ module.exports = {
     engine.kalshiH2 = engine.addFeed('kalshiH2', new KalshiH2Paper({ kalshi: engine.recorder.kalshi, health: engine.health, dir: c.dir, log: engine.log || ((m) => console.log(m)) }));
     // v2 arm (config/frozen/kalshi-h2-v2.json): a frozen PAPER filter on v1's signals. Added after v1 so it starts after v1; it only observes v1.
     if (c.v2) engine.kalshiH2v2 = engine.addFeed('kalshiH2v2', new KalshiH2V2({ v1: engine.kalshiH2, kalshi: engine.recorder.kalshi, ref: engine.recorder.ref || null, health: engine.health, dir: c.dir, recorderDir: engine.cfg.recorder.dir, log: engine.log || ((m) => console.log(m)) }));
+    // v3 arm (config/frozen/kalshi-h2-v3.json): v2's decisions + paper size caps. Added after v2 so it sees v2's decision on each v1 signal; observes only.
+    if (c.v2 && c.v3) engine.kalshiH2v3 = engine.addFeed('kalshiH2v3', new KalshiH2V3({ v1: engine.kalshiH2, v2: engine.kalshiH2v2, kalshi: engine.recorder.kalshi, health: engine.health, dir: c.dir, recorderDir: engine.cfg.recorder.dir, log: engine.log || ((m) => console.log(m)) }));
   },
   cfRecorder(engine) { // H7 Stage L: status + pull client for the always-on Cloudflare recorder. READ token stays server-side.
     const c = engine.cfg.cfRecorder; if (!c || !c.enabled) return;

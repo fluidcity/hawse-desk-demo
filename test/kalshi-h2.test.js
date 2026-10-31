@@ -39,8 +39,8 @@ test('frozen config: file hash equals the pin in the test AND in the code; edits
   assert.throws(() => loadFrozen(f), /edited after the freeze/);
   const h = new KalshiH2Paper({ dir: path.join(d, 'ledger'), file: f }); h.start();
   assert.equal(h.running, false); assert.match(h.error, /edited after the freeze/); assert.equal(fs.existsSync(path.join(d, 'ledger')), false, 'refused run writes no ledger');
-  // a new version without a pinned hash is refused too (v2 is pinned now, so use v3)
-  const f2 = path.join(d, 'kalshi-h2-v3.json'); fs.writeFileSync(f2, fs.readFileSync(DEFAULT_FILE, 'utf8').replace('"version": "v1"', '"version": "v3"'));
+  // a new version without a pinned hash is refused too (v2 and v3 are pinned now, so use an unpinned v99)
+  const f2 = path.join(d, 'kalshi-h2-v99.json'); fs.writeFileSync(f2, fs.readFileSync(DEFAULT_FILE, 'utf8').replace('"version": "v1"', '"version": "v99"'));
   assert.throws(() => loadFrozen(f2), /no pinned hash/);
 });
 

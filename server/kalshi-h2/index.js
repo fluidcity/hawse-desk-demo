@@ -14,6 +14,7 @@ const S = require('./stats');
 const FROZEN = {
   'kalshi-h2-v1': '2f0053c4eb13bd48697eb06d4a6c841b327313393e97c619e96e3e9956c9675c',
   'kalshi-h2-v2': 'ee5185f8e059a8995c557b474b873f47dae867be5f02fb021368c83cf0294a4c', // v2 arm (server/kalshi-h2/v2.js): a filter on v1 signals; own ledger
+  'kalshi-h2-v3': '5498e1cbea6c45e427876dd2971f041421ef18ad06c103dc7921898f5179ce1c', // v3 arm (server/kalshi-h2/v3.js): v2 decisions + paper size caps; own ledgers
 };
 const DEFAULT_FILE = path.join(__dirname, '..', '..', 'config', 'frozen', 'kalshi-h2-v1.json');
 

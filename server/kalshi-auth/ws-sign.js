@@ -19,6 +19,22 @@ const WS_PATH = '/trade-api/ws/v2';
 const WS_METHOD = 'GET';
 const WS_HOSTS = ['external-api-ws.kalshi.com', 'api.elections.kalshi.com', 'external-api-ws.demo.kalshi.co', 'demo-api.kalshi.co'];
 
+/**
+ * Normalize a PEM that went through an env var or a web form. Accepts real newlines (LF or CRLF), literal "\\n",
+ * or a single line where the newlines became spaces or vanished: the header and footer are kept and the base64 body
+ * is re-wrapped at 64 columns. Pure; never logs. Returns the input unchanged when it has no PEM armor.
+ */
+function normalizePem(raw) {
+  const s = String(raw == null ? '' : raw).replace(/\\r\\n|\\n|\\r/g, '\n').replace(/\r\n?/g, '\n').trim();
+  const m = /^-----BEGIN ([A-Z0-9 ]+)-----([\s\S]*?)-----END \1-----$/.exec(s);
+  if (!m) return s;
+  const head = [], body = []; // RFC 1421 headers (Proc-Type, DEK-Info) only exist in encrypted legacy keys; keep them verbatim
+  for (const line of m[2].split('\n').map((x) => x.trim()).filter(Boolean)) (/^[A-Za-z-]+:/.test(line) ? head : body).push(line);
+  const b64 = body.join('').replace(/\s+/g, '');
+  const wrapped = b64.match(/.{1,64}/g) || [];
+  return [`-----BEGIN ${m[1]}-----`, ...head, ...(head.length ? [''] : []), ...wrapped, `-----END ${m[1]}-----`, ''].join('\n');
+}
+
 /** Whether the env names the key (presence only; the values are never read here). */
 function wsAuthConfigured(env = process.env) { return !!(env.KALSHI_API_KEY_ID && (env.KALSHI_PRIVATE_KEY_PATH || env.KALSHI_PRIVATE_KEY_PEM)); }
 
@@ -34,7 +50,7 @@ function makeWsAuth(env = process.env, now = () => Date.now()) {
   const keyId = String(env.KALSHI_API_KEY_ID).trim();
   let key;
   try {
-    const pem = env.KALSHI_PRIVATE_KEY_PEM ? String(env.KALSHI_PRIVATE_KEY_PEM).replace(/\\n/g, '\n') : fs.readFileSync(env.KALSHI_PRIVATE_KEY_PATH, 'utf8');
+    const pem = env.KALSHI_PRIVATE_KEY_PEM ? normalizePem(env.KALSHI_PRIVATE_KEY_PEM) : normalizePem(fs.readFileSync(env.KALSHI_PRIVATE_KEY_PATH, 'utf8'));
     key = crypto.createPrivateKey(pem);
   } catch { throw new Error('Kalshi WS auth: the private key could not be read or parsed (check KALSHI_PRIVATE_KEY_PATH / KALSHI_PRIVATE_KEY_PEM)'); }
   const type = key.asymmetricKeyType;
@@ -48,4 +64,4 @@ function makeWsAuth(env = process.env, now = () => Date.now()) {
   };
 }
 
-module.exports = { makeWsAuth, wsAuthConfigured, isKalshiWsUrl, WS_PATH, WS_METHOD, WS_HOSTS };
+module.exports = { makeWsAuth, wsAuthConfigured, isKalshiWsUrl, normalizePem, WS_PATH, WS_METHOD, WS_HOSTS };

@@ -42,7 +42,7 @@ test('ws-sign is the ONLY signing code in the repo, and it cannot sign or send a
   const src = fs.readFileSync(path.join(ROOT, 'server', 'kalshi-auth', 'ws-sign.js'), 'utf8');
   for (const re of [/\bfetch\s*\(/, /require\(['"](https?|net|tls|ws)['"]\)/, /new\s+WebSocket/, /['"`]\/portfolio/, /['"`]\/orders?\b/, /['"](POST|PUT|DELETE|PATCH)['"]/, /console\.|log\(/, /writeFile|appendFile/]) assert.ok(!re.test(src), 'ws-sign.js matches ' + re);
   assert.equal(ws.WS_PATH, '/trade-api/ws/v2'); assert.equal(ws.WS_METHOD, 'GET');
-  assert.deepEqual(Object.keys(ws).sort(), ['WS_HOSTS', 'WS_METHOD', 'WS_PATH', 'isKalshiWsUrl', 'makeWsAuth', 'wsAuthConfigured']);
+  assert.deepEqual(Object.keys(ws).sort(), ['WS_HOSTS', 'WS_METHOD', 'WS_PATH', 'isKalshiWsUrl', 'makeWsAuth', 'normalizePem', 'wsAuthConfigured']);
   assert.ok(ws.isKalshiWsUrl('wss://api.elections.kalshi.com/trade-api/ws/v2')); assert.ok(ws.isKalshiWsUrl('wss://external-api-ws.kalshi.com/trade-api/ws/v2'));
   for (const u of ['wss://evil.example.com/trade-api/ws/v2', 'ws://api.elections.kalshi.com/trade-api/ws/v2', 'wss://api.elections.kalshi.com/trade-api/v2/portfolio/orders', 'https://api.elections.kalshi.com/trade-api/ws/v2', 'wss://u:p@api.elections.kalshi.com/trade-api/ws/v2']) assert.equal(ws.isKalshiWsUrl(u), false, u);
   // no key material or key env names in the browser bundle
@@ -104,4 +104,77 @@ test('disabled by default; enabled without a key → explained health row and no
   } finally { for (const [k, v] of Object.entries(saved)) if (v !== undefined) process.env[k] = v; }
   const r = new KalshiWsRecorder({ store: { write() {} }, health: new Health(), auth: () => ({}), cfg: { url: 'wss://evil.example.com/trade-api/ws/v2' }, WebSocketImpl: FakeWS });
   assert.match(r.problem, /not a Kalshi WebSocket URL/); const n1 = FakeWS.n; r.start(); assert.equal(FakeWS.n, n1);
+});
+
+// ---- H7 key wiring: PEM shapes, KALSHI_ENV, read-only scope, and no key value anywhere in output ----
+const flatten = { lf: (p) => p, crlf: (p) => p.replace(/\n/g, '\r\n'), literal: (p) => p.trim().replace(/\n/g, '\\n'), spaces: (p) => p.trim().replace(/\n/g, ' '), none: (p) => p.trim().replace(/\n/g, ''), padded: (p) => '  ' + p.replace(/\n/g, '\n   ') + '\n\n' };
+
+test('ws-sign: the PEM loads whether it has real newlines, CRLF, literal \\n, spaces or no separators (RSA PKCS#1, PKCS#8, Ed25519)', () => {
+  const keys = [crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }), crypto.generateKeyPairSync('ed25519')];
+  const pems = [[keys[0], keys[0].privateKey.export({ type: 'pkcs1', format: 'pem' })], [keys[0], keys[0].privateKey.export({ type: 'pkcs8', format: 'pem' })], [keys[1], keys[1].privateKey.export({ type: 'pkcs8', format: 'pem' })]];
+  for (const [kp, pem] of pems) for (const [shape, f] of Object.entries(flatten)) {
+    const norm = ws.normalizePem(f(pem)); assert.equal(norm, pem, shape + ' normalizes back to the canonical PEM');
+    const h = ws.makeWsAuth({ KALSHI_API_KEY_ID: 'kid', KALSHI_PRIVATE_KEY_PEM: f(pem) }, () => 7)();
+    const sig = Buffer.from(h['KALSHI-ACCESS-SIGNATURE'], 'base64');
+    const ok = kp.privateKey.asymmetricKeyType === 'ed25519' ? crypto.verify(null, MSG('7'), kp.publicKey, sig)
+      : crypto.verify('sha256', MSG('7'), { key: kp.publicKey, padding: crypto.constants.RSA_PKCS1_PSS_PADDING, saltLength: crypto.constants.RSA_PSS_SALTLEN_DIGEST }, sig);
+    assert.ok(ok, shape);
+  }
+  const f = path.join(tmp(), 'k.pem'); fs.writeFileSync(f, flatten.spaces(pems[0][1])); assert.ok(ws.makeWsAuth({ KALSHI_API_KEY_ID: 'kid', KALSHI_PRIVATE_KEY_PATH: f }), 'a flattened key file loads too');
+  assert.equal(ws.normalizePem('not a pem'), 'not a pem');
+});
+
+test('KALSHI_ENV: prod by default (real markets), demo on request, explicit KALSHI_WS_URL wins; both default URLs pass the WS allowlist', () => {
+  const k = (e) => config.build(e).recorder.kalshiWs;
+  assert.equal(k({}).env, 'prod'); assert.equal(k({}).url, 'wss://api.elections.kalshi.com/trade-api/ws/v2');
+  assert.equal(k({ KALSHI_ENV: 'DEMO' }).env, 'demo'); assert.equal(k({ KALSHI_ENV: 'demo' }).url, 'wss://demo-api.kalshi.co/trade-api/ws/v2');
+  assert.equal(k({ KALSHI_ENV: 'nonsense' }).env, 'prod');
+  assert.equal(k({ KALSHI_WS_URL: 'wss://external-api-ws.kalshi.com/trade-api/ws/v2' }).url, 'wss://external-api-ws.kalshi.com/trade-api/ws/v2');
+  for (const e of [{}, { KALSHI_ENV: 'demo' }]) assert.ok(ws.isKalshiWsUrl(k(e).url));
+});
+
+test('read-only scope, repo-wide: no Kalshi order/portfolio endpoint and no key env read outside the signer', () => {
+  const files = ['server', 'scripts', 'public', 'cloudflare'].flatMap((d) => (fs.existsSync(path.join(ROOT, d)) ? walkJs(path.join(ROOT, d)) : [])).filter((f) => !f.includes('node_modules'));
+  assert.ok(files.length > 50, 'scanned ' + files.length);
+  const ENDPOINT = /['"`][^'"`\n]*\/(portfolio|orders?|batch_orders|order_groups|rfqs|quotes)(\/|\?|['"`])/;
+  for (const f of files) {
+    const src = fs.readFileSync(f, 'utf8'); const rel = path.relative(ROOT, f);
+    assert.ok(!ENDPOINT.test(src), rel + ' names a Kalshi order/portfolio endpoint');
+    if (/env\.(KALSHI_PRIVATE_KEY\w*|KALSHI_API_KEY_ID)\b|env\[['"`]KALSHI_(PRIVATE|API_KEY)/.test(src)) assert.equal(rel, path.join('server', 'kalshi-auth', 'ws-sign.js'), rel + ' reads the Kalshi key env');
+  }
+});
+
+test('key values never appear in logs, the snapshot, the recorder files or any GET API response (engine + fake socket)', async () => {
+  const rsa = crypto.generateKeyPairSync('rsa', { modulusLength: 2048 }); const pem = rsa.privateKey.export({ type: 'pkcs1', format: 'pem' });
+  const KEY_ID = 'a1b2c3d4-sentinel-kalshi-keyid-0000';
+  const body = pem.split('\n').filter((l) => l && !l.startsWith('-----')); const probes = [KEY_ID, ...body.filter((_, i) => i % 5 === 0), body.join('')];
+  const saved = {}; const KEYS = { KALSHI_API_KEY_ID: KEY_ID, KALSHI_PRIVATE_KEY_PEM: flatten.spaces(pem) };
+  for (const k of [...Object.keys(KEYS), 'KALSHI_PRIVATE_KEY_PATH']) { saved[k] = process.env[k]; delete process.env[k]; } Object.assign(process.env, KEYS);
+  const logs = []; const origLog = console.log, origErr = console.error, origWarn = console.warn;
+  console.log = console.error = console.warn = (...a) => logs.push(a.map(String).join(' '));
+  const dir = tmp(); let srv, e;
+  try {
+    const { Engine } = require('../server/engine'); const modules = require('../server/modules'); const { createServer } = require('../server/server');
+    const cfg = config.build({ KALSHI_WS: 'true', KALSHI_WS_CF_INDEX: 'true', RECORDER_DIR: path.join(dir, 'rec'), CREDITS_FILE: '', ODDS_CACHE_FILE: '', BET_RULES_FILE: '', LAB_FILE: '', INBOX_STATE_FILE: '' });
+    if (cfg.lab) cfg.lab.file = '';
+    e = new Engine(cfg, { modules }); const kws = e.recorder.kws; assert.equal(kws.problem, null, 'key accepted');
+    kws.kalshi = { live: () => [{ tk: 'KXBTC15M-A' }] }; kws.WebSocketImpl = FakeWS; kws.log = (m) => logs.push(m); kws.store.start();
+    kws.start(); const s = FakeWS.last; assert.equal(s.opts.headers['KALSHI-ACCESS-KEY'], KEY_ID, 'the key id goes only into the handshake header');
+    s.readyState = 1; s.onopen(); const rx = (o) => s.onmessage({ data: JSON.stringify(o) });
+    rx({ type: 'subscribed', id: 1, msg: { channel: 'trade', sid: 2 } });
+    rx({ type: 'trade', sid: 2, seq: 1, sending_ts_ms: 1793386800700, msg: { trade_id: 'tr-1', market_ticker: 'KXBTC15M-A', yes_price_dollars: '0.5', no_price_dollars: '0.5', count_fp: '1.00', taker_side: 'yes', taker_outcome_side: 'yes', taker_book_side: 'ask', ts_ms: 1793386800600 } });
+    rx({ type: 'error', id: 9, msg: { code: 9, msg: 'Authentication required' } }); s.onclose(); kws.stop(); kws.store.stop();
+    srv = createServer(e, config.publicFlags(cfg)); await new Promise((r) => srv.listen(0, '127.0.0.1', r)); const port = srv.address().port;
+    const outputs = [JSON.stringify(e.snapshot()), JSON.stringify(kws.view()), logs.join('\n')];
+    for (const g of ['/api/health', '/api/state', '/api/explain', '/api/providers', '/api/storage']) outputs.push(await new Promise((res) => require('http').get({ host: '127.0.0.1', port, path: g }, (r) => { let d = ''; r.on('data', (c) => { d += c; }); r.on('end', () => res(d)); })));
+    const files = (function walk(d) { return fs.readdirSync(d, { withFileTypes: true }).flatMap((x) => (x.isDirectory() ? walk(path.join(d, x.name)) : [path.join(d, x.name)])); })(dir);
+    assert.ok(files.length, 'recorder wrote files'); for (const f of files) outputs.push(fs.readFileSync(f).toString('latin1'), require('zlib').gunzipSync(fs.readFileSync(f), { finishFlush: require('zlib').constants.Z_SYNC_FLUSH }).toString?.() || '');
+    assert.ok(outputs.join('\n').includes('tr-1'), 'the trade row was recorded and is visible to the scan');
+    for (const o of outputs) for (const p of probes) assert.ok(!o.includes(p), 'key material leaked into output: ' + o.slice(0, 60));
+    assert.ok(!outputs.join('\n').includes('KALSHI-ACCESS-SIGNATURE'));
+  } finally {
+    console.log = origLog; console.error = origErr; console.warn = origWarn;
+    if (srv) await new Promise((r) => srv.close(r)); if (e && e.stop) e.stop();
+    for (const k of Object.keys(saved)) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
+  }
 });

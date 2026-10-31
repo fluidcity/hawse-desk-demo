@@ -33,13 +33,13 @@ function checkOutgoing(f) {
 
 class KalshiWsRecorder {
   constructor({ store, health, cfg = {}, auth = null, kalshi = null, gap = () => {}, now = () => Date.now(), WebSocketImpl, log = (m) => console.log(m) }) {
-    this.c = { url: 'wss://api.elections.kalshi.com/trade-api/ws/v2', cfIndex: false, indexIds: ['BRTI', 'ETHUSD_RTI', 'SOLUSD_RTI', 'XRPUSD_RTI'], syncMs: 5000, kinds: ['crypto'], ...cfg };
+    this.c = { url: 'wss://api.elections.kalshi.com/trade-api/ws/v2', env: 'prod', cfIndex: false, indexIds: ['BRTI', 'ETHUSD_RTI', 'SOLUSD_RTI', 'XRPUSD_RTI'], syncMs: 5000, kinds: ['crypto'], ...cfg };
     Object.assign(this, { store, health, auth, kalshi, gap, now, log, WebSocketImpl });
     this.n = { snap: 0, delta: 0, trade: 0, cf: 0, seqGaps: 0, errors: 0, sent: 0 }; this.errCodes = {}; this.sids = {}; this.seq = {}; this.subscribed = new Set(); this.pending = new Set();
     this.msgId = 0; this.timers = []; this.running = false; this.lastCf = {}; this.downSince = null;
     this.problem = !auth ? 'no Kalshi key configured (set KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH or _PEM; see docs/kalshi-api-key.md)' : !isKalshiWsUrl(this.c.url) ? 'KALSHI_WS_URL is not a Kalshi WebSocket URL' : null;
     health.register('rec.kalshi.ws', { label: 'Recorder · Kalshi WebSocket (orderbook_delta + trade' + (this.c.cfIndex ? ' + CF index' : '') + ')', group: 'recorder',
-      note: this.problem || 'authenticated read-only market-data socket; read-only key; the REST poller keeps running alongside', staleMs: 60000 });
+      note: this.problem || `Kalshi ${this.c.env} · authenticated market-data socket (handshake signature only; no order/portfolio calls) · the REST poller keeps running alongside`, staleMs: 60000 });
     if (this.problem) health.fail('rec.kalshi.ws', this.problem);
   }
   send(cl, f) { checkOutgoing(f); this.n.sent++; cl.send(f); }
@@ -88,8 +88,8 @@ class KalshiWsRecorder {
     }
     const ex = num(j.sending_ts_ms);
     if (j.type === 'orderbook_snapshot') { this.n.snap++; this.subscribed.add(m.market_ticker); this.store.write('kalshi.ws.book', { t: 'snap', tk: m.market_ticker, clock: m.clock, seq: j.seq, ex, yes: levels(m.yes_dollars_fp), no: levels(m.no_dollars_fp) }); return ex; }
-    if (j.type === 'orderbook_delta') { this.n.delta++; const e = num(m.ts_ms) || ex; this.store.write('kalshi.ws.book', { t: 'delta', tk: m.market_ticker, clock: m.clock, seq: j.seq, ex: e, side: m.side, p: num(m.price_dollars), d: num(m.delta_fp) }); return e; }
-    if (j.type === 'trade') { this.n.trade++; const e = num(m.ts_ms) || ex; this.store.write('kalshi.ws.trade', { t: 'trade', tk: m.market_ticker, id: m.trade_id, ex: e, yp: num(m.yes_price_dollars), np: num(m.no_price_dollars), n: num(m.count_fp), side: m.taker_side, block: !!m.is_block_trade }); return e; }
+    if (j.type === 'orderbook_delta') { this.n.delta++; const e = num(m.ts_ms) || ex; this.store.write('kalshi.ws.book', { t: 'delta', tk: m.market_ticker, clock: m.clock, seq: j.seq, ex: e, sx: ex, side: m.side, p: num(m.price_dollars), d: num(m.delta_fp) }); return e; }
+    if (j.type === 'trade') { this.n.trade++; const e = num(m.ts_ms) || ex; this.store.write('kalshi.ws.trade', { t: 'trade', tk: m.market_ticker, id: m.trade_id, ex: e, sx: ex, yp: num(m.yes_price_dollars), np: num(m.no_price_dollars), n: num(m.count_fp), side: m.taker_side, oside: m.taker_outcome_side || null, bside: m.taker_book_side || null, block: !!m.is_block_trade }); return e; }
     if (j.type === 'cfbenchmarks_value') {
       this.n.cf++; let v = null, src = null; try { const d = JSON.parse(m.data); v = num(d.value); src = num(d.time); } catch { /* raw frame kept below */ }
       const a60 = m.avg_60s_data ? num(m.avg_60s_data.value) : null; const q = m.last_60s_windowed_average_15min;
@@ -99,6 +99,6 @@ class KalshiWsRecorder {
     return null;
   }
   resnap() { const cl = this.client; const sid = this.sids.orderbook_delta; const tks = [...this.subscribed]; if (cl && cl.open && sid != null && tks.length) this.send(cl, { id: this.next(), cmd: 'update_subscription', params: { sid, action: 'get_snapshot', market_tickers: tks } }); }
-  view() { return { enabled: true, problem: this.problem, cfIndex: !!this.c.cfIndex, socket: this.client ? this.client.view() : null, counts: this.n, errCodes: this.errCodes, markets: this.subscribed.size, cf: this.lastCf }; }
+  view() { return { enabled: true, env: this.c.env, problem: this.problem, cfIndex: !!this.c.cfIndex, socket: this.client ? this.client.view() : null, counts: this.n, errCodes: this.errCodes, markets: this.subscribed.size, cf: this.lastCf }; }
 }
 module.exports = { KalshiWsRecorder, checkOutgoing, ALLOWED_CHANNELS, ALLOWED_CMDS, ALLOWED_ACTIONS };

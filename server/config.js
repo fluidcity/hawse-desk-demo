@@ -1,4 +1,8 @@
 'use strict';
+// H7: Kalshi WS environment. 'prod' (real markets, default) or 'demo'. A key only authenticates on the environment it
+// was created in; the REST recorder always reads prod public data, so a demo WS would record different markets.
+const KALSHI_WS_URLS = { prod: 'wss://api.elections.kalshi.com/trade-api/ws/v2', demo: 'wss://demo-api.kalshi.co/trade-api/ws/v2' };
+const kalshiEnv = (v) => (String(v || 'prod').trim().toLowerCase() === 'demo' ? 'demo' : 'prod');
 // Server-side configuration. Secrets are read from process.env (optionally
 // populated from a local, gitignored .env file). Nothing in this module is
 // ever serialized to the browser except the booleans in publicFlags().
@@ -109,7 +113,7 @@ function build(env = process.env) {
         series: list(env.RECORDER_KALSHI_SERIES, ['KXBTC15M', 'KXETH15M', 'KXSOL15M', 'KXXRP15M']), extraSeries: list(env.RECORDER_KALSHI_EXTRA_SERIES, ['KXNFLGAME', 'KXNBAGAME', 'KXNHLGAME', 'KXBTCD']),
         extraTop: num(env.RECORDER_KALSHI_EXTRA_TOP, 12), bookMs: Math.max(500, num(env.RECORDER_KALSHI_BOOK_MS, 1000)), tradesMs: Math.max(1000, num(env.RECORDER_KALSHI_TRADES_MS, 2000)), maxRps: Math.min(15, num(env.RECORDER_KALSHI_MAX_RPS, 10)) },
       // H7: optional authenticated read-only Kalshi WebSocket (orderbook_delta + trade; CF index opt-in). Needs a key: docs/kalshi-api-key.md.
-      kalshiWs: { enabled: bool(env.KALSHI_WS, false), url: env.KALSHI_WS_URL || 'wss://api.elections.kalshi.com/trade-api/ws/v2', cfIndex: bool(env.KALSHI_WS_CF_INDEX, false),
+      kalshiWs: { enabled: bool(env.KALSHI_WS, false), env: kalshiEnv(env.KALSHI_ENV), url: env.KALSHI_WS_URL || KALSHI_WS_URLS[kalshiEnv(env.KALSHI_ENV)], cfIndex: bool(env.KALSHI_WS_CF_INDEX, false),
         indexIds: list(env.KALSHI_WS_CF_INDEX_IDS, ['BRTI', 'ETHUSD_RTI', 'SOLUSD_RTI', 'XRPUSD_RTI']), kinds: bool(env.KALSHI_WS_EXTRA, false) ? ['crypto', 'extra'] : ['crypto'] },
       polymarket: { enabled: bool(env.RECORDER_POLYMARKET, true), assets: list(env.RECORDER_POLY_ASSETS, ['btc', 'eth', 'sol', 'xrp']), topN: num(env.RECORDER_POLY_TOP, 10), bookMs: Math.max(1000, num(env.RECORDER_POLY_BOOK_MS, 2000)) },
       ref: { enabled: bool(env.RECORDER_REF, true), venues: list(env.RECORDER_REF_VENUES, ['coinbase', 'kraken', 'bitstamp', 'gemini', 'cryptocom', 'bullish']), assets: list(env.RECORDER_REF_ASSETS, ['BTC', 'ETH', 'SOL', 'XRP']) },

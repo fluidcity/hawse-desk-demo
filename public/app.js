@@ -821,7 +821,7 @@ window.HAWSE.explain = (() => {
   // Live P&L for the frozen H2 test (display only, paper fills only). Realized and unrealized are kept apart.
   // v1-v3 charts: shown front and center, one after another, right under the real-data book (display only).
   function setH2Chart(id, title, svg) {
-    const sec = $('h2Charts'), el = $(id); if (!sec || !el) return;
+    const el = $(id), sec = el && el.closest('section'); if (!sec) return; // each chart is its own movable card (#h2cV1Card…)
     el.innerHTML = `<div class="h2c-title mono">${title} <span class="badge live">PAPER</span></div>${svg}`; sec.hidden = false;
   }
   function h2Pnl(H, c, pc) {

@@ -32,16 +32,37 @@
       <span class="gatechip" id="gateChip">GATE —</span>
       <button type="button" class="gatechip stalechip" id="staleChip" hidden title="Feeds that delivered before but not within their freshness window">STALE —</button>
       <span class="clock mono" id="clock">--:--:--</span>
+      <button type="button" class="btn sm" id="layoutBtn" aria-haspopup="dialog" aria-expanded="false" title="Show, hide and reorder cards">▦ Cards</button>
       <button type="button" class="btn sm" id="settingsBtn" title="Settings · Data sources">⚙ Sources</button>
       <button type="button" class="btn hot sm" id="haltBtn">HALT</button>
     </div>
   </header>
 
+  <div class="layout-panel" id="layoutPanel" role="dialog" aria-label="Cards: show, hide, reorder, saved views" hidden>
+    <div class="lp-h"><b>Cards</b> <span class="dim mono sm" id="lpCount"></span><button type="button" class="lp-x" id="lpClose" aria-label="Close">×</button></div>
+    <div class="lp-row">
+      <button type="button" class="btn sm lp-edit" id="lpEdit" aria-pressed="false">✥ Edit layout: off</button>
+      <button type="button" class="btn sm" id="lpShowAll">Show all</button>
+      <button type="button" class="btn sm" id="lpHideAll">Hide all</button>
+      <button type="button" class="btn sm ghost" id="lpReset">Reset to default order</button>
+    </div>
+    <div class="dim sm lp-hint">Tick to show, untick to hide. In edit mode, drag a card by its ✥ handle, or use ↑ ↓ here. Changes save automatically on this device. Cards marked "no data" show up on their own once they have data.</div>
+    <ul class="lp-list" id="lpList"></ul>
+    <div class="lp-sec">Saved views</div>
+    <div class="lp-row"><input type="text" id="lpViewName" maxlength="40" placeholder="view name, e.g. phone" aria-label="View name" /><button type="button" class="btn sm" id="lpSaveView">Save view as…</button></div>
+    <ul class="lp-views" id="lpViews"></ul>
+    <details class="lp-io"><summary class="lp-sec">Copy to another device (JSON)</summary>
+      <textarea id="lpJson" rows="4" spellcheck="false" aria-label="Layout JSON"></textarea>
+      <div class="lp-row"><button type="button" class="btn sm" id="lpExport">Copy layout</button><button type="button" class="btn sm" id="lpImport">Import pasted layout</button><span class="sm dim" id="lpMsg"></span></div>
+    </details>
+  </div>
+
   <div class="ticker" aria-label="Live prices"><div class="ticker-track" id="ticker"></div></div>
 
   <main id="liveView" class="shell">
-    <section class="deskpnl card" id="deskPnl" aria-label="Desk P&amp;L"><div class="dim mono sm">waiting for desk state…</div></section>
-    <section class="hero card">
+    <div class="grid board" id="board">
+    <section class="deskpnl card" id="deskPnl" aria-label="Desk P&amp;L" data-card-id="desk-pnl" data-card-name="Desk P&amp;L"><div class="dim mono sm">waiting for desk state…</div></section>
+    <section class="hero card" data-card-id="equity" data-card-name="Paper equity (hero chart)">
       <div class="hero-left">
         <div class="label">Paper equity · real-data book</div>
         <div class="equity mono" id="equity">$—</div>
@@ -59,39 +80,34 @@
       </div>
     </section>
 
-    <div class="grid h2-top" id="h2Top">
-      <section class="card h2-charts" id="h2Charts" aria-label="Kalshi H2 v1 to v3 charts" hidden>
-        <div id="h2cV1" class="h2c"></div>
-        <div id="h2cV2" class="h2c"></div>
-        <div id="h2cV3" class="h2c"></div>
-      </section>
-      <section class="card a-follow a-h2" id="h2Card" hidden>
+      <section class="card h2-charts" id="h2cV1Card" aria-label="Kalshi H2 v1 chart" data-card-id="h2-chart-v1" data-card-name="H2 v1 chart" hidden><div id="h2cV1" class="h2c"></div></section>
+      <section class="card h2-charts" id="h2cV2Card" aria-label="Kalshi H2 v2 chart" data-card-id="h2-chart-v2" data-card-name="H2 v2 chart" hidden><div id="h2cV2" class="h2c"></div></section>
+      <section class="card h2-charts" id="h2cV3Card" aria-label="Kalshi H2 v3 chart" data-card-id="h2-chart-v3" data-card-name="H2 v3 chart" hidden><div id="h2cV3" class="h2c"></div></section>
+      <section class="card a-follow a-h2" id="h2Card" data-card-id="h2-v1" data-card-name="Kalshi H2 v1 forward test" hidden>
         <div class="card-h"><h2>Kalshi H2 forward test <span class="dim">· YES 93–97.9¢ with 6–10 min left · frozen</span> <span class="badge sim">PAPER · NOT REAL MONEY</span></h2><span class="dim mono sm" id="h2Mode"></span></div>
         <div id="h2Body"></div>
         <div id="h2Rows" class="tbl"></div>
       </section>
 
-      <section class="card a-follow a-h2" id="h2v2Card" hidden>
+      <section class="card a-follow a-h2" id="h2v2Card" data-card-id="h2-v2" data-card-name="Kalshi H2 v2 arm" hidden>
         <div class="card-h"><h2>Kalshi H2 v2 arm <span class="dim">· v1 signals, skip if max earlier YES ask &lt; 87¢ · frozen</span> <span class="badge sim">PAPER · NOT REAL MONEY</span> <span class="badge stale" id="h2v2Badge">UNPROVEN</span></h2><span class="dim mono sm" id="h2v2Mode"></span></div>
         <div id="h2v2Body"></div>
         <div id="h2v2Rows" class="tbl"></div>
       </section>
 
-      <section class="card a-follow a-h2" id="h2v3Card" hidden>
+      <section class="card a-follow a-h2" id="h2v3Card" data-card-id="h2-v3" data-card-name="Kalshi H2 v3 arm" hidden>
         <div class="card-h"><h2>Kalshi H2 v3 arm <span class="dim">· v2 decisions + size caps (3% / 7% of $10k paper) · frozen</span> <span class="badge sim">PAPER · NOT REAL MONEY</span> <span class="badge stale" id="h2v3Badge">UNPROVEN</span></h2><span class="dim mono sm" id="h2v3Mode"></span></div>
         <div id="h2v3Body"></div>
         <div id="h2v3Cap"></div>
         <div id="h2v3Rows" class="tbl"></div>
       </section>
-    </div>
 
-    <div class="grid">
-      <section class="card a-strats">
+      <section class="card a-strats" data-card-id="strategies" data-card-name="Strategies">
         <div class="card-h"><h2>Strategies</h2><span class="dim mono sm">arm/disarm · own PnL · skip reasons</span></div>
         <div id="strats" class="strats"></div>
       </section>
 
-      <section class="card a-risk">
+      <section class="card a-risk" data-card-id="risk" data-card-name="Portfolio risk gate">
         <div class="card-h"><h2>Portfolio risk gate</h2><span class="dim mono sm" id="riskTs"></span></div>
         <div id="riskBody"></div>
         <form id="riskForm" class="riskform">
@@ -105,7 +121,7 @@
         </div>
       </section>
 
-      <section class="card a-funding">
+      <section class="card a-funding" data-card-id="funding" data-card-name="Perp funding heatmap">
         <div class="card-h"><h2>Perp funding heatmap <span class="dim">· APR</span></h2><span class="dim mono sm" id="fundTs"></span></div>
         <div id="fundHeat" class="heat"></div>
         <div class="subh" id="fundGates">Best pairs after fees · slippage · basis buffer</div>
@@ -114,55 +130,55 @@
         <div id="fundScore" class="fund-score"></div>
       </section>
 
-      <section class="card a-attr">
+      <section class="card a-attr" data-card-id="attribution" data-card-name="PnL attribution">
         <div class="card-h"><h2>PnL attribution</h2><span class="dim mono sm">net of fees & slippage</span></div>
         <div id="attr"></div>
         <div class="subh">Open positions</div>
         <div id="positions" class="tbl"></div>
       </section>
 
-      <section class="card a-whale" id="whaleCard" hidden>
+      <section class="card a-whale" id="whaleCard" data-card-id="whale" data-card-name="Whale flow" hidden>
         <div class="card-h"><h2>Whale flow <span class="dim">· large tx</span></h2><span class="dim mono sm" id="whaleMode"></span></div>
         <div id="whaleNet" class="whalenet"></div>
         <div id="whales" class="tbl whales"></div>
       </section>
 
-      <section class="card a-follow" id="followCard" hidden>
+      <section class="card a-follow" id="followCard" data-card-id="wallet-follow" data-card-name="Wallet follow" hidden>
         <div class="card-h"><h2>Wallet follow v2 <span class="dim">· tracked wallets vs controls</span></h2><span class="dim mono sm" id="followMode"></span></div>
         <div id="followSig" class="tbl"></div>
         <div id="followScore" class="tbl"></div>
       </section>
 
-      <section class="card a-follow a-mev" id="mevCard" hidden>
+      <section class="card a-follow a-mev" id="mevCard" data-card-id="mempool" data-card-name="Mempool lab" hidden>
         <div class="card-h"><h2>Mempool lab <span class="dim">· Ethereum sandwich / back-run model vs truth</span> <span class="badge sim">SIM ONLY · MEASUREMENT</span></h2><span class="dim mono sm" id="mevMode"></span></div>
         <div id="mevMetrics"></div>
         <div id="mevEvents" class="tbl"></div>
       </section>
 
-      <section class="card a-gaps" id="gapCard" hidden>
+      <section class="card a-gaps" id="gapCard" data-card-id="dex-gaps" data-card-name="DEX price gaps" hidden>
         <div class="card-h"><h2>DEX price gaps</h2><span class="dim mono sm" id="gapMode"></span></div>
         <div id="gapHeat"></div>
         <div id="gapTri" class="tbl"></div>
       </section>
 
-      <section class="card a-onepct" id="onepctCard" hidden>
+      <section class="card a-onepct" id="onepctCard" data-card-id="onepct" data-card-name="1% compounding" hidden>
         <div class="card-h"><h2>1% compounding</h2><span class="dim mono sm" id="onepctMode"></span></div>
         <div id="onepct"></div>
       </section>
 
-      <section class="card a-perps" id="perpCard" hidden>
+      <section class="card a-perps" id="perpCard" data-card-id="perps" data-card-name="Crypto perps" hidden>
         <div class="card-h"><h2>Crypto perps · momentum &amp; basis</h2><span class="dim mono sm" id="perpMode"></span></div>
         <div id="perpMom" class="tbl"></div>
         <div id="perpBasis" class="tbl"></div>
       </section>
 
-      <section class="card a-fut" id="futCard" hidden>
+      <section class="card a-fut" id="futCard" data-card-id="cme-micros" data-card-name="CME micros · ORB" hidden>
         <div class="card-h"><h2>CME micros · ORB</h2><span class="dim mono sm" id="futMode"></span></div>
         <canvas id="futChart" class="futchart"></canvas>
         <div id="futBody"></div>
       </section>
 
-      <section class="card a-bet" id="betCard" hidden>
+      <section class="card a-bet" id="betCard" data-card-id="betting" data-card-name="Sports betting" hidden>
         <div class="card-h"><h2>Sports betting · line shopping, +EV, arbs, CLV</h2><span class="dim mono sm" id="betMode"></span></div>
         <div class="bet-warn" id="betWarn"></div>
         <div class="bet-grid">
@@ -172,28 +188,28 @@
         <div id="betLedger" class="tbl"></div>
       </section>
 
-      <section class="card a-bet bd" id="betDesk" hidden>
+      <section class="card a-bet bd" id="betDesk" data-card-id="bet-desk" data-card-name="Bet rules → slips" hidden>
         <div class="card-h"><h2>Bet rules → signals → slips · you place bets yourself</h2><span class="dim mono sm" id="bdMode"></span></div>
         <div class="bet-warn">PAPER / MANUAL ONLY. Rules raise <b>signals</b> for you to review; a <b>slip</b> is a printable note you take to Kalshi or a sportsbook yourself. Nothing is placed automatically. Venue links are disabled stubs. SIM-tagged signals came from MOCK odds or MOCK player stats.</div>
         <div class="tabs" role="tablist"><button type="button" class="tab on" data-bdtab="signals">Signals</button><button type="button" class="tab" data-bdtab="rules">Rules</button><button type="button" class="tab" data-bdtab="import">Import</button><button type="button" class="tab" data-bdtab="venues">Venue links</button></div>
         <div id="bdBody"></div>
       </section>
 
-      <section class="card a-follow a-rec" id="recCard" hidden>
+      <section class="card a-follow a-rec" id="recCard" data-card-id="recorder" data-card-name="Market-data recorder" hidden>
         <div class="card-h"><h2>Market-data recorder <span class="dim">· Kalshi · Polymarket · spot reference · odds</span> <span class="badge sim">RECORD ONLY · NO ORDERS</span></h2><span class="dim mono sm" id="recMode"></span></div>
         <div id="recMetrics"></div>
         <div id="recMarkets" class="tbl"></div>
         <div id="recGaps" class="tbl"></div>
       </section>
 
-      <section class="card a-follow a-rec a-health" id="storCard" hidden>
+      <section class="card a-follow a-rec a-health" id="storCard" data-card-id="storage" data-card-name="Storage · disk &amp; memory" hidden>
         <div class="card-h"><h2>Storage · disk &amp; memory <span class="dim">· fill bars (warn 70% · crit 90%)</span></h2><span class="dim mono sm" id="storMode"></span></div>
         <div id="storBars"></div>
         <div class="subh" id="storCtl"><label class="sm">Recorder cap (GiB) <input id="storCap" type="number" step="0.5" min="1" style="width:80px"></label> <button type="button" class="btn sm" id="storApply">Apply now</button> <span class="dim sm" id="storMsg"></span></div>
         <div id="storLog" class="tbl"></div>
       </section>
 
-      <section class="card a-health" id="dataSources">
+      <section class="card a-health" id="dataSources" data-card-id="data-sources" data-card-name="Settings · Data sources">
         <div class="card-h"><h2>Settings · Data sources</h2><span class="dim mono sm" id="healthSum"></span></div>
         <div class="tabs" role="tablist"><button type="button" class="tab on" data-dtab="providers">Providers</button><button type="button" class="tab" data-dtab="feeds">Feeds · latency · staleness</button></div>
         <p class="dim sm keynote">Keys are read server-side from env vars only. This panel shows env var <b>names</b> and whether they are set, never values. Set them in <code>.env</code> and restart <code>npm start</code>.</p>
@@ -201,7 +217,7 @@
         <div id="health" class="tbl" hidden></div>
       </section>
 
-      <section class="card a-lab" id="labCard">
+      <section class="card a-lab" id="labCard" data-card-id="lab" data-card-name="Strategy lab">
         <div class="card-h"><h2>Strategy lab · editor · backtest · side-by-side paper runs</h2>
           <div class="tabs" role="tablist">
             <button type="button" class="tab on" data-ltab="library">Templates</button>
@@ -238,7 +254,7 @@
         </div>
       </section>
 
-      <section class="card a-tape">
+      <section class="card a-tape" data-card-id="tape" data-card-name="Live tape">
         <div class="card-h"><h2>Live tape</h2>
           <div class="chips" id="tapeChips">
             <button type="button" class="chip on" data-f="all">all</button>
@@ -262,6 +278,7 @@
   <script src="app.js"></script>
   <script src="lab.js"></script>
   <script src="betting/betting.js"></script>
+  <script src="layout.js"></script>
   <div class="slip-modal" id="slipModal" hidden role="dialog" aria-modal="true" aria-label="Bet slip">
     <div class="slip-sheet"><div id="slipBody"></div>
       <div class="slip-actions no-print"><button type="button" class="btn sm" data-slip="print">Print</button><button type="button" class="btn sm" data-slip="copy">Copy text</button><button type="button" class="btn sm" data-slip="txt">Download .txt</button><button type="button" class="btn sm" data-slip="json">Download .json</button><button type="button" class="btn sm ghost" data-slip="close">Close</button><span id="slipCopyMsg" class="sm dim"></span></div>

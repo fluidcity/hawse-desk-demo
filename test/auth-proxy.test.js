@@ -7,7 +7,7 @@ const assert = require('node:assert');
 const http = require('http');
 const fs = require('fs');
 const path = require('path');
-const { createProxy, config, policy } = require('../scripts/auth-proxy');
+const { createProxy, config, policy, csrf } = require('../scripts/auth-proxy');
 
 const TOKEN = 'tEsT-' + 'x'.repeat(19) + '-proxy-0123456789'; // >= 24 chars, test-only
 const listen = (srv) => new Promise((r) => srv.listen(0, '127.0.0.1', () => r(srv.address().port)));
@@ -123,7 +123,7 @@ test('forwarding strips the token and session cookie; other headers, methods and
     assert.strictEqual(r.status, 200); assert.strictEqual(r.headers['x-up'], '1'); assert.strictEqual(r.headers['x-frame-options'], 'DENY');
     assert.strictEqual(seen.url, '/api/state?x=1'); assert.strictEqual(seen.h.authorization, undefined); assert.strictEqual(seen.h.cookie, 'theme=dark; other=1');
     assert.strictEqual(seen.h.host, `127.0.0.1:${uport}`); assert.ok(!JSON.stringify(seen.h).includes(TOKEN)); assert.ok(!JSON.stringify(seen.h).includes(cookie.split('=')[1]));
-    r = await req(port, '/api/risk', { method: 'POST', headers: { cookie, 'content-type': 'application/json' }, body: '{"dailyLossPct":3}' });
+    r = await req(port, '/api/risk', { method: 'POST', headers: { cookie, 'content-type': 'application/json', origin: `http://127.0.0.1:${port}` }, body: '{"dailyLossPct":3}' });
     assert.strictEqual(r.status, 200); assert.strictEqual(seen.m, 'POST'); assert.strictEqual(seen.b, '{"dailyLossPct":3}'); assert.strictEqual(seen.h.cookie, undefined);
   } finally { await close(proxy); await close(up); }
 });
@@ -153,4 +153,55 @@ test('static: token never in the client; constant-time compare; no token logging
   const a = fs.readFileSync(path.join(__dirname, '..', 'server', 'auth.js'), 'utf8'), p = fs.readFileSync(path.join(__dirname, '..', 'scripts', 'auth-proxy.js'), 'utf8');
   assert.match(a, /timingSafeEqual/);
   for (const src of [a, p]) for (const line of src.split('\n')) if (/console\.(log|error)|log\(/.test(line)) assert.ok(!/cfg\.token|\btoken\b(?!\s*REQUIRED)/.test(line.replace(/token REQUIRED/g, '').replace(/HAWSE_ACCESS_TOKEN/g, '')), line.trim());
+});
+
+test('csrf: forwarded POSTs need JSON and a same-origin signal; cookie sessions always need one', () => {
+  const R = (h) => ({ headers: { host: 'hawse-box.tail.ts.net', 'content-type': 'application/json', ...h } });
+  assert.strictEqual(csrf(R({ origin: 'https://hawse-box.tail.ts.net' }), 'cookie'), null);
+  assert.strictEqual(csrf(R({ 'sec-fetch-site': 'same-origin' }), 'cookie'), null);
+  assert.strictEqual(csrf(R({}), 'bearer'), null); // curl/scripts with the token, no browser headers
+  for (const h of [{ origin: 'https://evil.example' }, { origin: 'null' }, { origin: 'not a url' }, { origin: 'https://hawse-box.tail.ts.net.evil.example' }, { 'sec-fetch-site': 'cross-site' }, { 'sec-fetch-site': 'same-site' }, {}])
+    assert.strictEqual(csrf(R(h), 'cookie')[0], 403, JSON.stringify(h));
+  assert.strictEqual(csrf(R({ origin: 'https://evil.example' }), 'bearer')[0], 403); // a browser on another site can't ride a bearer either
+  assert.strictEqual(csrf(R({ 'content-type': 'text/plain', origin: 'https://hawse-box.tail.ts.net' }), 'cookie')[0], 415);
+  assert.strictEqual(csrf(R({ 'content-type': 'application/x-www-form-urlencoded', origin: 'https://hawse-box.tail.ts.net' }), 'cookie')[0], 415);
+});
+
+test('HAWSE_PROXY_ALLOW_POST=arm,halt,resume: dashboard buttons work with the cookie + same Origin; arm persists; everything else stays blocked', async () => {
+  const config_ = require('../server/config'); const { Engine } = require('../server/engine'); const modules = require('../server/modules'); const { createServer } = require('../server/server');
+  const tmp = fs.mkdtempSync(path.join(require('os').tmpdir(), 'hawse-proxy-arm-')); const armedFile = path.join(tmp, 'state', 'armed.json');
+  const cfg = config_.build({ CREDITS_FILE: '', ODDS_CACHE_FILE: '', BET_RULES_FILE: '', LAB_FILE: '', INBOX_STATE_FILE: '', KALSHI_H2_DIR: path.join(tmp, 'h2'), RECORDER_DIR: path.join(tmp, 'rec'), STORAGE_DATA_DIR: tmp, ARMED_STATE_FILE: armedFile });
+  if (cfg.lab) cfg.lab.file = '';
+  const engine = new Engine(cfg, { modules }); engine.restoreArmed(); // not started (no feeds/network); just load the (missing) armed file
+  const desk = createServer(engine, config_.publicFlags(cfg)); const dport = await listen(desk);
+  const pcfg = config({ HAWSE_ACCESS_TOKEN: TOKEN, HAWSE_PROXY_UPSTREAM: `http://127.0.0.1:${dport}`, HAWSE_PROXY_ALLOW_POST: 'arm,halt,resume' });
+  assert.deepStrictEqual([...pcfg.allowPost].sort(), ['arm', 'halt', 'resume']);
+  const proxy = createProxy(pcfg, { log: () => {} }); const port = await listen(proxy);
+  try {
+    const login = await req(port, '/login', form(TOKEN)); const cookie = login.headers['set-cookie'][0].split(';')[0];
+    const id = engine.strategies[0].id; const origin = `http://127.0.0.1:${port}`;
+    const post = (p, body = '{}', h = {}) => req(port, p, { method: 'POST', headers: { cookie, 'content-type': 'application/json', origin, ...h }, body });
+    // what public/app.js sends: same-origin fetch, JSON body, cookie
+    let r = await post(`/api/strategy/${id}/arm`, '{"armed":true}'); assert.strictEqual(r.status, 200, r.body); assert.deepStrictEqual(JSON.parse(r.body), { ok: true, persisted: true });
+    assert.strictEqual(engine.strategy(id).armed, true); assert.strictEqual(JSON.parse(fs.readFileSync(armedFile, 'utf8')).armed[id], true);
+    r = await post(`/api/strategy/${id}/arm`, '{"armed":false}'); assert.strictEqual(r.status, 200); assert.strictEqual(JSON.parse(fs.readFileSync(armedFile, 'utf8')).armed[id], false);
+    r = await post('/api/strategy/no_such_strategy/arm', '{"armed":true}'); assert.strictEqual(r.status, 404);
+    r = await post('/api/halt'); assert.strictEqual(r.status, 200); assert.strictEqual(engine.gates.real.manual, true);
+    r = await post('/api/resume'); assert.strictEqual(r.status, 200); assert.strictEqual(engine.gates.real.manual, false);
+    // sec-fetch-site instead of Origin also counts as same-origin
+    r = await req(port, '/api/halt', { method: 'POST', headers: { cookie, 'content-type': 'application/json', 'sec-fetch-site': 'same-origin' }, body: '{}' }); assert.strictEqual(r.status, 200);
+    await post('/api/resume');
+    // CSRF: cross-origin / no-origin / non-JSON cookie POSTs refused before reaching the desk
+    for (const h of [{ origin: 'https://evil.example' }, { origin: undefined }, { 'content-type': 'text/plain' }]) {
+      const hh = { cookie, 'content-type': 'application/json', origin, ...h }; if (hh.origin === undefined) delete hh.origin;
+      r = await req(port, `/api/strategy/${id}/arm`, { method: 'POST', headers: hh, body: '{"armed":true}' }); assert.ok([403, 415].includes(r.status), JSON.stringify(h) + ' ' + r.status);
+    }
+    assert.strictEqual(engine.strategy(id).armed, false);
+    // token still required
+    r = await req(port, `/api/strategy/${id}/arm`, { method: 'POST', headers: { 'content-type': 'application/json', origin }, body: '{"armed":true}' }); assert.strictEqual(r.status, 401);
+    r = await req(port, `/api/strategy/${id}/arm`, { method: 'POST', headers: { 'content-type': 'application/json', origin, cookie: 'hawse_session=' + 'b'.repeat(64) }, body: '{"armed":true}' }); assert.strictEqual(r.status, 401);
+    // not on the allowlist (or never allowed): refused even with a valid cookie + same Origin
+    for (const p of ['/api/reset-breaker', '/api/risk', '/api/storage/recorder-cap', '/api/live-order', '/api/lab/configs', '/api/betting/rules', '/api/strategy/a/b/arm']) { r = await post(p); assert.strictEqual(r.status, 403, p); }
+    assert.strictEqual(engine.strategy(id).armed, false);
+  } finally { await close(proxy); await close(desk); }
 });

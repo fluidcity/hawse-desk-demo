@@ -12,6 +12,8 @@
 //   HAWSE_PROXY_HOST            default 127.0.0.1 (put an HTTPS tunnel/terminator in front for remote use)
 //   HAWSE_PROXY_UPSTREAM        default http://127.0.0.1:8788 (must be a loopback http URL)
 //   HAWSE_PROXY_ALLOW_POST      default empty = READ-ONLY. Comma list from: halt, resume, reset-breaker, risk, arm
+//                               Recommended phone setting: arm,halt,resume (strategy arm/disarm toggles + HALT/Resume
+//                               buttons). reset-breaker and risk exist but are best left desk-only.
 //   HAWSE_PROXY_INSECURE_COOKIE default off. "1" drops the cookie's Secure flag (plain-http LAN only; not recommended)
 //
 // Guarantees:
@@ -19,8 +21,12 @@
 //   SameSite=Strict, random id, never the token) or `Authorization: Bearer <token>`;
 //   constant-time compare; 5 failures per 15 min per address -> lockout (429).
 // - Read-only by default: only GET/HEAD are forwarded. A POST is forwarded only if its exact
-//   route is in the allowlist above. /api/live-order, /api/storage/recorder-cap, lab and
-//   betting writes, and every PUT/PATCH/DELETE are never forwarded.
+//   route is in the allowlist above. Every forwarded POST must also pass a CSRF check:
+//   content-type application/json, and an Origin whose host equals Host (or, with no Origin,
+//   Sec-Fetch-Site: same-origin). A Bearer client with neither header (curl, scripts) is allowed;
+//   a cookie session never is. The session cookie is also SameSite=Strict.
+// - /api/live-order, /api/storage/recorder-cap, lab and betting writes, and every PUT/PATCH/DELETE
+//   are never forwarded, whatever the allowlist says.
 // - SSE (/api/stream) streams through unbuffered; WebSocket upgrades are authenticated and piped.
 // - The session cookie and Authorization header are stripped before forwarding, so the desk never sees them.
 // - Logs: startup line, and lockouts (remote address only). No tokens, cookies, headers or bodies.
@@ -88,6 +94,19 @@ function upstreamHeaders(req, up, { upgrade = false } = {}) {
   return h;
 }
 
+// CSRF / same-origin check for a forwarded POST (the same Origin-vs-Host rule the login form uses).
+// -> null (ok) | [status, message]
+function csrf(req, via) {
+  if (!/^application\/json\b/i.test(String(req.headers['content-type'] || ''))) return [415, 'POST through the proxy must be application/json'];
+  const o = req.headers.origin, host = String(req.headers.host || '').toLowerCase(), sfs = req.headers['sec-fetch-site'];
+  if (o !== undefined) {
+    let h = null; try { if (o !== 'null') h = new URL(o).host.toLowerCase(); } catch (e) { h = null; }
+    return h && h === host ? null : [403, 'cross-origin POST refused'];
+  }
+  if (sfs !== undefined) return sfs === 'same-origin' ? null : [403, 'cross-site POST refused'];
+  return via === 'bearer' ? null : [403, 'POST without Origin refused for a cookie session'];
+}
+
 // Method/route policy. -> null (forward) | [status, message]
 function policy(method, p, allowPost) {
   if (method === 'GET' || method === 'HEAD') return null;
@@ -115,6 +134,7 @@ function createProxy(cfg, { log = (m) => console.log(m), now } = {}) {
       if (await auth.handle(req, res, p)) { noteLock(req, { status: res.statusCode }); return; }
       const a = auth.check(req); if (!a.ok) { noteLock(req, a); return auth.deny(req, res, p, a); }
       const pol = policy(req.method, p, cfg.allowPost); if (pol) { req.resume(); return sendJson(res, pol[0], { error: pol[1] }); }
+      if (req.method === 'POST') { const x = csrf(req, a.via); if (x) { req.resume(); return sendJson(res, x[0], { error: x[1] }); } }
       const pr = http.request({ host: up.host, port: up.port, method: req.method, path: req.url, headers: upstreamHeaders(req, up) }, (ur) => {
         const h = {}; for (const [k, v] of Object.entries(ur.headers)) if (!HOP.has(k.toLowerCase())) h[k] = v;
         if (/text\/event-stream/i.test(ur.headers['content-type'] || '')) { h['cache-control'] = 'no-store'; h['x-accel-buffering'] = 'no'; }
@@ -157,4 +177,4 @@ if (require.main === module) {
   server.listen(cfg.port, cfg.host, () => console.log(`[auth-proxy] http://${cfg.host}:${cfg.port} -> http://${cfg.upstream.host}:${cfg.upstream.port} · token REQUIRED · POST allowlist: ${cfg.allowPost.length ? cfg.allowPost.join(', ') : 'none (read-only)'} · cookie ${cfg.secureCookie ? 'Secure' : 'NOT Secure (insecure-cookie mode)'}`));
   const bye = () => server.close(() => process.exit(0)); process.on('SIGINT', bye); process.on('SIGTERM', bye);
 }
-module.exports = { createProxy, config, policy, POST_ROUTES, parseUpstream, stripCookie };
+module.exports = { createProxy, config, policy, csrf, POST_ROUTES, parseUpstream, stripCookie };

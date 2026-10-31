@@ -58,13 +58,13 @@ function createAuth({ token, secure = true, now = Date.now, maxFails = 5, window
   // -> { ok } | { ok:false, status, retryAfter? }
   function check(req) {
     if (!required) return { ok: true };
-    if (sessionOk(parseCookies(req.headers.cookie)[COOKIE])) return { ok: true };
+    if (sessionOk(parseCookies(req.headers.cookie)[COOKIE])) return { ok: true, via: 'cookie' };
     const a = req.headers.authorization;
     if (a) {
       const ip = remoteOf(req), wait = locked(ip);
       if (wait) return { ok: false, status: 429, retryAfter: wait };
       const m = /^Bearer\s+(\S+)$/i.exec(a);
-      if (m && safeEqual(m[1], token)) return { ok: true };
+      if (m && safeEqual(m[1], token)) return { ok: true, via: 'bearer' };
       fail(ip); return { ok: false, status: 401 };
     }
     return { ok: false, status: 401 };

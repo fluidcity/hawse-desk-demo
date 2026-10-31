@@ -810,10 +810,10 @@ Tests: `test/kalshi-h2-v2.test.js`.
   - Jun–Oct was already seen.
   - The spot features were Coinbase proxies.
   - Fills and depth were untested.
-  - Do not retune 0.87; any change is a v3.
+  - Do not retune 0.87; any change is a v4 (v3 is the sizing arm below and keeps v2's decisions).
 - Old ledger rows get one `annot` row each, recomputed from the recorded books. It adds only the new fields and never a decision.
 
-**Gaps between the frozen text and miro's backtest. Not fixed in v2; proposed for a v3:**
+**Gaps between the frozen text and miro's backtest. Not fixed in v2; v4 proposal (renamed from "v3 proposal", since v3 is now the sizing arm):**
 1. The frozen rule has no bid/ask validity filter. miro's panel drops quotes unless bid > 0, ask < 1 and ask > bid.
 2. Frozen takes the last ask *recorded inside* each minute; miro takes the as-of close at the boundary, so a null or one-sided ask at minute end can differ.
 3. Frozen counts a deduped, unchanged minute as missing, so it can return "unknown" where miro would carry the prior quote.
@@ -821,3 +821,51 @@ Tests: `test/kalshi-h2-v2.test.js`.
 5. v1 samples at minute boundaries, so live entry minutes are 5..9 vs miro's 6..10. This is a v1 sampling property and is unchanged.
 
 On the 10 live signals so far, the shadow agrees with every frozen decision. An independent Python recompute from the recorded books reproduces every max_earlier_ask, decision, entry m, quote count and settle bps exactly. 2 of the 10 signals are partial_history.
+
+### H2 v3 arm: `fav93_98_v2_nojump_sized` (paper only, frozen, UNPROVEN)
+
+v3 trades exactly v2's decisions and adds size caps. v1 and v2 are unchanged (`2f0053c4…9675c`, `ee5185f8…94a4c`). Config: `config/frozen/kalshi-h2-v3.json` (sha256 `5498e1cbea6c45e427876dd2971f041421ef18ad06c103dc7921898f5179ce1c`). The loader refuses an unpinned file, a hash mismatch, or anything that is not paper-only with `liveOrders: false`. Ledgers: `data/paper/kalshi-h2/v3/`. Toggle `KALSHI_H2_V3` (default on; needs v2 on). There is no order path; a static test checks the module's requires, method names and wiring, and the v3 UI code makes no network calls.
+
+- **Entry:** v2 `take` only. `skip` and `unknown` are not traded. v3 never re-decides. Results come from v1's settle row (Kalshi official result).
+- **Size**, per line: contracts = min(X% of the line's paper balance, per-asset $ cap, optional overall $ cap, 10% of the traded volume, cash available), each divided by the decision-time ask and floored.
+  - Two lines with their own ledger and equity: **3%** and **7%**, each starting at $10,000. The balance compounds from settled P&L only.
+  - Per-asset caps (provisional): BTC $5,000 / ETH $400 / SOL $250 / XRP $250. The overall cap defaults to none.
+  - Participation volume = Kalshi public trades on that market in the 60 s before the signal book (exchange times, deduped by trade id). It counts both sides, so it is optimistic. If the volume is unknown (a trade-stream gap, or no trade feed), the order is 0 contracts with bound `unknown_volume`. It is never assumed.
+  - "Cap bound" = a cap other than the X% line is the smallest (ties count for each cap at the minimum).
+- **Fill:** walk the recorded YES ask ladder on the same next book v1 fills on, up to `min(0.99, ask + 1¢)`.
+  - The balance uses only what that visible depth supports.
+  - The remainder is logged as **unfilled**. A stress line prices it at the worst visible level + 1¢ with the flag `remainder_priced_worst_plus_1c`. It is display only and never booked.
+  - Slippage = fill VWAP minus the decision-time ask.
+- **Fee:** the actual Kalshi fee, `roundup_to_cent(0.07·C·P·(1−P))`, once per order.
+- **Logged per signal:** requested $, the bound cap, final contracts, per-level fills, slippage, the unfilled remainder, fee, result, book depth at the ask (all recorded levels, up to 10 from REST), and 60 s of refill after the fill (13 samples, every 5 s). Each refill sample has depth at the original limit and depth within 1¢ of the then-best ask.
+- **Pass gate:** same as v2 for the edge: ≥ 1,500 settled known-decision v1 signals, first look only, one-sided Fisher p < 0.05. The kept net per contract after the fee comes from the 3% line. Until the first look, the status is UNPROVEN.
+- **Card:** a two-line equity curve, avg $ per trade, % of trades where a cap bound (by cap), slippage, fill rate, net/contract and stress P&L. It also has a v1/v2/v3 table on the same signals and a **capacity check** panel.
+- **Capacity panel:** observed depth within 1¢, depth at the best ask, entry-window volume, fill rate, slippage and refill, vs the backtest reference in `hawse-research/kalshi-15m-capacity-10k.md`:
+  - **Fillable:** up to ~$300 per trade on all assets, and BTC to ~$5,000.
+  - **Questionable:** ETH/SOL at $300–1,000.
+  - **Fiction:** ETH/SOL above ~$1,000–2,000.
+  - Sim with the 10% participation cap: 3% line ends at $32.5k (cap bound 50%, avg fill $388, max DD 18.6%); 7% line ends at $66.4k (64%, $888, 36.3%).
+
+**On startup** (a desk restart is needed to run v3 at all):
+- It creates `data/paper/kalshi-h2/v3/` and replays every existing v1 signal through v2's decisions.
+- It backfills sizing and fills from the recorded books and trades in `data/recorder/` (read-only, about 2 s for ~250 MB today).
+- A signal with no recorded book or trades is marked unknown and not traded.
+- Live volume needs the recorder's new `trade` event, which also starts on that restart.
+
+**Offline replay of the current recordings** (scratch copy, 11 v1 signals, 9 take / 2 skip):
+
+| Line | Balance | Avg $ per trade | Cap bound | Fill rate | Slippage | Wins | Net per contract |
+|---|---|---|---|---|---|---|---|
+| 3% | $10,143.35 | $257.70 | 25% | 89.6% | 0.00¢ | 8/8 | +6.47¢ |
+| 7% | $10,240.02 | $434.65 | 62.5% | 91.2% | 0.05¢ | 8/8 | +6.43¢ |
+
+- One SOL signal had unknown volume (a recorded trade-stream gap), so it was 0 contracts on both lines.
+- Observed median depth within 1¢ was BTC $5,054 / ETH $665 / SOL $867, vs backtest medians $8,822 / $1,118 / $1,170.
+- Refill: depth at the original limit usually goes to $0 by 30 s, because the ask moves up. Depth within 1¢ of the new best ask is ~$2,000–2,300.
+
+**Limits:**
+- REST books show only 10 levels, so deep BTC books may be under-seen.
+- The participation window is the 60 s before the signal, not the backtest's entry candle.
+- Live trades are polled every ~2 s, so the last ~2 s can be undercounted (conservative).
+- XRP has a cap, but v1 does not trade XRP.
+- Few signals so far. UNPROVEN.

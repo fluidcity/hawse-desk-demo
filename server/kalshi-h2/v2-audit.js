@@ -3,7 +3,7 @@
 // decide() in v2.js, exactly as config/frozen/kalshi-h2-v2.json defines it. This file adds what miro's autopsy
 // (hawse-research/kalshi-15m-loss-autopsy.md section 5) asks to be logged and shown, plus a "miro-exact" SHADOW of the feature
 // computed the way his backtest did (as-of YES ask at each minute boundary, two-sided valid quotes only), so any disagreement
-// with the frozen definition is visible. A shadow disagreement is evidence for a v3, never a reason to re-decide.
+// with the frozen definition is visible. A shadow disagreement is evidence for a v4 (v3 is the sizing arm with v2's decisions), never a reason to re-decide.
 const S = require('./stats');
 
 const MIN = 60000, MARKET_MS = 15 * MIN;
@@ -55,7 +55,7 @@ const CAVEATS = [
   'Jun-Oct 2026 was already seen when v1 was picked, so the v2 out-of-sample number is not clean out-of-sample.',
   'Backtest spot features (d_bps) were Coinbase 1-minute proxies; live d_bps uses the desk 1 s reference median.',
   'Fills and depth at 93-98c were untested in the backtest (candles carry top of book only).',
-  'Do NOT retune 0.87: any change to the threshold or the feature is a new frozen file (v3), with its own forward test.',
+  'Do NOT retune 0.87: any change to the threshold or the feature is a new frozen file (v4; v3 is the sizing arm and keeps these decisions), with its own forward test.',
 ];
 
 const view = (x) => ({ ...(x.annot || {}), ...x.sig }); // the frozen decision always comes from the signal row

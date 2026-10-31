@@ -1,0 +1,43 @@
+{
+  "id": "kalshi-h2",
+  "version": "v2",
+  "name": "fav93_98_v2_nojump",
+  "frozenAt": "2026-10-30",
+  "status": "FROZEN. Do not edit. Any change needs a new file (kalshi-h2-v3.json), a new hash in server/kalshi-h2/index.js FROZEN and in test/kalshi-h2-v2.test.js, and a new ledger folder. v1 (config/frozen/kalshi-h2-v1.json) is NOT changed by this arm and keeps running.",
+  "source": "hawse-research/kalshi-15m-loss-autopsy.md section 5 (miro): frozen v2 hypothesis, add alongside v1, do not change v1. UNPROVEN until the pre-registered test below is met.",
+  "mode": "paper-only",
+  "liveOrders": false,
+  "base": {
+    "config": "kalshi-h2-v1",
+    "sha256": "2f0053c4eb13bd48697eb06d4a6c841b327313393e97c619e96e3e9956c9675c",
+    "entry": "identical to v1: every v2 candidate IS a v1 signal (same market, same book, same time); v1's paper fill and official settlement are reused one-to-one, so v1 and v2 are compared on the same signals"
+  },
+  "filter": {
+    "feature": "max_earlier_ask",
+    "definition": "max, over the earlier clock minutes of this market (market open -> the minute before the signal's minute), of each minute's YES-ask close (the last non-null YES ask recorded in that minute)",
+    "skipIfBelow": 0.87,
+    "thresholdFrozen": "0.87, chosen on Dec-May by miro; never retuned",
+    "noEarlierQuote": "take",
+    "coverage": {
+      "fromOpenWithinMs": 60000,
+      "everyEarlierMinuteHasABook": true,
+      "ifPartialAndAtOrAbove": "take (a fuller history can only raise the max)",
+      "ifPartialAndBelow": "unknown (not traded by v2, excluded from the pass test, counted and shown)"
+    }
+  },
+  "log": ["max_earlier_ask", "dask1", "d_bps", "v2 decision", "fill price and size", "fee charged", "ask depth", "result"],
+  "features": {
+    "dask1": "signal YES ask minus the previous minute's YES-ask close (dollars)",
+    "d_bps": "log(reference price / strike) * 1e4 at the signal, from the desk's 1 s multi-venue reference median (not BRTI; miro used Coinbase 1-min)"
+  },
+  "pass": {
+    "minV1Signals": 1500,
+    "test": "one-sided Fisher exact: the skipped group's loss rate is greater than the kept group's",
+    "alpha": 0.05,
+    "keptMeanNetGtCents": 0,
+    "fee": "the fee charged on the paper fill (Kalshi 1-contract formula ceil(0.07*P*(1-P)*100)/100)",
+    "otherwise": "retired",
+    "label": "UNPROVEN until minV1Signals settled v1 signals with a known v2 decision"
+  },
+  "watchOnly": { "dBpsBelow": 16, "dask1AboveDollars": 0.09, "note": "logged and shown, not a rule" }
+}

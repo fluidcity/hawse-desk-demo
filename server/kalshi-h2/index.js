@@ -11,7 +11,10 @@ const path = require('path');
 const crypto = require('crypto');
 const S = require('./stats');
 
-const FROZEN = { 'kalshi-h2-v1': '2f0053c4eb13bd48697eb06d4a6c841b327313393e97c619e96e3e9956c9675c' };
+const FROZEN = {
+  'kalshi-h2-v1': '2f0053c4eb13bd48697eb06d4a6c841b327313393e97c619e96e3e9956c9675c',
+  'kalshi-h2-v2': 'ee5185f8e059a8995c557b474b873f47dae867be5f02fb021368c83cf0294a4c', // v2 arm (server/kalshi-h2/v2.js): a filter on v1 signals; own ledger
+};
 const DEFAULT_FILE = path.join(__dirname, '..', '..', 'config', 'frozen', 'kalshi-h2-v1.json');
 
 function sha256(buf) { return crypto.createHash('sha256').update(buf).digest('hex'); }
@@ -33,12 +36,16 @@ class KalshiH2Paper {
     this.mk = new Map(); // tk -> per-market state
     this.signals = []; this.fills = new Map(); this.trades = []; this.skips = {}; this.flags = []; this.recent = []; this.startAt = null; this.sessions = 0;
     this.observed = { markets: 0, noTouch: 0 }; this.halted = null; this.marks = new Map(); // tk -> latest YES bid of an open paper fill (display only)
+    this.rowListeners = []; // read-only observers of appended rows (the v2 arm); they cannot change v1 decisions
     if (health) health.register('paper.kalshi-h2', { label: 'Kalshi H2 forward paper test (frozen v1)', group: 'recorder', note: 'paper ledger only; decisions from recorder books; official Kalshi results', staleMs: 120000 });
   }
   get ledgerFile() { return path.join(this.baseDir, this.cfg.version, 'ledger.jsonl'); }
   start() {
     try { const f = loadFrozen(this.file, this.pins); this.cfg = f.cfg; this.hash = f.hash; this.key = f.key; } catch (e) {
       this.error = e.message; this.log('[kalshi-h2] REFUSING to run: ' + e.message); if (this.health) this.health.fail('paper.kalshi-h2', 'refused: ' + e.message); return;
+    }
+    if (!this.cfg.rule || !this.cfg.sizing) { // e.g. the v2 filter file: it has no entry rule of its own and runs only through server/kalshi-h2/v2.js
+      this.error = `${this.key} is not an entry-rule config`; this.log('[kalshi-h2] REFUSING to run: ' + this.error); if (this.health) this.health.fail('paper.kalshi-h2', 'refused: ' + this.error); this.cfg = null; return;
     }
     fs.mkdirSync(path.dirname(this.ledgerFile), { recursive: true });
     this.replay();
@@ -57,7 +64,9 @@ class KalshiH2Paper {
   append(row) {
     const r = { at: this.now(), v: this.cfg.version, ...row };
     fs.appendFileSync(this.ledgerFile, JSON.stringify(r) + '\n');
-    this.apply(r); return r;
+    this.apply(r);
+    for (const f of this.rowListeners) { try { f({ ...r }); } catch { /* an observer can never break v1 */ } }
+    return r;
   }
   replay() {
     if (!fs.existsSync(this.ledgerFile)) return;

@@ -593,14 +593,19 @@ Anything else gets 403. `test/storage.test.js` covers the bars, validation, prun
 the guard.
 
 ### Optional Kalshi WebSocket recorder (H7, off by default)
-`KALSHI_WS=true` plus a **read-only** Kalshi key (`KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH`) adds an
+`KALSHI_WS=true` plus a Kalshi key (`KALSHI_API_KEY_ID`, `KALSHI_PRIVATE_KEY_PATH` or `_PEM`; read-only scope recommended, used for the handshake only either way) adds an
 authenticated market-data socket next to the REST poller. It subscribes `orderbook_delta` (snapshot, then deltas,
 with seq-gap detection and a fresh snapshot after a gap) and `trade` for the live 15m markets, and with
 `KALSHI_WS_CF_INDEX=true` also `cfbenchmarks_value`, the CF Benchmarks RTI values Kalshi settles on.
 Kalshi needs a signed handshake even for public channels. That signing lives **only** in
 `server/kalshi-auth/ws-sign.js`, which signs exactly `ts + GET + /trade-api/ws/v2` and nothing else. The recorder
 allowlists every outgoing frame. Tests enforce both. With no key, the card says so and no socket is opened.
-**Not tested live yet; no key existed.** Setup steps: [docs/kalshi-api-key.md](docs/kalshi-api-key.md).
+**Live on prod since 2026-10-30.** `KALSHI_ENV` is `prod` (default) or `demo`. The PEM loads from a file or inline
+(real newlines, CRLF, literal `\n`, or flattened to spaces). In a 13-minute run the WS and REST recorders had the same
+64,947 trade ids with 0 field mismatches, and the WS got them about 1.2 s sooner (receive − exchange time p50 75 ms vs
+1,304 ms). A killed socket was back in 1.4 s with a `ws-down` gap row. The WS runs on the box only: box pauses leave WS
+gaps, and the Cloudflare REST recorder (no Kalshi key) covers trades through them. Details and setup:
+[docs/kalshi-api-key.md](docs/kalshi-api-key.md).
 
 **Series are config, not code (miro a).** `RECORDER_KALSHI_SERIES` (default `KXBTC15M,KXETH15M,KXSOL15M,KXXRP15M`) and
 `RECORDER_KALSHI_EXTRA_SERIES` (default `KXNFLGAME,KXNBAGAME,KXNHLGAME,KXBTCD`) are comma lists. Add a series there and

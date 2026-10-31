@@ -432,6 +432,35 @@ You can edit the limits live. When the gate is closed, strategies keep managing 
 
 - **Secret scanning.** `gitleaks git .` and `gitleaks dir .` (8.28, default rules plus `.gitleaks.toml`) and `trufflehog git file://.` (3.90) report no findings over the full history. The only flags were deliberately fake values in leak-assertion tests, which are allowlisted by exact value, not by path, so a real-looking key in `test/` is still flagged. Pyth feed ids, token mints, contract and pool addresses, and EVM event topics are public identifiers and are commented as such. `scripts/check-secret-presence.sh` checks whether the value of each secret env var set in your shell appears anywhere in history, the working tree (including `data/`) or stashes. It prints only match/no-match and never prints a value.
 
+## Remote viewing: token auth proxy (Stage Q)
+
+`scripts/auth-proxy.js` is a zero-dependency Node reverse proxy that puts a login in front of the **single** desk on `:8788`. Your PC and phone only *view* that desk. There is no second desk, recorder, Worker or webhook, and the proxy makes no API calls of its own. The desk itself is unchanged, so **starting or stopping the proxy never needs a desk restart**.
+
+```bash
+# Keep the token in a secrets file, not on the command line (it would show in `ps`):
+#   /home/box/secrets/hawse-proxy.env  ->  HAWSE_ACCESS_TOKEN=<at least 24 random chars>
+# Generate one with: node -e "console.log(require('crypto').randomBytes(32).toString('base64url'))"
+set -a; . /home/box/secrets/hawse-proxy.env; set +a
+node scripts/auth-proxy.js          # http://127.0.0.1:8789 -> http://127.0.0.1:8788
+```
+
+| Env var | Default | Meaning |
+|---|---|---|
+| `HAWSE_ACCESS_TOKEN` | (required) | At least 24 characters, no whitespace. If it is missing or weak the proxy refuses to start, and the token is never printed. |
+| `HAWSE_PROXY_PORT` | `8789` | Port the proxy listens on. |
+| `HAWSE_PROXY_HOST` | `127.0.0.1` | Bind address. Keep it on loopback and reach it through an HTTPS tunnel. |
+| `HAWSE_PROXY_UPSTREAM` | `http://127.0.0.1:8788` | Must be a plain-http loopback origin. Anything else is refused. |
+| `HAWSE_PROXY_ALLOW_POST` | (empty = read-only) | Comma list taken from `halt, resume, reset-breaker, risk, arm`. Unknown names are refused at startup. |
+| `HAWSE_PROXY_INSECURE_COOKIE` | off | `1` drops the `Secure` flag. Use it only for plain-http testing; see below. |
+
+- **Login.** `GET /login` serves a form. A correct token gets a random session id in an `HttpOnly; Secure; SameSite=Strict` cookie (7 days). `Authorization: Bearer <token>` also works for scripts. Comparison is constant-time (sha256 + `timingSafeEqual`). The login POST refuses cross-origin `Origin` / `sec-fetch-site`. `POST /logout` ends the session.
+- **Rate limit.** After 5 failed attempts in 15 minutes from one remote address, that address gets `429` until the window passes, even with the right token. Behind a tunnel all clients share the tunnel's address, so one bad actor can lock you out for 15 minutes. That is deliberate (fail closed); restarting the proxy clears it.
+- **Read-only by default.** GET and HEAD are forwarded. POST is forwarded only for routes named in `HAWSE_PROXY_ALLOW_POST`, matched by exact path. `/api/live-order` (which always refuses anyway), `/api/storage/recorder-cap`, lab writes and betting writes are **never** forwarded. PUT, PATCH, DELETE and OPTIONS return 405. The desk's mutating UI routes are `/api/halt`, `/api/resume`, `/api/reset-breaker`, `/api/risk` and `/api/strategy/:id/arm` (gates for the paper strategies only; the H2 forward tests have their own fail-stop), plus recorder-cap (loopback-only in the desk itself), lab and betting POSTs.
+- **Streams.** SSE (`/api/stream`) is passed through unbuffered. WebSocket upgrades are authenticated, refused cross-origin, then piped both ways (the desk serves none today).
+- **Headers and logs.** The session cookie and `Authorization` are stripped before forwarding, so the desk never sees them. Every response gets `nosniff`, `X-Frame-Options: DENY`, `Referrer-Policy: no-referrer`, COOP/CORP same-origin, a Permissions-Policy and `frame-ancestors 'none'`. The log has the startup line (allowlist and cookie mode) and `lockout active for <ip>`. It never logs tokens, cookies, headers or bodies.
+- **HTTPS.** Browsers keep a `Secure` cookie over `https://` and `http://localhost` only. From a PC or phone, reach the proxy through an HTTPS tunnel (for example `cloudflared tunnel --url http://127.0.0.1:8789` or Tailscale Serve). Do not bind `0.0.0.0` over plain http; if you must test that way, `HAWSE_PROXY_INSECURE_COOKIE=1` sends the cookie, and the token, in clear text.
+- Tests: `test/auth-proxy.test.js` runs against a scratch desk (temp dirs, engine not started) plus fake upstreams for header and WebSocket checks.
+
 ## Environment variables
 
 See [`.env.example`](.env.example). Every variable is listed there with its default. Secrets are read in `server/config.js`. `publicFlags()` exposes only booleans such as `heliusConfigured`, and a test asserts that no secret value leaks into the client payload. `.env` is gitignored.

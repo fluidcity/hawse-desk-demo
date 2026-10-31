@@ -73,7 +73,9 @@ function refillSeries(states, t0, limit, R) {
   const s = [...states].sort((a, b) => a[0] - b[0]);
   for (let dt = 0; dt <= R.windowMs; dt += R.sampleEveryMs) {
     while (i < s.length && s[i][0] <= t0 + dt) cur = s[i++][1];
-    out.push(cur ? { s: dt / 1000, ...(({ contracts, dollars, bestAsk }) => ({ contracts, dollars, bestAsk }))(depthAt(cur, limit)) } : { s: dt / 1000, contracts: null, dollars: null, bestAsk: null });
+    if (!cur) { out.push({ s: dt / 1000, contracts: null, dollars: null, bestAsk: null, bestSize: null, dollarsNear1c: null }); continue; }
+    const d = depthAt(cur, limit), near = d.bestAsk == null ? null : depthAt(cur, d.bestAsk + 0.01 + 1e-9).dollars; // at the original limit, and within 1c of the then-current best ask
+    out.push({ s: dt / 1000, contracts: d.contracts, dollars: d.dollars, bestAsk: d.bestAsk, bestSize: d.bestSize, dollarsNear1c: near });
   }
   return out;
 }
@@ -278,7 +280,7 @@ class KalshiH2V3 {
     const orders = [...L.orders.values()], traded = orders.filter((o) => o.filled > 0), settled = [...L.settles.values()];
     const sized = orders.filter((o) => !(o.bound || []).includes('unknown_volume')), capCount = {}; for (const o of orders) for (const b of o.bound || []) capCount[b] = (capCount[b] || 0) + 1;
     const req = orders.reduce((s, o) => s + o.requested, 0), fil = orders.reduce((s, o) => s + o.filled, 0);
-    const byAsset = {}; for (const o of orders) { const a = byAsset[o.asset] = byAsset[o.asset] || { orders: 0, traded: 0, dollars: 0, requested: 0, filled: 0, slip: [], capBound: 0 }; a.orders++; a.requested += o.requested; a.filled += o.filled; if (o.filled > 0) { a.traded++; a.dollars += o.cost; a.slip.push(o.slippageCents); } if (!(o.bound || []).includes('pct')) a.capBound++; }
+    const byAsset = {}; for (const o of orders) { const a = byAsset[o.asset] = byAsset[o.asset] || { orders: 0, traded: 0, dollars: 0, requested: 0, filled: 0, slip: [], capBound: 0 }; a.orders++; a.requested += o.requested; a.filled += o.filled; if (o.filled > 0) { a.traded++; a.dollars += o.cost; a.slip.push(o.slippageCents); } if (!(o.bound || []).includes('pct') && !(o.bound || []).includes('unknown_volume')) a.capBound++; }
     for (const a of Object.values(byAsset)) { a.avgDollars = a.traded ? r2(a.dollars / a.traded) : null; a.fillRate = a.requested ? r4(a.filled / a.requested) : null; a.avgSlippageCents = a.slip.length ? r4(S.mean(a.slip)) : null; a.capBoundShare = a.orders ? r4(a.capBound / a.orders) : null; delete a.slip; a.dollars = r2(a.dollars); }
     const wins = settled.filter((s) => s.win).length, pnl = settled.reduce((s, x) => s + x.pnl, 0), sc = settled.reduce((s, x) => s + x.contracts, 0);
     return { id: L.id, pct: L.spec.pctOfBalance, start: L.spec.startBalance, balance: r2(L.balance), reserved: r2(L.reserved), orders: orders.length, traded: traded.length, zeroSize: orders.length - traded.length,
@@ -309,8 +311,8 @@ class KalshiH2V3 {
       const ref = L.spec.pctOfBalance === 0.03 ? B.sim3pctCap10 : L.spec.pctOfBalance === 0.07 ? B.sim7pctCap10 : null;
       return { id: L.id, fillRate: s.fillRate, fullFillShare: s.fullFillShare, avgSlippageCents: s.avgSlippageCents, avgDollars: s.avgDollars, capBoundShare: s.capBoundShare, bands, byAsset: s.byAsset, backtest: ref }; });
     const refill = this.ordered().map((x) => x.refill).filter((r) => r && r.samples);
-    const refillAt = (sec) => med(refill.map((r) => { const p = r.samples.find((q) => q.s === sec); return p ? p.dollars : null; }));
-    return { books: books.length, byAsset, lines, refill: { n: refill.length, medianDollarsAt0s: refillAt(0), medianDollarsAt30s: refillAt(30), medianDollarsAt60s: refillAt(60) }, reference: B,
+    const refillAt = (sec, k = 'dollars') => med(refill.map((r) => { const p = r.samples.find((q) => q.s === sec); return p ? p[k] : null; }));
+    return { books: books.length, byAsset, lines, refill: { n: refill.length, medianDollarsAt0s: refillAt(0), medianDollarsAt30s: refillAt(30), medianDollarsAt60s: refillAt(60), medianNear1cAt30s: refillAt(30, 'dollarsNear1c'), medianNear1cAt60s: refillAt(60, 'dollarsNear1c') }, reference: B,
       note: 'observed on paper fills from the recorder\'s REST books (10 levels) and public trades; the backtest used entry-candle volume and 16 real books' };
   }
   stats() {

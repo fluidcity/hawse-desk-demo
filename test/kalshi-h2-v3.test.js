@@ -111,7 +111,7 @@ test('feeOrder: Kalshi fee rounded up to the cent ONCE per order (not per contra
 
 test('refillSeries: depth at the limit every 5 s for 60 s, latest book at or before each point', () => {
   const s = refillSeries([[1000, [[0.95, 10]]], [13000, [[0.95, 40], [0.96, 5]]]], 1000, 0.96, { windowMs: 60000, sampleEveryMs: 5000 });
-  assert.equal(s.length, 13); assert.deepEqual(s[0], { s: 0, contracts: 10, dollars: 9.5, bestAsk: 0.95 }); assert.equal(s[2].contracts, 10); assert.equal(s[3].contracts, 45);
+  assert.equal(s.length, 13); assert.deepEqual(s[0], { s: 0, contracts: 10, dollars: 9.5, bestAsk: 0.95, bestSize: 10, dollarsNear1c: 9.5 }); assert.equal(s[2].contracts, 10); assert.equal(s[3].contracts, 45);
 });
 
 test('live: v3 trades exactly v2 takes on v1\'s fill snapshot; two lines with their own ledgers; balance compounds; refill logged; v1/v2 untouched', () => {
@@ -199,4 +199,19 @@ test('no order path: v3 has no network, auth or order code; wired only as a pape
   const reqs = [...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]).sort(); assert.deepEqual(reqs, ['./index', './stats', './v2', './v2-audit', 'fs', 'path']);
   const mods = fs.readFileSync(path.join(__dirname, '..', 'server', 'modules.js'), 'utf8'); assert.match(mods, /if \(c\.v2 && c\.v3\) engine\.kalshiH2v3 = engine\.addFeed\('kalshiH2v3', new KalshiH2V3\(/);
   const proto = Object.getOwnPropertyNames(KalshiH2V3.prototype); assert.ok(!proto.some((n) => /^(place|submit|send|create|cancel)|Order$|live/i.test(n)), proto.join(','));
+});
+
+test('v3 UI: card exists, labels UNPROVEN/PAPER, and the v3 render code has no network or order calls', () => {
+  const fs = require('fs'), path = require('path');
+  const html = fs.readFileSync(path.join(__dirname, '..', 'public', 'index.html'), 'utf8');
+  const js = fs.readFileSync(path.join(__dirname, '..', 'public', 'app.js'), 'utf8');
+  for (const id of ['h2v3Card', 'h2v3Mode', 'h2v3Badge', 'h2v3Body', 'h2v3Cap', 'h2v3Rows']) assert.ok(html.includes(`id="${id}"`), id);
+  assert.match(js, /renderH2v2\(\); renderH2v3\(\);/);
+  const a = js.indexOf('function renderH2v3()'), b = js.indexOf('function h2v3Compare(');
+  const body = js.slice(a, js.indexOf('\n  }\n', b) + 4);
+  assert.ok(a > 0 && b > a && body.length > 1000);
+  assert.match(html, /id="h2v3Badge">UNPROVEN</);
+  assert.match(html.slice(html.indexOf('id="h2v3Card"'), html.indexOf('id="h2v3Badge"')), /PAPER · NOT REAL MONEY/);
+  assert.match(body, /Paper only/);
+  assert.doesNotMatch(body, /\bpost\(|fetch\(|XMLHttpRequest|sendBeacon|\border\s*\(/);
 });

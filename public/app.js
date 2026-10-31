@@ -80,7 +80,7 @@ window.HAWSE.explain = (() => {
 
   function render() {
     renderHero(); renderTicker(); renderStrats(); renderRisk(); renderFunding(); renderAttr(); renderHealth(); renderTape();
-    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderRecorder(); renderStorage(); renderH2(); renderH2v2(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
+    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderRecorder(); renderStorage(); renderH2(); renderH2v2(); renderH2v3(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
   }
 
   // ---------- hero + animated curve ----------
@@ -537,6 +537,67 @@ window.HAWSE.explain = (() => {
         `<span>${x.entryM == null ? '—' : x.entryM}</span><span class="${x.partialHistory ? 'warn' : ''}" title="earlier minute-boundary quotes seen / expected (14 - entry m)">${x.nEarlierQuotes == null ? '—' : `${x.nEarlierQuotes}/${x.expectedEarlier}`}${x.partialHistory ? ' partial' : ''}</span><span class="sm">${fl(x)}</span>` +
         `<span class="${dc(x.decision)}">${esc(String(x.decision).toUpperCase())}</span><span class="sm ${x.miroAgrees === false ? 'warn' : 'dim'}" title="display only: as-of ask at each minute boundary, valid two-sided quotes">${x.miroDecision ? esc(x.miroDecision) + (x.miroMaxEarlierAsk == null ? '' : ' ' + x.miroMaxEarlierAsk) + (x.miroAgrees === false ? ' ≠' : '') : '—'}</span>` +
         `<span class="${x.pnlCents == null ? 'dim' : tone(x.pnlCents)}">${x.result ? esc(x.result) : 'open'}${x.pnlCents == null ? '' : ' ' + c(x.pnlCents)}${x.settleBps == null ? '' : ` <span class="dim sm">${x.settleBps > 0 ? '+' : ''}${x.settleBps.toFixed(1)}bp</span>`}</span></div>`).join('');
+  }
+  // Frozen v3 arm (config/frozen/kalshi-h2-v3.json): v2's decisions sized by caps, two paper lines (3% / 7%). Display only; UNPROVEN.
+  function renderH2v3() {
+    const H = S.feeds && S.feeds.kalshiH2v3; $('h2v3Card').hidden = !H; if (!H) return;
+    if (H.error || !H.stats) { $('h2v3Mode').innerHTML = badge('down'); $('h2v3Body').innerHTML = `<div class="neg mono sm">${esc(H.error || 'not started')}</div>`; $('h2v3Cap').innerHTML = ''; $('h2v3Rows').innerHTML = ''; return; }
+    const st = H.stats, P = st.passTest, Ls = st.lines || [], CP = st.capacity || {}, R = CP.reference || {};
+    const c = (x) => (x == null ? '—' : (x > 0 ? '+' : '') + x.toFixed(2) + '¢'), pc = (x) => (x == null ? '—' : (100 * x).toFixed(1) + '%');
+    const usd = (x) => (x == null ? '—' : (x < 0 ? '−$' : '$') + Math.abs(x).toLocaleString('en-US', { maximumFractionDigits: 2 })), tone = (x) => (x == null ? '' : x > 0 ? 'pos' : x < 0 ? 'neg' : '');
+    const cls = (s) => (s === 'met' ? 'live' : s === 'not met' ? 'down' : 'stale');
+    $('h2v3Badge').textContent = P.label; $('h2v3Badge').className = 'badge ' + cls(P.status);
+    $('h2v3Mode').innerHTML = `${badge(H.running ? 'live' : 'down')} ${esc(H.name || '')} · sha256 ${esc((H.hash || '').slice(0, 12))}… · trade feed ${H.tradeFeed ? 'on' : '<span class="warn">off (volume unknown → no paper size)</span>'}`;
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const col = { '3pct': 'var(--mint,#3dffb0)', '7pct': 'var(--accent,#5b8def)' };
+    let svg = '<div class="dim sm mono">no settled v3 trades yet</div>';
+    const pts = Ls.flatMap((L) => L.curve.filter((p) => p.at != null));
+    if (Ls.some((L) => L.curve.length > 1)) {
+      const W = 560, Hh = 120, pad = 6, xs = pts.map((p) => p.at), ys = pts.map((p) => p.balance), x0 = Math.min(...xs) - 60e3, x1 = Math.max(Date.now(), ...xs), y0 = Math.min(...ys, 10000), y1 = Math.max(...ys, y0 + 1);
+      const X = (t) => pad + ((t - x0) / Math.max(1, x1 - x0)) * (W - 2 * pad), Y = (q) => Hh - pad - ((q - y0) / (y1 - y0)) * (Hh - 2 * pad);
+      svg = `<svg id="h2v3Curve" viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:${W}px;height:${Hh}px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="v3 paper balance, 3% and 7% lines">` +
+        `<line x1="${pad}" x2="${W - pad}" y1="${Y(10000).toFixed(1)}" y2="${Y(10000).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>` +
+        Ls.map((L, i) => { const cv = L.curve.filter((p) => p.at != null); if (!cv.length) return ''; let d = `M${X(cv[0].at).toFixed(1)},${Y(cv[0].balance).toFixed(1)}`; for (const p of cv.slice(1)) d += ` H${X(p.at).toFixed(1)} V${Y(p.balance).toFixed(1)}`; d += ` H${X(x1).toFixed(1)}`;
+          return `<path d="${d}" fill="none" stroke="${col[L.id] || '#ccc'}" stroke-width="1.6"/><text x="${W - pad}" y="${12 + i * 12}" text-anchor="end" fill="${col[L.id] || '#ccc'}" font-size="10" class="mono">${esc(L.id)} ${esc(usd(L.balance))} · ${L.settled} settled</text>`; }).join('') + `</svg>`;
+    }
+    const capTxt = (L) => Object.entries(L.capBound || {}).filter(([k]) => k !== 'pct').map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || 'none';
+    const B = H.backfill;
+    $('h2v3Body').innerHTML = `<div class="subh">Paper only, own ledgers (<code>data/paper/kalshi-h2/v3/</code>); no order path. v3 trades exactly v2's TAKE decisions (frozen, 87¢), sized per line by min(X% of the paper balance, per-asset $ cap ${esc(Object.entries((H.sizing && H.sizing.perAssetDollarCap) || {}).map(([a, v]) => a + ' $' + v.toLocaleString()).join(' / '))} <span class="warn">(provisional)</span>, overall cap ${H.sizing && H.sizing.overallDollarCap ? '$' + H.sizing.overallDollarCap : 'none'}, ${pc(H.sizing && H.sizing.participation)} of traded volume in the 60 s before the signal <span class="dim">(both sides counted: optimistic)</span>). Fills walk the recorded ask ladder on v1's fill snapshot up to ask + 1¢; anything deeper is logged <b>unfilled</b>, not assumed. Kalshi fee rounded up per order. Balance compounds from settled P&amp;L only.</div>` +
+      `<div class="mono" style="margin:6px 0"><span class="badge ${cls(P.status)}">${esc(P.label)}</span> <span class="dim sm">edge test (same gate as v2): ${P.have.toLocaleString()} / ${P.need.toLocaleString()} settled signals with a known decision · first look only</span></div>` +
+      `<div class="bar"><i style="left:0;width:${(100 * P.progress).toFixed(1)}%;background:var(--accent,#5b8def)"></i></div>` +
+      P.parts.map((m) => `<div class="mono sm" style="margin:2px 0"><span class="badge ${cls(m.status)}">${esc(m.status.toUpperCase())}</span> ${esc(m.label)} · now ${m.value == null ? '—' : m.key === 'kept' ? c(m.value) : m.key === 'fisher' ? 'p=' + m.value : m.value.toLocaleString()}</div>`).join('') +
+      Ls.map((L) => `<div class="subh" style="margin-top:8px"><b style="color:${col[L.id] || 'inherit'}">${esc(L.id)}</b> line · ${pc(L.pct)} of balance · start ${usd(L.start)}</div><div class="riskgrid">` +
+        meter('paper balance', `<span class="${tone(L.balance - L.start)}">${usd(L.balance)}</span>`, `P&amp;L ${usd(L.pnl)} · max DD ${pc(L.maxDrawdown)} · ${L.open} open`) +
+        meter('avg $ / trade', usd(L.avgDollars), `${L.traded} traded · ${L.zeroSize} zero-size (${L.unknownVolume} volume unknown)`) +
+        meter('a cap bound', pc(L.capBoundShare), capTxt(L)) +
+        meter('avg slippage', L.avgSlippageCents == null ? '—' : L.avgSlippageCents.toFixed(2) + '¢', 'VWAP vs decision-time ask') +
+        meter('fill rate', pc(L.fillRate), `full fills ${pc(L.fullFillShare)} · ${L.unfilledContracts.toLocaleString()} contracts unfilled`) +
+        meter('net / contract', `<span class="${tone(L.netCentsPerContract)}">${c(L.netCentsPerContract)}</span>`, `${L.wins}W / ${L.losses}L · fees ${usd(L.fees)} · stress P&amp;L ${usd(L.stressPnl)}`) + `</div>`).join('') +
+      `<div class="dim sm mono" style="margin:6px 0 3px">v3 paper balance (3% and 7% lines; settled trades only) <span class="badge live">PAPER</span></div>${svg}` +
+      h2v3Compare(st.compare, c, usd) +
+      (B ? `<div class="dim sm mono" style="margin-top:4px">backfill at start: ${B.needed || 0} v1 signal(s) replayed from recorded books${B.files != null ? ' (' + B.files + ' file(s))' : ''} · ${st.bookUnknown} with no recorded book (not traded, marked unknown)</div>` : '');
+    // capacity check: observed paper fills vs the backtest's capacity assumptions (kalshi-15m-capacity-10k.md)
+    const tr = (cells, head) => `<div class="row${head ? ' head' : ''}" style="grid-template-columns:1fr 1.1fr 1.1fr 1fr 1fr">${cells.map((x) => `<span class="${head ? '' : 'mono sm'}">${x}</span>`).join('')}</div>`;
+    const BA = CP.byAsset || {}, refA = ['BTC', 'ETH', 'SOL'];
+    $('h2v3Cap').innerHTML = `<div class="subh" style="margin-top:10px">Capacity check <span class="dim">· observed vs backtest assumptions (reference only, never used in a decision)</span></div>` +
+      `<div class="dim sm mono">backtest: fillable ${esc(R.fillable || '')} · questionable ${esc(R.questionable || '')} · fiction ${esc(R.fiction || '')}</div>` +
+      tr(['asset', 'median $ ≤ ask+1¢ (seen)', 'backtest median ≤1¢', '$ at best ask (seen / bt)', 'median vol60 (contracts, both sides)'], true) +
+      refA.map((a) => { const x = BA[a] || {}; return tr([`${a} <span class="dim">n=${x.n || 0}</span>`, usd(x.medianDollarsWithin1c), usd((R.medianDollarsWithin1c || {})[a]), `${usd(x.medianDollarsAtBestAsk)} / ${usd((R.medianDollarsAtBestAsk || {})[a])}`, x.medianVol60 == null ? '—' : x.medianVol60.toLocaleString()]); }).join('') +
+      `<div class="row head" style="grid-template-columns:.6fr 1fr 1fr 1fr 1.6fr 1.4fr"><span>line</span><span>fill rate</span><span>avg slippage</span><span>cap bound</span><span>order $ bands (filled)</span><span>backtest (sim)</span></div>` +
+      (CP.lines || []).map((L) => `<div class="row" style="grid-template-columns:.6fr 1fr 1fr 1fr 1.6fr 1.4fr"><span>${esc(L.id)}</span><span class="mono sm">${pc(L.fillRate)} <span class="dim">(full ${pc(L.fullFillShare)})</span></span><span class="mono sm">${L.avgSlippageCents == null ? '—' : L.avgSlippageCents.toFixed(2) + '¢'}</span><span class="mono sm">${pc(L.capBoundShare)}</span><span class="mono sm">${Object.entries(L.bands || {}).map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || '—'}</span>` +
+        `<span class="mono sm dim">${((B) => B ? `cap bound ${pc(B.capBoundShare)} · avg fill ${usd(B.avgFillDollars)} · end ${usd(B.endBalance)} (uncapped ${usd(B.endBalanceUncapped)}) · max DD ${pc(B.maxDrawdown)}` : '—')(R['sim' + L.id + 'Cap10'])}</span></div>`).join('') +
+      `<div class="dim sm mono" style="margin-top:4px">refill after the fill (median $ at ≤ ask+1¢, ${CP.refill ? CP.refill.n : 0} trades): 0 s ${usd(CP.refill && CP.refill.medianDollarsAt0s)} · 30 s ${usd(CP.refill && CP.refill.medianDollarsAt30s)} · 60 s ${usd(CP.refill && CP.refill.medianDollarsAt60s)} · within 1¢ of the then-best ask: 30 s ${usd(CP.refill && CP.refill.medianNear1cAt30s)} · 60 s ${usd(CP.refill && CP.refill.medianNear1cAt60s)} <span class="dim">(the ask often moves above the fill limit)</span></div>` +
+      `<div class="dim sm mono">${esc(CP.note || '')}${R.caveat ? ' · ' + esc(R.caveat) : ''}</div>`;
+    const cols = 'grid-template-columns:70px 80px 1.4fr 2fr';
+    const desc = (r) => r.t === 'order' ? `${r.line} req ${r.requested} → ${r.filled} filled${r.unfilled ? ', ' + r.unfilled + ' unfilled' : ''} · ${usd(r.cost)} · bound ${(r.bound || []).join('+')} · slip ${r.slippageCents == null ? '—' : r.slippageCents.toFixed(2) + '¢'} · fee ${usd(r.fee)}` : r.t === 'settle' ? `${r.line || ''} ${String(r.result || '').toUpperCase()} · ${r.pnl != null ? usd(r.pnl) + ' → ' + usd(r.balanceAfter) : c((r.pnl1 || 0) * 100)}` : r.t === 'signal' ? `${String(r.decision).toUpperCase()} · ask ${r.ya}` : r.t === 'book' ? (r.traded ? `depth ≤ ask+1¢ ${r.depthAtFill ? r.depthAtFill.contracts : '—'} · vol60 ${r.vol60 == null ? 'unknown' : r.vol60}` : (r.reason || '')) : r.t === 'refill' ? `refill 60 s · ${r.samples ? r.samples.length : 0} samples` : r.t;
+    $('h2v3Rows').innerHTML = `<div class="row head" style="${cols}"><span>at</span><span>event</span><span>market</span><span>detail</span></div>` + (H.recent || []).map((r) => `<div class="row" style="${cols}"><span class="dim" title="event time (book / settle time); logged ${esc(hhmmss(r.at))}${r.backfill ? ' · backfilled' : ''}">${hhmmss(r.bookRx || r.fillRx || r.settledAt || r.at)}</span><span class="${r.t === 'settle' ? (r.win ? 'pos' : 'neg') : r.t === 'nofill' ? 'warn' : ''}">${esc(r.t)}</span><span class="sm">${esc(r.tk || '')}</span><span class="sm mono">${esc(desc(r))}</span></div>`).join('');
+  }
+  function h2v3Compare(C, c, usd) {
+    if (!C) return '';
+    const g = (k, x, sub) => `<div class="row" style="grid-template-columns:1.2fr .6fr .6fr 1fr 1fr"><span>${k}</span><span class="mono sm">${x.n}</span><span class="mono sm">${x.wins}</span><span class="mono sm">${c(x.netCentsPerContract)}</span><span class="mono sm">${usd(x.totalDollars)}${sub ? ' <span class="dim">' + sub + '</span>' : ''}</span></div>`;
+    return `<div class="dim sm mono" style="margin:8px 0 2px">v1 / v2 / v3 on the same signals (${esc(C.note || '')})</div>` +
+      `<div class="row head" style="grid-template-columns:1.2fr .6fr .6fr 1fr 1fr"><span>arm</span><span>settled</span><span>wins</span><span>net / contract</span><span>total</span></div>` +
+      g('v1 (1 contract)', C.v1) + g('v2 take (1 contract)', C.v2) + (C.v3 || []).map((L) => g(`v3 ${esc(L.id)} (sized)`, L, `${L.contracts.toLocaleString()} contracts`)).join('');
   }
   // v2 audit block (display only): backtest reference lines, fee models, first-look pass test, splits, running stats, equity, caveats.
   function h2v2Audit(st, c, pc, ci) {

@@ -712,3 +712,60 @@ not change the frozen v1 rule or its hash, and the frozen verdict logic is untou
   criterion.
 
 The UNVERIFIED label stays until 8 weeks and 2,500 signals. Tests: `test/h2-pnl.test.js`.
+
+### H2 v2 arm: `fav93_98_v2_nojump` (paper only, frozen, UNPROVEN)
+
+v2 runs **alongside** v1 and does not change it. The v1 config, hash (`2f0053c4…9675c`), rules and ledger are
+untouched, and a test checks that the v1 ledger is byte-identical with and without v2 running.
+
+**Rule.** The v1 entry, plus one filter: **skip** the signal if the max YES ask at the **earlier** minutes of that
+market is below **87¢**. Each earlier minute counts with its YES-ask close, which is the last recorded ask in that
+minute. If there is no earlier quote, v2 takes the trade. The 0.87 threshold comes from miro's Dec–May autopsy and is
+never retuned.
+- Config: `config/frozen/kalshi-h2-v2.json`, sha256 `ee5185f8e059a8995c557b474b873f47dae867be5f02fb021368c83cf0294a4c`,
+  pinned in `server/kalshi-h2/index.js` (`FROZEN`) and in `test/kalshi-h2-v2.test.js`. The loader refuses to start v2
+  in four cases: the file was edited, the v1 hash does not match, v1 is not running, or the v2 file was handed to the
+  v1 loader. No ledger is written when it refuses.
+- Ledger: `data/paper/kalshi-h2/v2/ledger.jsonl` (gitignored). It is separate from v1's.
+- Toggle: `KALSHI_H2_V2` (on by default, `false` turns it off). The engine feed is `kalshiH2v2`.
+- Fills and results: v2 has **no order path** and no fill model of its own. It reuses v1's paper fill (price, size and
+  fee charged) and Kalshi's official result one-to-one, so both arms are compared on exactly the same signals.
+
+**Every v1 signal is logged**, skipped ones included. Each row has `max_earlier_ask`, `v2_skip` (true, false, or
+null when unknown), `dask1` (signal ask minus the previous minute's close), `d_bps`, fill price and size, fee, ask
+depth and result. `d_bps` is `log(ref / strike) × 1e4` from the desk's 1 s multi-venue **reference median**. It is
+**not BRTI** (miro used Coinbase 1-minute data). It is null when there is no reference for the asset. The watch-only
+counts (`d_bps < 16`, `dask1 > 9¢`) are shown on the card but are not a rule.
+
+**Honest backfill.** On start, v2 rebuilds the decision for v1 signals from before it was running, using the recorded
+books in `data/recorder/` (plain or `.gz`). A decision counts only when the books cover the market from open (within
+60 s) and every earlier minute:
+- **full** coverage: take or skip, by the rule;
+- **partial** coverage with the max already ≥ 87¢: take, because more history can only raise the max;
+- **partial** coverage and below 87¢, or no books at all: **unknown**. Unknown signals are not traded, are left out of
+  the pass test, and are counted and shown on the card.
+
+Rows are keyed per v1 signal, so a restart never duplicates them.
+
+**Pre-registered pass test (display only).** The card reads **UNPROVEN** and shows each part as pending, met, or retired:
+1. ≥ 1,500 settled v1 signals with a known v2 decision;
+2. the skipped group loses more often than the kept group (one-sided Fisher exact, p < 0.05);
+3. kept trades are positive per contract after the fee charged.
+
+If the test is not met at 1,500, the arm is marked **retired**.
+
+**UI card** (`#h2v2Card`, PAPER and UNPROVEN badges) shows:
+- v2 trades taken, win rate (Wilson CI) and net per contract after fee;
+- kept vs skipped loss rate, Fisher p and the decision counts;
+- the cumulative net equity curve of kept trades;
+- the backfill line and the latest 12 signals with their features.
+
+**Live at 17:50 PT on Oct 30, 2026 (after the restart).** v2 reconciled 10 v1 signals from 30 recorded files:
+- decisions: **9 take, 1 skip, 0 unknown** (8 full coverage, 2 partial with the max ≥ 87¢);
+- taken: 9 settled, all wins, +5.58¢ per contract after fee (+50.2¢ total);
+- the one skip (KXBTC15M-26OCT301600-00) had a max earlier ask of 86¢ and then jumped to 93¢. It won, so the
+  skipped loss rate is 0/1 and Fisher p = 1.
+
+This is far too little data to say anything. The arm is **UNPROVEN**.
+
+Tests: `test/kalshi-h2-v2.test.js`.

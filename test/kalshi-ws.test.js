@@ -84,6 +84,8 @@ test('KalshiWsRecorder (fake socket): handshake headers per connect, subscribes 
   assert.equal(by('trade')[0].n, 3); assert.equal(by('trade')[0].s, 'kalshi.ws.trade'); assert.equal(by('cf')[0].v, 76000.12); assert.equal(by('cf')[0].avg60, 76001);
   rx({ type: 'orderbook_delta', sid: 7, seq: 5, msg: { market_ticker: 'KXBTC15M-A', price_dollars: '0.44', delta_fp: '1', side: 'no' } }); // seq 3, 4 missing
   assert.equal(r.n.seqGaps, 1); assert.equal(gaps[0][3 + 1], 'ws-seq-gap'); const last = s.sent[s.sent.length - 1]; assert.equal(last.params.action, 'get_snapshot'); assert.equal(last.params.sid, 7);
+  const sentBefore = s.sent.length; rx({ type: 'trade', sid: 8, seq: 4, msg: { trade_id: 't2', market_ticker: 'KXBTC15M-A', yes_price_dollars: '0.46', no_price_dollars: '0.54', count_fp: '1.00', taker_side: 'yes', ts_ms: 1793386800700 } });
+  assert.equal(r.n.tradeSeqGaps, 1); assert.equal(r.n.seqGaps, 1); assert.equal(gaps[1][4], 'ws-trade-seq-gap'); assert.equal(gaps[1][1], 'trade'); assert.equal(s.sent.length, sentBefore, 'a trade-channel seq skip does not re-snapshot the book');
   s.readyState = 1; live = [{ tk: 'KXBTC15M-A' }, { tk: 'KXBTC15M-B' }]; r.sync();
   const adds = s.sent.filter((f) => f.params.action === 'add_markets'); assert.deepEqual(adds.map((f) => f.params.sid), [7, 8]); assert.deepEqual(adds[0].params.market_tickers, ['KXBTC15M-B']);
   const dels = s.sent.filter((f) => f.params.action === 'delete_markets'); assert.deepEqual(dels[0].params.market_tickers, ['KXETH15M-A']);
@@ -168,7 +170,7 @@ test('key values never appear in logs, the snapshot, the recorder files or any G
     const outputs = [JSON.stringify(e.snapshot()), JSON.stringify(kws.view()), logs.join('\n')];
     for (const g of ['/api/health', '/api/state', '/api/explain', '/api/providers', '/api/storage']) outputs.push(await new Promise((res) => require('http').get({ host: '127.0.0.1', port, path: g }, (r) => { let d = ''; r.on('data', (c) => { d += c; }); r.on('end', () => res(d)); })));
     const files = (function walk(d) { return fs.readdirSync(d, { withFileTypes: true }).flatMap((x) => (x.isDirectory() ? walk(path.join(d, x.name)) : [path.join(d, x.name)])); })(dir);
-    assert.ok(files.length, 'recorder wrote files'); for (const f of files) outputs.push(fs.readFileSync(f).toString('latin1'), require('zlib').gunzipSync(fs.readFileSync(f), { finishFlush: require('zlib').constants.Z_SYNC_FLUSH }).toString?.() || '');
+    assert.ok(files.length, 'recorder wrote files'); for (const f of files) { const b = fs.readFileSync(f); outputs.push(b.toString('latin1')); if (b[0] === 0x1f && b[1] === 0x8b) outputs.push(require('zlib').gunzipSync(b, { finishFlush: require('zlib').constants.Z_SYNC_FLUSH }).toString()); }
     assert.ok(outputs.join('\n').includes('tr-1'), 'the trade row was recorded and is visible to the scan');
     for (const o of outputs) for (const p of probes) assert.ok(!o.includes(p), 'key material leaked into output: ' + o.slice(0, 60));
     assert.ok(!outputs.join('\n').includes('KALSHI-ACCESS-SIGNATURE'));

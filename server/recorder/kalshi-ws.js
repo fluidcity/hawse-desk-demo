@@ -35,7 +35,7 @@ class KalshiWsRecorder {
   constructor({ store, health, cfg = {}, auth = null, kalshi = null, gap = () => {}, now = () => Date.now(), WebSocketImpl, log = (m) => console.log(m) }) {
     this.c = { url: 'wss://api.elections.kalshi.com/trade-api/ws/v2', env: 'prod', cfIndex: false, indexIds: ['BRTI', 'ETHUSD_RTI', 'SOLUSD_RTI', 'XRPUSD_RTI'], syncMs: 5000, kinds: ['crypto'], ...cfg };
     Object.assign(this, { store, health, auth, kalshi, gap, now, log, WebSocketImpl });
-    this.n = { snap: 0, delta: 0, trade: 0, cf: 0, seqGaps: 0, errors: 0, sent: 0 }; this.errCodes = {}; this.sids = {}; this.seq = {}; this.subscribed = new Set(); this.pending = new Set();
+    this.n = { snap: 0, delta: 0, trade: 0, cf: 0, seqGaps: 0, tradeSeqGaps: 0, errors: 0, sent: 0 }; this.errCodes = {}; this.sids = {}; this.seq = {}; this.subscribed = new Set(); this.pending = new Set();
     this.msgId = 0; this.timers = []; this.running = false; this.lastCf = {}; this.downSince = null;
     this.problem = !auth ? 'no Kalshi key configured (set KALSHI_API_KEY_ID and KALSHI_PRIVATE_KEY_PATH or _PEM; see docs/kalshi-api-key.md)' : !isKalshiWsUrl(this.c.url) ? 'KALSHI_WS_URL is not a Kalshi WebSocket URL' : null;
     health.register('rec.kalshi.ws', { label: 'Recorder · Kalshi WebSocket (orderbook_delta + trade' + (this.c.cfIndex ? ' + CF index' : '') + ')', group: 'recorder',
@@ -83,7 +83,13 @@ class KalshiWsRecorder {
     if (j.type === 'error') { this.n.errors++; const k = String(m.code); this.errCodes[k] = (this.errCodes[k] || 0) + 1; this.store.write('kalshi.ws.book', { t: 'ws_error', code: m.code, msg: String(m.msg || '').slice(0, 120) }); if (m.code === 9) this.health.fail('rec.kalshi.ws', 'Kalshi says authentication required (code 9): check the key'); return null; }
     if (j.sid != null && j.seq != null && j.type !== 'subscribed' && j.type !== 'ok') {
       const prev = this.seq[j.sid];
-      if (prev != null && j.seq !== prev + 1 && j.type !== 'orderbook_snapshot') { this.n.seqGaps++; this.gap('kalshi.ws', 'sid' + j.sid, rx, rx, 'ws-seq-gap'); this.resnap(); }
+      if (prev != null && j.seq !== prev + 1 && j.type !== 'orderbook_snapshot') {
+        // Only a gap on the book channel breaks book state, so only that one asks for a fresh snapshot. Kalshi's trade
+        // channel skips seq numbers around add/delete_markets (seen live at every 15m rollover with 0 trades missing
+        // against REST), so a trade-sid gap is logged with its own reason and no resnap.
+        const ch = Object.keys(this.sids).find((c) => this.sids[c] === j.sid) || 'sid' + j.sid; const book = ch === 'orderbook_delta';
+        this.n[book ? 'seqGaps' : 'tradeSeqGaps']++; this.gap('kalshi.ws', ch, rx, rx, book ? 'ws-seq-gap' : 'ws-trade-seq-gap'); if (book) this.resnap();
+      }
       this.seq[j.sid] = j.seq;
     }
     const ex = num(j.sending_ts_ms);

@@ -56,6 +56,71 @@ window.HAWSE.explain = (() => {
 
   let S = null, tapeFilter = 'all', lastTapeId = 0;
 
+  // ---------- P&L headlines (display only) ----------
+  // One big realized-P&L number per strategy/arm card + the desk header. Rules: real-data and SIM books are never summed or
+  // blended (SIM gets its own SIM badge); nothing is drawn that the server did not report: a book with no realized events
+  // shows "no trades yet" (not $0), a missing window shows n/a, and a sparkline needs >= 2 real points.
+  const fmtPnl = (v, unit = '$', d = 2) => v == null || !isFinite(v) ? '—' : unit === '¢' ? `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(d)}¢` : `${v > 0 ? '+' : v < 0 ? '−' : ''}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+  const toneOf = (v) => v == null || !isFinite(v) || Math.abs(v) < 1e-9 ? 'flat' : v > 0 ? 'pos' : 'neg';
+  function sparkSvg(pts, label) {
+    if (!pts || pts.length < 2) return '';
+    const W = 120, H = 34, p = 2, xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]).concat(0);
+    const x0 = Math.min(...xs), x1 = Math.max(x0 + 1, ...xs), y0 = Math.min(...ys), y1 = Math.max(y0 + 1e-9, ...ys);
+    const X = (t) => p + ((t - x0) / (x1 - x0)) * (W - 2 * p), Y = (v) => H - p - ((v - y0) / (y1 - y0)) * (H - 2 * p);
+    const last = pts[pts.length - 1][1], col = last > 0 ? 'var(--mint)' : last < 0 ? 'var(--hot)' : 'var(--dim)';
+    const d = pts.map((q, i) => (i ? 'L' : 'M') + X(q[0]).toFixed(1) + ',' + Y(q[1]).toFixed(1)).join(' ');
+    return `<svg class="ph-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(label || 'cumulative realized P&L')}"><line x1="0" x2="${W}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.18)" stroke-dasharray="2 3"/><path d="${d}" fill="none" stroke="${col}" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>`;
+  }
+  /** o: { label, value, unit, n, sim, tags, pctBase, pctLabel, brk: [[label, value|null, title]], spark, sparkLabel, unreal, sub, small } */
+  function pnlHead(o) {
+    const unit = o.unit || '$', side = o.sim ? 'sim' : 'real';
+    const tagHtml = (o.sim ? '<span class="badge sim" title="Simulated/mock inputs: never added to the real-data book">SIM</span>' : '') + (o.tags || '');
+    const top = `<div class="ph-top"><span class="ph-label">${esc(o.label || (o.sim ? 'SIM P&L' : 'Realized P&L'))}</span>${tagHtml}</div>`;
+    if (!o.n) return `<div class="pnlhead empty${o.small ? ' small' : ''}" data-pnl="${side}">${top}<div class="ph-row"><div class="ph-big ph-none mono">no trades yet</div></div>${o.sub ? `<div class="ph-sub dim mono">${o.sub}</div>` : ''}</div>`;
+    const pctTxt = o.pctBase > 0 ? `<span class="ph-pct mono ${toneOf(o.value)}">${pct(100 * o.value / o.pctBase)} <small>${esc(o.pctLabel || 'of sleeve')}</small></span>` : '';
+    const brk = (o.brk || []).map(([k, v, t]) => `<span${t ? ` title="${esc(t)}"` : ''}><small>${esc(k)}</small><b class="${v == null ? 'dim' : toneOf(v)}">${v == null ? 'n/a' : fmtPnl(v, unit)}</b></span>`).join('');
+    const un = o.unreal ? `<span class="ph-unreal mono" title="Open positions marked to market: not in the realized number"><small>open (unrealized)</small> <b class="${toneOf(o.unreal)}">${fmtPnl(o.unreal, unit)}</b></span>` : '';
+    return `<div class="pnlhead ${toneOf(o.value)}${o.sim ? ' sim' : ''}${o.small ? ' small' : ''}" data-pnl="${side}">${top}` +
+      `<div class="ph-row"><div class="ph-num"><div class="ph-big mono ${toneOf(o.value)}">${fmtPnl(o.value, unit)}</div>${pctTxt}</div>${sparkSvg(o.spark, o.sparkLabel)}</div>` +
+      (brk || un ? `<div class="ph-brk mono">${brk}${un}</div>` : '') + (o.sub ? `<div class="ph-sub dim mono">${o.sub}</div>` : '') + `</div>`;
+  }
+  const upFor = (ms) => ms < 3600e3 ? Math.max(1, Math.round(ms / 60e3)) + 'm' : ms < 86400e3 ? (ms / 3600e3).toFixed(1) + 'h' : (ms / 86400e3).toFixed(1) + 'd';
+  /** Desk-ledger book (S.pnlBoard row side) -> pnlHead options. The desk ledger is in memory: "since start" = since this desk process started. */
+  function bookHead(v, { sim, alloc, label, small }) {
+    const since = S.pnlBoard ? S.pnlBoard.since : S.now - S.uptimeMs;
+    return { label, sim, small, value: v.realized, n: v.events, pctBase: alloc, pctLabel: 'of sleeve', unreal: v.unrealized,
+      brk: [['today', v.today], ['7d', v.d7Covered ? v.d7 : null, v.d7Covered ? '' : `desk up ${upFor(S.now - since)}: no 7-day history yet`], ['since start', v.realized, 'since this desk process started (in-memory paper ledger)']],
+      spark: v.spark, sparkLabel: `${sim ? 'SIM' : 'real-data'} cumulative realized P&L since desk start`,
+      sub: v.events && !v.trades ? `${v.events} fee/funding event(s), 0 closed trades` : '' };
+  }
+  /** Sum a settled-P&L series [[t, amount]] into today (viewer's local day) and the last 7 days. Exact sums of reported rows. */
+  function windows(rows, now = Date.now()) {
+    const d = new Date(now); d.setHours(0, 0, 0, 0); const day = d.getTime(), w7 = now - 7 * 86400e3; let today = 0, d7 = 0;
+    for (const [t, a] of rows) { if (t >= day) today += a; if (t >= w7) d7 += a; }
+    return { today, d7 };
+  }
+  const h2State = () => { const out = []; const F = S.feeds || {};
+    const v1 = F.kalshiH2, v2 = F.kalshiH2v2, v3 = F.kalshiH2v3;
+    if (v1 && v1.pnl && v1.stats) out.push({ k: 'v1', label: 'H2 v1', unit: '¢', value: v1.pnl.realizedCents.total, n: v1.pnl.realizedCents.n, tag: v1.stats.enough && !v1.stats.failStops.length ? '' : 'UNVERIFIED' });
+    if (v2 && v2.stats && v2.stats.v2) out.push({ k: 'v2', label: 'H2 v2', unit: '¢', value: v2.stats.v2.totalNetCents, n: v2.stats.v2.settled, tag: v2.stats.passTest ? v2.stats.passTest.label : 'UNPROVEN' });
+    if (v3 && v3.stats) for (const L of v3.stats.lines || []) out.push({ k: 'v3' + L.id, label: 'H2 v3 ' + L.id, unit: '$', value: L.pnl, n: L.settled, tag: v3.stats.passTest ? v3.stats.passTest.label : 'UNPROVEN', pctBase: L.start });
+    return out; };
+  function renderDeskPnl() {
+    const el = $('deskPnl'); if (!el) return;
+    const B = S.pnlBoard, t = S.totals;
+    if (!B) { el.innerHTML = `<div class="dim mono sm">desk P&amp;L board not reported by this server</div>`; return; }
+    const rows = B.strategies, traded = (side) => rows.filter((r) => r[side].events).length;
+    const real = { ...B.desk.real, d7Covered: B.d7Covered, spark: null, trades: rows.reduce((a, r) => a + r.real.trades, 0) };
+    const sim = { ...B.desk.sim, d7Covered: B.d7Covered, spark: null, trades: rows.reduce((a, r) => a + r.sim.trades, 0) };
+    const realH = bookHead(real, { sim: false, alloc: t.start, label: 'Desk P&L · real-data book' }); realH.pctLabel = 'of start equity'; realH.sparkLabel = '';
+    const simH = bookHead(sim, { sim: true, alloc: t.start, label: 'SIM book · mock/simulated inputs', small: true }); simH.pctLabel = 'of start equity';
+    const h2 = h2State();
+    const h2Html = h2.length ? `<div class="dp-h2"><div class="ph-label">Kalshi H2 arms <span class="dim">· own paper ledgers, not added to the desk total</span></div><div class="dp-chips">` +
+      h2.map((x) => `<span class="dp-chip mono"><small>${esc(x.label)}</small><b class="${x.n ? toneOf(x.value) : 'dim'}">${x.n ? fmtPnl(x.value, x.unit) : 'no trades yet'}</b>${x.n && x.pctBase ? `<i class="${toneOf(x.value)}">${pct(100 * x.value / x.pctBase)}</i>` : ''}${x.unit === '¢' ? '<i class="dim">per 1-ct test</i>' : ''}${x.tag ? `<span class="badge stale">${esc(x.tag)}</span>` : ''}</span>`).join('') + `</div></div>` : '';
+    el.innerHTML = `<div class="dp-main">${pnlHead(realH)}<div class="dim mono sm dp-note">${traded('real')} of ${rows.length} strategies have realized real-data P&amp;L · paper only</div></div>` +
+      `<div class="dp-side">${pnlHead(simH)}${h2Html}</div>`;
+  }
+
   // ---------- mode switch ----------
   document.querySelectorAll('.mode').forEach((b) => b.onclick = () => setMode(b.dataset.mode));
   function setMode(m) {
@@ -91,7 +156,7 @@ window.HAWSE.explain = (() => {
   setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString('en-US', { hour12: false, timeZoneName: 'short' }); }, 1000);
 
   function render() {
-    renderHero(); renderTicker(); renderStrats(); renderRisk(); renderFunding(); renderAttr(); renderHealth(); renderTape();
+    renderDeskPnl(); renderHero(); renderTicker(); renderStrats(); renderRisk(); renderFunding(); renderAttr(); renderHealth(); renderTape();
     renderWhales(); renderFollow(); renderMev(); renderGaps(); renderRecorder(); renderStorage(); renderH2(); renderH2v2(); renderH2v3(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
   }
 
@@ -182,6 +247,7 @@ window.HAWSE.explain = (() => {
   function renderStrats() {
     if (!xpAt || Date.now() - xpAt > 300e3) loadExplain();
     const attr = Object.fromEntries(S.attribution.map((a) => [a.id, a]));
+    const pnlRow = Object.fromEntries(((S.pnlBoard && S.pnlBoard.strategies) || []).map((r) => [r.id, r]));
     const root = $('strats');
     // Keyed cards: the live part re-renders each tick; the explainer <details> is only rebuilt when its text changes,
     // so an open box stays open and keeps keyboard focus.
@@ -192,14 +258,21 @@ window.HAWSE.explain = (() => {
       if (!card) { card = document.createElement('div'); card.className = 'strat'; card.dataset.sid = s.id; card.innerHTML = '<div class="strat-live"></div><div class="strat-x"></div><div class="strat-skip"></div>'; }
       if (root.children[i] !== card) root.insertBefore(card, root.children[i] || null);
       const a = attr[s.id] || { real: 0, sim: 0, realStats: {}, simStats: {} };
-      const st = s.dataMode === 'mock' || s.dataMode === 'sim' ? a.simStats : a.realStats;
+      // Headline book: SIM when the strategy runs on mock/sim inputs (or only the SIM book has booked anything); the other book, if it has events, is shown separately below it.
+      const b = pnlRow[s.id], simFirst = s.dataMode === 'mock' || s.dataMode === 'sim' || (b && !b.real.events && b.sim.events > 0);
+      const side = simFirst ? 'sim' : 'real', other = simFirst ? 'real' : 'sim';
+      const st = simFirst ? a.simStats : a.realStats;
       const tr = (st.trades || 0); const wr = tr ? Math.round((st.wins || 0) / tr * 100) + '%' : '—';
+      const head = b ? pnlHead(bookHead(b[side], { sim: simFirst, alloc: s.alloc, label: simFirst ? 'SIM P&L · simulated inputs' : 'Realized P&L · real-data book' })) +
+          (b[other].events ? pnlHead(bookHead(b[other], { sim: !simFirst, alloc: s.alloc, small: true, label: simFirst ? 'Real-data book (separate)' : 'SIM book (separate)' })) : '')
+        : pnlHead({ label: simFirst ? 'SIM P&L' : 'Realized P&L', sim: simFirst, value: simFirst ? a.sim : a.real, n: tr, pctBase: s.alloc });
       const skip = s.lastSkip ? `<div class="skip">⟂ ${esc(s.lastSkip.reason)}${s.lastSkip.detail ? ' — ' + esc(s.lastSkip.detail) : ''}</div>` : `<div class="skip" style="border-color:var(--line2)">${s.armed ? 'evaluating…' : 'disarmed · scanning only, no paper entries'}</div>`;
       card.classList.toggle('armed', !!s.armed);
       const live = `<div class="strat-top"><span class="strat-name">${esc(s.name)}</span><button type="button" class="toggle ${s.armed ? 'on' : ''}" data-arm="${esc(s.id)}" aria-pressed="${s.armed}">${s.armed ? 'ARMED' : 'DISARMED'}</button></div>
         <div class="badges">${badge(s.dataMode)}${(s.chains || []).map((c) => `<span class="badge">${esc(c)}</span>`).join('')}</div>
+        ${head}
         <div class="strat-desc">${esc(s.desc)}</div>
-        <div class="stats"><div><small>real PnL</small>${signed(a.real)}</div><div><small>sim PnL</small>${signed(a.sim)}</div><div><small>trades · win</small>${tr} · ${wr}</div></div>`;
+        <div class="stats"><div><small>closed · win</small>${tr} · ${wr}</div><div><small>fees paid</small>${st.fees ? money(st.fees) : '<span class="dim">—</span>'}</div><div><small>open pos</small>${(s.positions || []).length}</div></div>`;
       const L = card.children[0]; if (L.dataset.h !== live) { L.innerHTML = live; L.dataset.h = live; }
       const xh = window.HAWSE.explain.html(XP[s.id], 'desk:' + s.id); const XE = card.children[1]; if (XE.dataset.h !== xh) { window.HAWSE.explain.swap(XE, xh); XE.dataset.h = xh; }
       const K = card.children[2]; if (K.dataset.h !== skip) { K.innerHTML = skip; K.dataset.h = skip; }
@@ -483,7 +556,12 @@ window.HAWSE.explain = (() => {
     const vcls = st.verdict.startsWith('PASS') ? 'pos' : st.verdict.startsWith('FAIL') ? 'neg' : 'warn';
     const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
     const bar = (frac, label) => `<div class="dim sm mono" style="margin:6px 0 3px">${label}</div><div class="bar"><i style="left:0;width:${(100 * Math.min(1, frac)).toFixed(1)}%;background:var(--accent,#5b8def)"></i></div>`;
-    $('h2Body').innerHTML = `<div class="subh">Paper ledger only (<code>data/paper/kalshi-h2/${esc(H.version)}/</code>); no order path exists. Rules come from a hashed, frozen config; the stats are read-only, with no tuning. Fills take the ask on the <b>next</b> book (≤ 5 s, limit +1¢). Settlement uses Kalshi's official result.</div>` +
+    const R1 = H.pnl && H.pnl.realizedCents, cv1 = (H.pnl && H.pnl.curve) || [];
+    const head1 = R1 ? pnlHead({ label: 'Realized P&L · v1 forward test', unit: '¢', value: R1.total, n: R1.n, tags: `<span class="badge live">PAPER</span>${ok ? '' : '<span class="badge stale">UNVERIFIED</span>'}`,
+      brk: [['today', R1.today, 'box-local day, by settle time'], ['test week', R1.thisWeek, 'current test week'], ['total', R1.total]], unreal: H.pnl.unrealized && H.pnl.unrealized.totalCents,
+      spark: cv1.length ? [[Math.min(H.startAt || cv1[0].at, cv1[0].at), 0], ...cv1.map((q) => [q.at, q.cumCents])] : null, sparkLabel: 'v1 cumulative realized ¢',
+      sub: `${R1.n} settled · ¢ per 1-contract test (${fmtPnl(R1.total / 100)} on 1 contract per signal) · no sleeve` }) : '';
+    $('h2Body').innerHTML = head1 + `<div class="subh">Paper ledger only (<code>data/paper/kalshi-h2/${esc(H.version)}/</code>); no order path exists. Rules come from a hashed, frozen config; the stats are read-only, with no tuning. Fills take the ask on the <b>next</b> book (≤ 5 s, limit +1¢). Settlement uses Kalshi's official result.</div>` +
       `<div class="mono" style="margin:6px 0"><b class="${vcls}">${esc(st.verdict)}</b>${ok ? '' : ' <span class="badge stale">UNVERIFIED</span>'} ${st.failStops.map((f) => `<span class="neg sm">· ${esc(f)}</span>`).join(' ')}</div>` +
       bar(p.signalPct, `signals ${p.signals.toLocaleString()} / ${p.targetSignals.toLocaleString()} (${pc(p.signalPct)})`) + bar(p.weeks / p.targetWeeks, `weeks ${p.weeks.toFixed(2)} / ${p.targetWeeks}`) +
       `<div class="riskgrid" style="margin-top:8px">` +
@@ -525,7 +603,11 @@ window.HAWSE.explain = (() => {
         cv.map((p) => `<circle cx="${X(p.at).toFixed(1)}" cy="${Y(p.cumCents).toFixed(1)}" r="2.2" fill="${p.pnlCents >= 0 ? 'var(--mint,#3dffb0)' : 'var(--hot,#ff3d5a)'}"><title>${esc(p.tk)} ${c(p.pnlCents)} → ${c(p.cumCents)}</title></circle>`).join('') +
         `<text x="${W - pad}" y="12" text-anchor="end" fill="currentColor" font-size="10" class="mono">${esc(c(last))} · ${cv.length} settled</text></svg>`;
     }
-    $('h2v2Body').innerHTML = `<div class="subh">Paper only, own ledger (<code>data/paper/kalshi-h2/v2/</code>); no order path. Every v1 signal is logged here with <code>max_earlier_ask</code> and the v2 decision, skipped ones included. v2 reuses v1's paper fill and Kalshi's official result, so both arms are compared on the same signals. v1 is unchanged. <b>Unknown</b> = the recorded books do not cover every earlier minute (not traded, not in the test).</div>` +
+    const w2 = windows(cv.map((q) => [q.at, q.pnlCents]));
+    const head2 = pnlHead({ label: 'Realized P&L · v2 kept trades', unit: '¢', value: v.totalNetCents, n: v.settled, tags: `<span class="badge live">PAPER</span><span class="badge ${P.status === 'met' ? 'live' : P.status === 'not met' ? 'down' : 'stale'}">${esc(P.label)}</span>`,
+      brk: [['today', w2.today, 'your local day, by settle time'], ['7d', w2.d7], ['total', v.totalNetCents]], spark: cv.length ? [[cv[0].at - 60e3, 0], ...cv.map((q) => [q.at, q.cumCents])] : null, sparkLabel: 'v2 cumulative net ¢',
+      sub: `${v.settled} settled · ${v.wins}W / ${v.losses}L · ¢ per 1-contract test after fees · no sleeve` });
+    $('h2v2Body').innerHTML = head2 + `<div class="subh">Paper only, own ledger (<code>data/paper/kalshi-h2/v2/</code>); no order path. Every v1 signal is logged here with <code>max_earlier_ask</code> and the v2 decision, skipped ones included. v2 reuses v1's paper fill and Kalshi's official result, so both arms are compared on the same signals. v1 is unchanged. <b>Unknown</b> = the recorded books do not cover every earlier minute (not traded, not in the test).</div>` +
       `<div class="mono" style="margin:6px 0"><span class="badge ${P.status === 'met' ? 'live' : P.status === 'not met' ? 'down' : 'stale'}">${esc(P.label)}</span> <span class="dim sm">pre-registered test: ${P.have.toLocaleString()} / ${P.need.toLocaleString()} settled signals with a known decision</span></div>` +
       `<div class="bar"><i style="left:0;width:${(100 * P.progress).toFixed(1)}%;background:var(--accent,#5b8def)"></i></div>` +
       P.parts.map((m) => `<div class="mono sm" style="margin:2px 0"><span class="badge ${m.status === 'met' ? 'live' : m.status === 'not met' ? 'down' : 'stale'}">${esc(m.status.toUpperCase())}</span> ${esc(m.label)} · now ${m.value == null ? '—' : m.key === 'kept' ? c(m.value) : m.key === 'fisher' ? 'p=' + m.value : m.value.toLocaleString()}</div>`).join('') +
@@ -574,7 +656,13 @@ window.HAWSE.explain = (() => {
     }
     const capTxt = (L) => Object.entries(L.capBound || {}).filter(([k]) => k !== 'pct').map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || 'none';
     const B = H.backfill;
-    $('h2v3Body').innerHTML = `<div class="subh">Paper only, own ledgers (<code>data/paper/kalshi-h2/v3/</code>); no order path. v3 trades exactly v2's TAKE decisions (frozen, 87¢), sized per line by min(X% of the paper balance, per-asset $ cap ${esc(Object.entries((H.sizing && H.sizing.perAssetDollarCap) || {}).map(([a, v]) => a + ' $' + v.toLocaleString()).join(' / '))} <span class="warn">(provisional)</span>, overall cap ${H.sizing && H.sizing.overallDollarCap ? '$' + H.sizing.overallDollarCap : 'none'}, ${pc(H.sizing && H.sizing.participation)} of traded volume in the 60 s before the signal <span class="dim">(both sides counted: optimistic)</span>). Fills walk the recorded ask ladder on v1's fill snapshot up to ask + 1¢; anything deeper is logged <b>unfilled</b>, not assumed. Kalshi fee rounded up per order. Balance compounds from settled P&amp;L only.</div>` +
+    const heads3 = Ls.map((L) => { const cv3 = L.curve.filter((q) => q.at != null), steps = []; let prev = L.start;
+      for (const q of cv3) { steps.push([q.at, q.balance - prev]); prev = q.balance; }
+      const w = windows(steps);
+      return pnlHead({ label: `Realized P&L · ${L.id} line`, value: L.pnl, n: L.settled, pctBase: L.start, pctLabel: `of ${usd(L.start)} paper`, tags: `<span class="badge live">PAPER</span><span class="badge ${cls(P.status)}">${esc(P.label)}</span>`,
+        brk: [['today', w.today, 'your local day, by settle time'], ['7d', w.d7], ['total', L.pnl]], spark: cv3.length ? [[cv3[0].at - 60e3, 0], ...cv3.map((q) => [q.at, q.balance - L.start])] : null, sparkLabel: `v3 ${L.id} cumulative P&L $`,
+        sub: `${L.settled} settled · ${L.wins}W / ${L.losses}L · balance ${usd(L.balance)} · ${L.open} open` }); });
+    $('h2v3Body').innerHTML = (heads3.length ? `<div class="ph-grid">${heads3.join('')}</div>` : '') + `<div class="subh">Paper only, own ledgers (<code>data/paper/kalshi-h2/v3/</code>); no order path. v3 trades exactly v2's TAKE decisions (frozen, 87¢), sized per line by min(X% of the paper balance, per-asset $ cap ${esc(Object.entries((H.sizing && H.sizing.perAssetDollarCap) || {}).map(([a, v]) => a + ' $' + v.toLocaleString()).join(' / '))} <span class="warn">(provisional)</span>, overall cap ${H.sizing && H.sizing.overallDollarCap ? '$' + H.sizing.overallDollarCap : 'none'}, ${pc(H.sizing && H.sizing.participation)} of traded volume in the 60 s before the signal <span class="dim">(both sides counted: optimistic)</span>). Fills walk the recorded ask ladder on v1's fill snapshot up to ask + 1¢; anything deeper is logged <b>unfilled</b>, not assumed. Kalshi fee rounded up per order. Balance compounds from settled P&amp;L only.</div>` +
       `<div class="mono" style="margin:6px 0"><span class="badge ${cls(P.status)}">${esc(P.label)}</span> <span class="dim sm">edge test (same gate as v2): ${P.have.toLocaleString()} / ${P.need.toLocaleString()} settled signals with a known decision · first look only</span></div>` +
       `<div class="bar"><i style="left:0;width:${(100 * P.progress).toFixed(1)}%;background:var(--accent,#5b8def)"></i></div>` +
       P.parts.map((m) => `<div class="mono sm" style="margin:2px 0"><span class="badge ${cls(m.status)}">${esc(m.status.toUpperCase())}</span> ${esc(m.label)} · now ${m.value == null ? '—' : m.key === 'kept' ? c(m.value) : m.key === 'fisher' ? 'p=' + m.value : m.value.toLocaleString()}</div>`).join('') +

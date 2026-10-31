@@ -16,6 +16,28 @@ npm test                # node:test, no dependencies
 
 You need Node ≥ 22. There are no npm dependencies. One Node process proxies every upstream feed, runs the strategy engine and serves the UI. The browser only renders the `/api/stream` (SSE) snapshot, so secrets never reach it.
 
+## Where it runs
+
+The live paper desk runs on Bryan's Windows PC (`BoucherGamingPC`), not on the agent box.
+
+- Code and data: `C:\HAWSE\hawse-desk-demo` (this repo, with `data\` copied over from the box at cutover).
+- Keys: `C:\HAWSE\hawse.env`, readable only by the Windows user. They are loaded into the process environment by the launcher and never written to the repo or logs. The paid Odds key is not included.
+- Launcher: `C:\HAWSE\hawse-run.ps1 -What desk|proxy` sets `PORT=8788 KALSHI_ENV=prod KALSHI_WS=true KALSHI_WS_CF_INDEX=true HAWSE_PROXY_ALLOW_POST=arm,halt,resume`. It refuses to start a second copy if the port is already in use, restarts the process 5 s after any exit, and logs to `C:\HAWSE\desk.log` / `C:\HAWSE\proxy.log`. On Node 20 it adds `--experimental-websocket`, because Node 20 has no global `WebSocket`.
+- Scheduled Tasks `HAWSE Desk` and `HAWSE Proxy` start at logon. They run hidden with no time limit, start when available, and restart every 1 min, up to 99 times.
+- Desk on the PC: http://localhost:8788 (bound to 127.0.0.1, no login).
+- Phone (tailnet only, token required): https://bouchergamingpc.taile2f96e.ts.net. This is `tailscale serve --bg --https=443 http://127.0.0.1:8789` in front of `scripts/auth-proxy.js`.
+
+PowerShell on the PC:
+
+```powershell
+Start-ScheduledTask 'HAWSE Desk'; Start-ScheduledTask 'HAWSE Proxy'    # start
+powershell -NoProfile -ExecutionPolicy Bypass -File C:\HAWSE\stop-hawse.ps1   # stop both
+# restart = stop, then start
+Get-Content C:\HAWSE\desk.log -Tail 50                                  # log
+```
+
+The box copy at `/workspace/hawse-desk-demo` is **stopped**. Its `data/` stays as the rollback copy. Never run the box desk and the PC desk at the same time, or Kalshi, Helius and Odds get polled twice. To roll back, first stop the PC desk (see above). Then start the box desk from its secrets env files with the same `PORT/KALSHI_*` variables: `setsid nohup node server/server.js >> /workspace/hawse-server.log 2>&1 &`.
+
 ## Honesty rules built into the code
 
 - **Real and simulated books are separate.** `Ledger.close()` requires an explicit `simulated` boolean. A strategy running on mock or simulated inputs books into the SIM book, the dashed cyan line. It never touches the real-data equity, the solid line. Each book has its own risk gate.

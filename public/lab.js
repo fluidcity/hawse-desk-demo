@@ -36,7 +36,12 @@
     $('labEditor').scrollIntoView({ behavior: 'smooth', block: 'nearest' });
   }
   const errs = (r) => `<div class="lab-err">${(r.errors || [r.error || 'failed']).map(esc).join('<br>')}</div>`;
+  let lastEq = null; // redraw the backtest equity when the global chart style flips (Classic / CME)
+  addEventListener('hawse:chartstyle', () => { if (lastEq && document.body.contains(lastEq[0])) drawEquity(...lastEq); });
+  addEventListener('resize', () => { if (lastEq && document.body.contains(lastEq[0])) drawEquity(...lastEq); });
   function drawEquity(canvas, pts, cap) {
+    lastEq = [canvas, pts, cap]; const CH = window.HAWSE && window.HAWSE.charts;
+    if (CH && CH.isCme()) { if (pts.length < 2) return; const last = pts[pts.length - 1].eq; CH.draw(canvas, { title: 'BACKTEST EQUITY · hypothetical', base: cap, fmt: (v) => '$' + v.toFixed(0), x0: 0, x1: pts.length - 1, series: [{ pts: pts.map((p, i) => [i, p.eq]), band: 1, col: last >= cap ? CH.ORB.up : CH.ORB.down }] }); return; }
     const dpr = devicePixelRatio || 1, w = canvas.clientWidth, h = canvas.clientHeight; canvas.width = w * dpr; canvas.height = h * dpr;
     const ctx = canvas.getContext('2d'); ctx.scale(dpr, dpr); if (pts.length < 2) return;
     const ys = pts.map((p) => p.eq), lo = Math.min(cap, ...ys), hi = Math.max(cap, ...ys), Y = (v) => 8 + (1 - (v - lo) / (hi - lo || 1)) * (h - 16), X = (i) => (i / (pts.length - 1)) * (w - 8) + 4;

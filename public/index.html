@@ -22,6 +22,11 @@
       <button type="button" role="tab" class="mode on" data-mode="live" aria-selected="true">Live Data</button>
       <button type="button" role="tab" class="mode" data-mode="demo" aria-selected="false">Demo</button>
     </div>
+    <div class="modeswitch chartswitch" role="group" aria-label="Chart style" title="Chart style (saved on this device)">
+      <span class="cs-label mono">charts</span>
+      <button type="button" class="cs" data-cs="classic" aria-pressed="false">Classic</button>
+      <button type="button" class="cs on" data-cs="cme" aria-pressed="true">CME</button>
+    </div>
     <div class="status">
       <span class="conn" id="conn"><i></i><b>connecting</b></span>
       <span class="gatechip" id="gateChip">GATE —</span>
@@ -55,6 +60,11 @@
     </section>
 
     <div class="grid h2-top" id="h2Top">
+      <section class="card h2-charts" id="h2Charts" aria-label="Kalshi H2 v1 to v3 charts" hidden>
+        <div id="h2cV1" class="h2c"></div>
+        <div id="h2cV2" class="h2c"></div>
+        <div id="h2cV3" class="h2c"></div>
+      </section>
       <section class="card a-follow a-h2" id="h2Card" hidden>
         <div class="card-h"><h2>Kalshi H2 forward test <span class="dim">· YES 93–97.9¢ with 6–10 min left · frozen</span> <span class="badge sim">PAPER · NOT REAL MONEY</span></h2><span class="dim mono sm" id="h2Mode"></span></div>
         <div id="h2Body"></div>

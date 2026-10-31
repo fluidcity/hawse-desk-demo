@@ -53,8 +53,9 @@ function helpers() {
   const a = appJs.indexOf('  // ---------- P&L headlines'), b = appJs.indexOf('  function renderDeskPnl()');
   assert.ok(a > 0 && b > a, 'helper block present');
   const pre = `const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-    const pct = (n, d = 2) => n == null || !isFinite(n) ? '—' : \`\${n >= 0 ? '+' : ''}\${n.toFixed(d)}%\`; let S = { now: Date.now(), uptimeMs: 1000 };`;
-  const ctx = {}; vm.runInNewContext(pre + appJs.slice(a, b) + '\nthis.out = { pnlHead, sparkSvg, fmtPnl, windows, bookHead, setS: (x) => { S = x; } };', ctx);
+    const pct = (n, d = 2) => n == null || !isFinite(n) ? '—' : \`\${n >= 0 ? '+' : ''}\${n.toFixed(d)}%\`; let S = { now: Date.now(), uptimeMs: 1000 };
+    let cmeOn = false; const isCme = () => cmeOn, ORB = { up: '#3dffb0', down: '#ff3d5a', flat: '#6b7a89' }, specs = []; const orbCanvas = (sp, cls) => { specs.push(sp); return '<canvas class="orb ' + cls + '" data-k="o' + specs.length + '"></canvas>'; };`;
+  const ctx = {}; vm.runInNewContext(pre + appJs.slice(a, b) + '\nthis.out = { pnlHead, sparkSvg, fmtPnl, windows, bookHead, setS: (x) => { S = x; }, setCme: (v) => { cmeOn = v; }, specs };', ctx);
   return ctx.out;
 }
 
@@ -93,4 +94,15 @@ test('cards wire the headline in: 12 strategy cards, H2 v1/v2/v3, desk header; l
   assert.doesNotMatch(desk, /simPnl \+|realPnl \+|real\.realized \+ .*sim\.realized/, 'real and SIM never summed');
   const css = fs.readFileSync(path.join(ROOT, 'public', 'styles.css'), 'utf8');
   assert.match(css, /@media\(max-width:700px\)\{\n  \.deskpnl\{grid-template-columns:1fr\}/);
+});
+
+test('chart style switch: CME sparklines are ORB canvases, Classic keeps the SVG, both only with >= 2 points', () => {
+  const H = helpers();
+  assert.match(H.sparkSvg([[1, 0], [2, 5]]), /<svg class="ph-spark"/);
+  H.setCme(true);
+  const c = H.sparkSvg([[1, 0], [2, -5]]); assert.match(c, /<canvas class="orb ph-spark"/); assert.doesNotMatch(c, /<svg/);
+  const sp = H.specs[H.specs.length - 1]; assert.equal(sp.compact, 1); assert.equal(sp.base, 0); assert.equal(sp.series[0].col, '#ff3d5a');
+  assert.equal(H.sparkSvg([[1, 0]]), ''); H.setCme(false);
+  assert.match(appJs, /localStorage\.getItem\('hawse\.chartStyle'\)/, 'choice is persisted per device');
+  assert.match(appJs, /=== 'classic' \? 'classic' : 'cme'/, 'default is CME');
 });

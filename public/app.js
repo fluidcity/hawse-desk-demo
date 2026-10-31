@@ -73,7 +73,7 @@ window.HAWSE.explain = (() => {
     const es = new EventSource('/api/stream');
     es.onopen = () => { $('conn').className = 'conn ok'; $('conn').querySelector('b').textContent = 'stream live'; };
     es.onmessage = (ev) => { S = JSON.parse(ev.data); render(); };
-    es.onerror = () => { $('conn').className = 'conn bad'; $('conn').querySelector('b').textContent = 'reconnecting'; };
+    es.onerror = () => { $('conn').className = 'conn bad'; $('conn').querySelector('b').textContent = 'reconnecting'; fetch('/api/health').then((r) => { if (r.status === 401) location.href = '/login'; }).catch(() => {}); };
   }
   connect();
   setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString('en-US', { hour12: false, timeZoneName: 'short' }); }, 1000);

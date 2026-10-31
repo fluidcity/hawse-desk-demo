@@ -54,6 +54,27 @@
       </div>
     </section>
 
+    <div class="grid h2-top" id="h2Top">
+      <section class="card a-follow a-h2" id="h2Card" hidden>
+        <div class="card-h"><h2>Kalshi H2 forward test <span class="dim">· YES 93–97.9¢ with 6–10 min left · frozen</span> <span class="badge sim">PAPER · NOT REAL MONEY</span></h2><span class="dim mono sm" id="h2Mode"></span></div>
+        <div id="h2Body"></div>
+        <div id="h2Rows" class="tbl"></div>
+      </section>
+
+      <section class="card a-follow a-h2" id="h2v2Card" hidden>
+        <div class="card-h"><h2>Kalshi H2 v2 arm <span class="dim">· v1 signals, skip if max earlier YES ask &lt; 87¢ · frozen</span> <span class="badge sim">PAPER · NOT REAL MONEY</span> <span class="badge stale" id="h2v2Badge">UNPROVEN</span></h2><span class="dim mono sm" id="h2v2Mode"></span></div>
+        <div id="h2v2Body"></div>
+        <div id="h2v2Rows" class="tbl"></div>
+      </section>
+
+      <section class="card a-follow a-h2" id="h2v3Card" hidden>
+        <div class="card-h"><h2>Kalshi H2 v3 arm <span class="dim">· v2 decisions + size caps (3% / 7% of $10k paper) · frozen</span> <span class="badge sim">PAPER · NOT REAL MONEY</span> <span class="badge stale" id="h2v3Badge">UNPROVEN</span></h2><span class="dim mono sm" id="h2v3Mode"></span></div>
+        <div id="h2v3Body"></div>
+        <div id="h2v3Cap"></div>
+        <div id="h2v3Rows" class="tbl"></div>
+      </section>
+    </div>
+
     <div class="grid">
       <section class="card a-strats">
         <div class="card-h"><h2>Strategies</h2><span class="dim mono sm">arm/disarm · own PnL · skip reasons</span></div>
@@ -160,25 +181,6 @@
         <div id="storBars"></div>
         <div class="subh" id="storCtl"><label class="sm">Recorder cap (GiB) <input id="storCap" type="number" step="0.5" min="1" style="width:80px"></label> <button type="button" class="btn sm" id="storApply">Apply now</button> <span class="dim sm" id="storMsg"></span></div>
         <div id="storLog" class="tbl"></div>
-      </section>
-
-      <section class="card a-follow a-h2" id="h2Card" hidden>
-        <div class="card-h"><h2>Kalshi H2 forward test <span class="dim">· YES 93–97.9¢ with 6–10 min left · frozen</span> <span class="badge sim">PAPER · NOT REAL MONEY</span></h2><span class="dim mono sm" id="h2Mode"></span></div>
-        <div id="h2Body"></div>
-        <div id="h2Rows" class="tbl"></div>
-      </section>
-
-      <section class="card a-follow a-h2" id="h2v2Card" hidden>
-        <div class="card-h"><h2>Kalshi H2 v2 arm <span class="dim">· v1 signals, skip if max earlier YES ask &lt; 87¢ · frozen</span> <span class="badge sim">PAPER · NOT REAL MONEY</span> <span class="badge stale" id="h2v2Badge">UNPROVEN</span></h2><span class="dim mono sm" id="h2v2Mode"></span></div>
-        <div id="h2v2Body"></div>
-        <div id="h2v2Rows" class="tbl"></div>
-      </section>
-
-      <section class="card a-follow a-h2" id="h2v3Card" hidden>
-        <div class="card-h"><h2>Kalshi H2 v3 arm <span class="dim">· v2 decisions + size caps (3% / 7% of $10k paper) · frozen</span> <span class="badge sim">PAPER · NOT REAL MONEY</span> <span class="badge stale" id="h2v3Badge">UNPROVEN</span></h2><span class="dim mono sm" id="h2v3Mode"></span></div>
-        <div id="h2v3Body"></div>
-        <div id="h2v3Cap"></div>
-        <div id="h2v3Rows" class="tbl"></div>
       </section>
 
       <section class="card a-health" id="dataSources">

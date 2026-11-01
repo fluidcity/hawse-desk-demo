@@ -10,6 +10,14 @@ const modules = require('./modules');
 
 const PUB = path.join(__dirname, '..', 'public');
 const { localOnly } = require('./storage');
+const { isLoopback } = require('./auth');
+/** Pilot arm/reset gate: loopback socket, no proxy headers at all, plus the same-origin JSON checks as other local-only routes. */
+function pilotLocal(req) {
+  const h = req.headers || {};
+  if (h['x-forwarded-for'] != null || h['x-forwarded-host'] != null || h['forwarded'] != null || h['x-real-ip'] != null) return { ok: false, why: 'forwarded requests can never arm the live pilot' };
+  if (!isLoopback(String(req.socket.remoteAddress || '').replace(/^::ffff:/, ''))) return { ok: false, why: 'not loopback' };
+  return localOnly(req.socket.remoteAddress, h);
+}
 const { resolveStatic } = require('./static');
 
 async function labRoute(lab, req, p, url, body) {
@@ -53,6 +61,17 @@ function createServer(engine, flags) {
         const b = await body(req); const r = engine.storage.setRecorderCap(b.capGb, { by: 'ui' }); return send(res, r.ok ? 200 : 422, r);
       }
       if (p === '/schema/strategy.schema.json') { res.writeHead(200, { 'content-type': 'application/json' }); return fs.createReadStream(path.join(__dirname, '..', 'schema', 'strategy.schema.json')).pipe(res); }
+      if (p.startsWith('/api/live/kalshi-pilot/')) { // Stage Z. halt: forwardable. arm/disarm/reset: this machine only, never through the proxy.
+        const pl = engine.kalshiPilot; if (!pl) return send(res, 404, { ok: false, error: 'pilot not loaded' });
+        if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'POST only' });
+        const what = p.slice('/api/live/kalshi-pilot/'.length);
+        if (what === 'halt') { const r = await pl.halt('HALT button'); return send(res, 200, r); }
+        if (!['arm', 'disarm', 'reset'].includes(what)) return send(res, 404, { ok: false, error: 'not found' });
+        const g = pilotLocal(req); if (!g.ok) return send(res, 403, { ok: false, error: 'refused: ' + g.why });
+        const b = await body(req);
+        const r = what === 'arm' ? await pl.arm(b.phrase) : what === 'disarm' ? pl.disarm() : pl.reset(b.phrase);
+        return send(res, r.ok ? 200 : 403, r);
+      }
       for (const r of engine.routes || []) if (p.startsWith(r.prefix)) { // module-owned routes (e.g. server/betting/routes.js)
         const x = await r.handle(req.method, p, () => body(req)); if (!x) continue;
         if (Array.isArray(x)) return send(res, x[0], x[1]);
@@ -69,7 +88,7 @@ function createServer(engine, flags) {
         let m;
         if ((m = p.match(/^\/api\/strategy\/([\w-]+)\/arm$/))) { if (!engine.strategy(m[1])) return send(res, 404, { ok: false, error: 'unknown strategy' }); const r = engine.arm(m[1], b.armed !== false); return send(res, 200, { ok: true, persisted: r.persisted }); }
         if (p === '/api/risk') { engine.setRisk({ dailyLossPct: b.dailyLossPct, maxDrawdownPct: b.maxDrawdownPct }); return send(res, 200, { ok: true }); }
-        if (p === '/api/halt') { engine.halt(); return send(res, 200, { ok: true }); }
+        if (p === '/api/halt') { engine.halt(); if (engine.kalshiPilot && engine.kalshiPilot.state === 'ARMED') await engine.kalshiPilot.halt('desk HALT'); return send(res, 200, { ok: true }); }
         if (p === '/api/resume') { engine.resume(); return send(res, 200, { ok: true }); }
         if (p === '/api/reset-breaker') { engine.resetBreaker(); return send(res, 200, { ok: true }); }
         if (p === '/api/live-order') { try { engine.placeLiveOrder(); } catch (e) { return send(res, 403, { ok: false, error: e.message }); } }
@@ -96,4 +115,4 @@ if (require.main === module) {
   const bye = () => { engine.stop(); server.close(); process.exit(0); };
   process.on('SIGINT', bye); process.on('SIGTERM', bye);
 }
-module.exports = { createServer };
+module.exports = { createServer, pilotLocal };

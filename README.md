@@ -472,7 +472,7 @@ node scripts/auth-proxy.js          # http://127.0.0.1:8789 -> http://127.0.0.1:
 | `HAWSE_PROXY_PORT` | `8789` | Port the proxy listens on. |
 | `HAWSE_PROXY_HOST` | `127.0.0.1` | Bind address. Keep it on loopback and reach it through an HTTPS tunnel. |
 | `HAWSE_PROXY_UPSTREAM` | `http://127.0.0.1:8788` | Must be a plain-http loopback origin. Anything else is refused. |
-| `HAWSE_PROXY_ALLOW_POST` | (empty = read-only) | Comma list taken from `halt, resume, reset-breaker, risk, arm`. Unknown names are refused at startup. **Recommended for the phone: `arm,halt,resume`** (strategy arm toggles plus HALT / Resume). Leave `reset-breaker` and `risk` desk-only. |
+| `HAWSE_PROXY_ALLOW_POST` | (empty = read-only) | Comma list taken from `halt, resume, reset-breaker, risk, arm, pilot-halt`. Unknown names are refused at startup. **Recommended for the phone: `arm,halt,resume`** (strategy arm toggles plus HALT / Resume). Leave `reset-breaker` and `risk` desk-only. |
 | `HAWSE_PROXY_INSECURE_COOKIE` | off | `1` drops the `Secure` flag. Use it only for plain-http testing; see below. |
 
 - **Login.** `GET /login` serves a form. A correct token gets a random session id in an `HttpOnly; Secure; SameSite=Strict` cookie (7 days). `Authorization: Bearer <token>` also works for scripts. Comparison is constant-time (sha256 + `timingSafeEqual`). The login POST refuses cross-origin `Origin` / `sec-fetch-site`. `POST /logout` ends the session.
@@ -910,3 +910,33 @@ v3 trades exactly v2's decisions and adds size caps. v1 and v2 are unchanged (`2
 - Live trades are polled every ~2 s, so the last ~2 s can be undercounted (conservative).
 - XRP has a cap, but v1 does not trade XRP.
 - Few signals so far. UNPROVEN.
+
+## Kalshi LIVE pilot (Stage Z) · REAL MONEY · ships DISABLED
+
+`server/live/kalshi-pilot.js` + `server/live/kalshi-rest.js` (the only file in the repo that names Kalshi order endpoints or builds an order).
+Follows frozen paper v3's **7% line** (`decision: take`) with real money: frozen config `config/frozen/kalshi-live-pilot.json`
+(sha256 `3677c281c81c590c5a3b8f52db98eb5988394446d09f642ea6f1fe9621664869`, pinned in code; any edit refuses to load).
+v1/v2/v3 paper code and configs are untouched; the pilot only reads v3's rows after v3 wrote them.
+
+**Rules (frozen):** $100 bankroll · per trade 7% of bankroll = min(Kalshi balance, $100 + realized P&L), also capped by the v3 asset caps
+(BTC $5,000 / ETH $400 / SOL $250) and 10% of known volume · total open risk ≤ $100 · **total-loss stop $100 = permanent HALT** until
+`data/live/kalshi-pilot/RESET_TOTAL_STOP` exists *and* `RESET PILOT` is typed on the desk machine · **Daily stop: OFF** (paper arms have none;
+`dailyLossStopCents`/`shrinkToDailyBudget` exist, are tested, and default to null/false) · KXBTC15M / KXETH15M / KXSOL15M only · YES BUY only ·
+limit ≤ ask+1¢ and ≤ 98¢ · IOC · up to 3 slices 10 s apart · only inside v3's window (360–600 s left) · hold to settlement.
+
+**States:** `DISABLED` (inert: no client, no listeners, no files) → `DISARMED` (SHADOW: would-be orders logged, no money) → `ARMED` → `HALTED`.
+Every start is DISARMED (or HALTED if it was); ARMED is never restored. Auto-HALT on: auth failure (401/403), 3 API errors in a row, a send
+without a clear answer, fills that do not match the ack, balance mismatch > 2¢, clock skew > 5 s, an exception in the order path, the kill file
+`data/live/KILL`, the total-loss stop. HALT cancels only the pilot's own resting orders (`client_order_id` `hp1-…`).
+Safety: intent written to `data/live/kalshi-pilot/ledger.jsonl` before every send; deterministic `client_order_id` per slice; reconcile after every
+slice and on startup (by listing orders, matched on `client_order_id`); a market is never traded twice; integer cents / micro-dollars; fees from fills.
+
+**Env (presence-checked only; values never logged or sent to the browser):**
+`LIVE_PILOT_ENABLED=true` (exactly), `KALSHI_TRADE_KEY_ID`, `KALSHI_TRADE_PRIVATE_KEY_PEM` (a separate key with trade scope, no transfer scope),
+optional `KALSHI_TRADE_SUBACCOUNT` (0–63; recommended so the balance check only sees pilot money). The read-only `KALSHI_API_KEY_ID` /
+`KALSHI_PRIVATE_KEY_PEM` are never used for orders.
+
+**Routes:** `POST /api/live/kalshi-pilot/halt` (works from the phone through the proxy when `pilot-halt` is in `HAWSE_PROXY_ALLOW_POST`; the desk
+HALT also halts an ARMED pilot). `POST /api/live/kalshi-pilot/arm|disarm|reset`: loopback socket only, refused if any forwarding header is present,
+JSON + same-origin; the proxy hard-blocks them whatever the allowlist says. Arming also needs the flag, the keys, a read-only preflight (balance,
+key scope, subaccount) and the typed phrase `ARM LIVE $100`.

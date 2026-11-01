@@ -41,7 +41,10 @@ const POST_ROUTES = { // name -> exact path matcher (the only mutating routes th
   'reset-breaker': (p) => p === '/api/reset-breaker',
   risk: (p) => p === '/api/risk',
   arm: (p) => /^\/api\/strategy\/[\w-]+\/arm$/.test(p),
+  'pilot-halt': (p) => p === '/api/live/kalshi-pilot/halt', // Stage Z: the live pilot's HALT (safe to forward: it only stops and cancels)
 };
+// Never forwarded, whatever HAWSE_PROXY_ALLOW_POST says: arming, disarming or resetting the real-money pilot happens on the desk machine only.
+const PILOT_LOCAL_ONLY = (p) => p.startsWith('/api/live/') && p !== '/api/live/kalshi-pilot/halt';
 
 function parseAllow(v) {
   const names = String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -112,6 +115,7 @@ function policy(method, p, allowPost) {
   if (method === 'GET' || method === 'HEAD') return null;
   if (method === 'POST') {
     if (p === '/api/live-order') return [403, 'live orders are never forwarded (paper-only desk)'];
+    if (PILOT_LOCAL_ONLY(p)) return [403, 'the live pilot can only be armed or reset on the desk machine itself; never through the proxy'];
     if (allowPost.some((n) => POST_ROUTES[n](p))) return null;
     return [403, 'read-only proxy: this POST is not on HAWSE_PROXY_ALLOW_POST'];
   }
@@ -177,4 +181,4 @@ if (require.main === module) {
   server.listen(cfg.port, cfg.host, () => console.log(`[auth-proxy] http://${cfg.host}:${cfg.port} -> http://${cfg.upstream.host}:${cfg.upstream.port} · token REQUIRED · POST allowlist: ${cfg.allowPost.length ? cfg.allowPost.join(', ') : 'none (read-only)'} · cookie ${cfg.secureCookie ? 'Secure' : 'NOT Secure (insecure-cookie mode)'}`));
   const bye = () => server.close(() => process.exit(0)); process.on('SIGINT', bye); process.on('SIGTERM', bye);
 }
-module.exports = { createProxy, config, policy, csrf, POST_ROUTES, parseUpstream, stripCookie };
+module.exports = { createProxy, config, policy, csrf, POST_ROUTES, PILOT_LOCAL_ONLY, parseUpstream, stripCookie };

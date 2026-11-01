@@ -37,7 +37,8 @@ test('ws-sign is the ONLY signing code in the repo, and it cannot sign or send a
   const files = [...walkJs(path.join(ROOT, 'server')), ...walkJs(path.join(ROOT, 'public'))];
   const SIGN = /crypto\.sign\s*\(|createSign|KALSHI-ACCESS-(KEY|SIGNATURE|TIMESTAMP)/;
   const hits = files.filter((f) => SIGN.test(fs.readFileSync(f, 'utf8'))).map((f) => path.relative(ROOT, f));
-  assert.deepEqual(hits, [path.join('server', 'kalshi-auth', 'ws-sign.js')]);
+  // exactly two signers: the read-only WS handshake signer, and the Stage Z live-pilot REST client (its own trade key, see test/kalshi-pilot.test.js)
+  assert.deepEqual(hits, [path.join('server', 'kalshi-auth', 'ws-sign.js'), path.join('server', 'live', 'kalshi-rest.js')]);
   assert.deepEqual(fs.readdirSync(path.join(ROOT, 'server', 'kalshi-auth')), ['ws-sign.js'], 'nothing else lives next to the signer');
   const src = fs.readFileSync(path.join(ROOT, 'server', 'kalshi-auth', 'ws-sign.js'), 'utf8');
   for (const re of [/\bfetch\s*\(/, /require\(['"](https?|net|tls|ws)['"]\)/, /new\s+WebSocket/, /['"`]\/portfolio/, /['"`]\/orders?\b/, /['"](POST|PUT|DELETE|PATCH)['"]/, /console\.|log\(/, /writeFile|appendFile/]) assert.ok(!re.test(src), 'ws-sign.js matches ' + re);
@@ -145,6 +146,7 @@ test('read-only scope, repo-wide: no Kalshi order/portfolio endpoint and no key 
   const ENDPOINT = /['"`][^'"`\n]*\/(portfolio|orders?|batch_orders|order_groups|rfqs|quotes)(\/|\?|['"`])/;
   for (const f of files) {
     const src = fs.readFileSync(f, 'utf8'); const rel = path.relative(ROOT, f);
+    if (rel === path.join('server', 'live', 'kalshi-rest.js')) { assert.ok(!/env\.(KALSHI_PRIVATE_KEY\w*|KALSHI_API_KEY_ID)\b/.test(src), 'the pilot client never reads the read-only key'); continue; } // Stage Z: the ONE allowed order client
     assert.ok(!ENDPOINT.test(src), rel + ' names a Kalshi order/portfolio endpoint');
     if (/env\.(KALSHI_PRIVATE_KEY\w*|KALSHI_API_KEY_ID)\b|env\[['"`]KALSHI_(PRIVATE|API_KEY)/.test(src)) assert.equal(rel, path.join('server', 'kalshi-auth', 'ws-sign.js'), rel + ' reads the Kalshi key env');
   }

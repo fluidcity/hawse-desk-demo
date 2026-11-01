@@ -5,6 +5,7 @@
 // separate .u-hidden class, so "shown" in the menu never forces an empty card onto the page.
 (function (root) {
   'use strict';
+  const PINNED = new Set(['kalshi-live-pilot']); // Stage Z: real-money card with the HALT button: movable, never hideable
   const KEY = 'hawse.layout.v1', VIEWS = 'hawse.layout.views.v1';
   const isId = (x) => typeof x === 'string' && x.length > 0 && x.length < 80;
 
@@ -21,7 +22,7 @@
       order.splice(at, 0, id); seen.add(id);
     });
     const hs = saved && Array.isArray(saved.hidden) ? saved.hidden : [];
-    const hidden = hs.filter((id, i) => isId(id) && known.has(id) && hs.indexOf(id) === i);
+    const hidden = hs.filter((id, i) => isId(id) && known.has(id) && hs.indexOf(id) === i && !PINNED.has(id)); // the live pilot (its HALT button) can never be hidden
     return { v: 1, order, hidden };
   }
   function move(state, id, delta) {
@@ -83,6 +84,7 @@
     const nm = c.dataset.cardName || 'card';
     t.innerHTML = '<button type="button" class="c-drag" title="Drag to move (arrow keys work too)">✥</button><button type="button" class="c-hide" title="Hide this card (the Cards menu brings it back)">×</button>';
     t.children[0].setAttribute('aria-label', 'Move ' + nm); t.children[1].setAttribute('aria-label', 'Hide ' + nm);
+    if (PINNED.has(c.dataset.cardId)) t.children[1].remove();
     const h = c.querySelector(':scope > .card-h');
     if (h) h.appendChild(t); else { t.classList.add('abs'); c.appendChild(t); }
   }

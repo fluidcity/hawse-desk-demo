@@ -119,7 +119,9 @@
     parts.push(`${c.none} ${c.none === 1 ? 'has' : 'have'} no trades yet`);
     let sentence = parts.join('; ') + '.';
     if (c.simOnly) sentence += ` ${plural(c.simOnly, 'strategy has', 'strategies have')} SIM-only results (not counted).`;
-    return { real, sim, h2, desk, counts: c, sentence };
+    const lp = (S && S.feeds && S.feeds.kalshiPilot) || null; // Stage Z: REAL money. Its own chip; never added to any paper/real-data total above.
+    const live = lp ? { chip: lp.statusChip || lp.state, settled: (lp.money && lp.money.settled) || 0, wins: (lp.money && lp.money.wins) || 0, losses: (lp.money && lp.money.losses) || 0, realizedCents: lp.money ? lp.money.realizedCents : 0 } : null;
+    return { real, sim, h2, desk, counts: c, sentence, live };
   }
 
   // ---------- HTML (pure strings) ----------
@@ -195,6 +197,7 @@
     const strip = `<div class="sb-strip"><div class="sb-real"><div class="sb-k">REAL-DATA desk <span class="dim">(all strategies, real inputs only)</span></div>` +
       (R.trades ? `<div class="sb-big mono ${tone(R.net)}">${usd(R.net)}</div><div class="sb-wl mono"><span class="pos"><b>${R.wins}</b> wins</span><span class="${R.losses ? 'neg' : 'dim'}"><b>${R.losses}</b> losses</span><span><b>${R.trades}</b> closed</span></div>` : '<div class="sb-big mono sb-none">no trades yet</div>') + `</div>` +
       `<div class="sb-side"><div class="sb-chipbox">${chip('SIM', 'sim', 'mocked/simulated inputs: never added to the real-data total')} ${Sm.trades ? `${Sm.wins}W / ${Sm.losses}L · <b class="${tone(Sm.net)}">${usd(Sm.net)}</b>` : '<span class="dim">no SIM trades</span>'} <span class="dim sm">kept separate</span></div>` +
+      (m.live ? `<div class="sb-chipbox sb-livebox">${chip('LIVE · REAL MONEY', 'real-money', 'Kalshi live pilot: real dollars, kept completely separate from every paper number on this card')} <b>${esc(m.live.chip)}</b> · ${m.live.settled ? `${m.live.wins}W/${m.live.losses}L <b class="${tone(m.live.realizedCents)}">${usd(m.live.realizedCents / 100)}</b>` : '<span class="dim">no live trades</span>'} <span class="dim sm">never added to paper</span></div>` : '') +
       `<div class="sb-chipbox">${chip('PAPER · KALSHI H2', 'paper', 'frozen paper tests on real Kalshi data; different units, so never summed')} ${h2chips || '<span class="dim">not running</span>'}</div></div></div>`;
     return strip + `<p class="sb-sentence">${esc(m.sentence)}</p>` +
       (m.h2.arms.length ? `<div class="sb-sec"><h3 class="sb-h3">Kalshi H2 trades <span class="dim">· what was bought, what it made or lost, and the running total</span></h3>${m.h2.arms.map((a) => armBlock(a, o)).join('')}</div>` : '') +

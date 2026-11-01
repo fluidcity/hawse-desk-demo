@@ -915,37 +915,45 @@ v3 trades exactly v2's decisions and adds size caps. v1 and v2 are unchanged (`2
 
 `server/live/kalshi-pilot.js` + `server/live/kalshi-rest.js` (the only file in the repo that names Kalshi order endpoints or builds an order).
 Follows frozen paper v3's **7% line** (`decision: take`) with real money: frozen config `config/frozen/kalshi-live-pilot.json`
-(version p4, sha256 `e8813ab3765e1759282dd48716c597ebd03572d581133bf3a92abd1a0f2c48b0`, pinned in code; any edit refuses to load).
+(version p5, sha256 `a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7`, pinned in code; any edit refuses to load).
 v1/v2/v3 paper code and configs are untouched; the pilot only reads v3's rows after v3 wrote them. The order path is **REST over HTTPS only**
 (no websocket; the WS recorder stays read-only market data).
 
-**Rules (frozen, p4):** **bankroll = the AVAILABLE CASH of exchange shard 0** (`GET /portfolio/balance?exchange_index=0`, field `balance`, cents;
-`balanceExchangeIndex: 0` in the config) + the pilot's own open cost (already out of cash). It is **not** the all-shard total and **not** `portfolio_value`:
-with $73.50 on shard 0 and $7.03 on shard 1 (total $80.53) the bankroll is $73.50. No bankroll cap; size **compounds** with wins and deposits on shard 0 ·
+**Rules (frozen, p5):** **bankroll = the AVAILABLE CASH of exchange shard 2, the shard the 15-minute crypto markets trade on**
+(`GET /portfolio/balance?exchange_index=2`, field `balance`, cents; `balanceExchangeIndex: 2` in the config) + the pilot's own open cost (already out of cash).
+It is **not** the all-shard total, **not** `portfolio_value` and **not** cash on any other shard: with $72.51 on shard 0, $7.03 on shard 1 and $0 on
+shard 2 the bankroll is **$0** and the pilot is "stopped trading". No bankroll cap; size **compounds** with wins and deposits on shard 2 ·
 per trade 7% of that bankroll, also capped by the v3 asset caps (BTC $5,000 / ETH $400 / SOL $250) and 10% of known volume · **total open risk ≤ the
 bankroll** · no per-trade dollar ceiling beyond those caps · **No loss limit:** the pilot trades until you press HALT or a safety stop trips; the balance
-can go to zero. Realized P&L is shown as information only, not a limit · if shard 0 can't fund one contract (including $0) the pilot simply **stops
-trading** with a plain status ("stopped trading: shard 0 cash $X can't buy one contract…", not an error, not a halt) and resumes when cash is there ·
-if the balance can't be read: shadow marks it stale (or skips), ARMED halts · **Daily stop: OFF**, shrink OFF (paper arms have none;
+can go to zero. Realized P&L is shown as information only, not a limit · if shard 2 can't fund one contract (including $0) the pilot simply **stops
+trading** with a plain status ("stopped trading: shard 2 cash $X can't buy one contract…", not an error, not a halt), sends no order even when ARMED,
+and resumes on its own when cash is there · if the balance can't be read: shadow marks it stale (or skips), ARMED halts · **Daily stop: OFF**, shrink OFF (paper arms have none;
 `dailyLossStopCents`/`shrinkToDailyBudget` exist, are tested, and default to null/false) · KXBTC15M / KXETH15M / KXSOL15M only · YES BUY only ·
 limit ≤ ask+1¢ and ≤ 98¢ · IOC · up to 3 slices 10 s apart · only inside v3's window (360–600 s left) · hold to settlement.
 
-**Exchange shards (read the docs 2026-11-01; partly UNVERIFIED).** Kalshi's Exchange Sharding doc: `exchange_index` scopes balance and
-`portfolio_value`, omitting it gives the all-shard aggregate; collateral is checked **on the market's own shard**; only App/Web orders auto-move cash
-between shards, API orders do not. Create-order is sent **without** `exchange_index`, so Kalshi routes it to the market's own shard. The doc's series
-table lists Crypto on **shard 2** for new events, and public `GET /markets` showed the open KXBTC15M/KXETH15M/KXSOL15M markets with `exchange_index` 2,
-while Bryan's cash is on shards 0 and 1. So the first armed order is **expected to be rejected for insufficient balance** unless shard 2 holds cash
-(or Kalshi moves it); the pilot then halts after that one attempt with "Kalshi rejected the order for insufficient balance on the trading shard".
-Not verified with a real order (none was placed). Changing the sizing shard needs a new config file and hash.
+**Market shard check (p5).** The desk's public `GET /markets` discovery already returns each market's `exchange_index`; the recorder keeps it in
+memory (no extra request) and the pilot reads it at decision time. A market whose known `exchange_index` differs from the sizing shard is **never
+traded**: shadow logs a skipped row (bound `shard`), ARMED writes a `slice_skip` before any order intent, and the card says "not trading TK: that market
+is on exchange shard N but the pilot sizes from shard 2 cash (Kalshi checks cash on the market's own shard). Nothing was sent". That is a plain
+status, not a halt; it clears when a market on shard 2 is seen. If a market's index is unknown, the configured shard is assumed (and an
+`insufficient_balance` reject still halts after one attempt). The same check runs again right before each slice.
+
+**Exchange shards (read the docs 2026-11-01).** Kalshi's Exchange Sharding doc: `exchange_index` scopes balance and `portfolio_value`, omitting it
+gives the all-shard aggregate; collateral is checked **on the market's own shard**; Kalshi's app/web move cash between shards, API orders don't.
+Create-order is sent **without** `exchange_index`, so Kalshi routes it to the market's own shard. Public `GET /markets` showed the open
+KXBTC15M/KXETH15M/KXSOL15M markets with `exchange_index` 2 (Crypto & Commodities). The card shows **cash on other shards** with amounts ("shard 0
+$72.51, shard 1 $7.03, not used for sizing; Kalshi's app/web move cash between shards, API orders don't"). To fund the pilot, cash must be on shard 2.
+p5 contains no transfer code. Changing the sizing shard needs a new config file and hash.
+Screenshot (EXAMPLE / mock data, $0 on shard 2): `docs/screenshots/kalshi-pilot-p5-desktop.png`.
 
 **Sizing follows the current balance (no restart).** Every decision, shadow or live, is 7% of the bankroll *at that moment*. ARMED re-reads the
-shard 0 balance before every slice; DISARMED/shadow does a read-only signed `GET /portfolio/balance?exchange_index=0` before each decision (only when the key and
+shard 2 balance before every slice; DISARMED/shadow does a read-only signed `GET /portfolio/balance?exchange_index=2` before each decision (only when the key and
 `LIVE_PILOT_ENABLED` are present), throttled to once per 20 s with a 4 s timeout. A failed read never halts: the balance is marked **stale** and the
-last value is used; with no balance ever read, the decision is skipped (ARMED halts instead). Deposits that have landed on shard 0, withdrawals and Bryan's
+last value is used; with no balance ever read, the decision is skipped (ARMED halts instead). Deposits that have landed on shard 2, withdrawals and Bryan's
 other trading there change the size of the next decision. A **429** (rate limit) is not a halt: reads back off (2 s, doubling to 60 s) and an armed
 pre-slice read is retried up to twice (the order itself is never retried); 3 API errors in a row is still the existing halt. Display only, never
 sizing: **pending deposits** (read-only `GET /portfolio/deposits`, status `pending`, at most once a minute; a failed read shows "unknown", not a halt),
-**open positions** (`portfolio_value`, "not used for sizing") and **other shard** cash (from `balance_breakdown`, "not used"). Every shadow, compare and live row on the card, and
+**open positions** (`portfolio_value`, "not used for sizing") and **cash on other shards** (per shard, from `balance_breakdown`, "not used for sizing"). Every shadow, compare and live row on the card, and
 every `order_intent`/`slice_skip`/`shadow` ledger row, carries `sizing` = bankroll used, 7%, target $, order $ (contracts × limit) and which cap
 bound (7% line / asset cap / 10% volume / open-risk / balance).
 
@@ -965,7 +973,7 @@ Safety: intent written to `data/live/kalshi-pilot/ledger.jsonl` before every sen
 slice and on startup (by listing orders, matched on `client_order_id`); a market is never traded twice; integer cents / micro-dollars; fees from fills.
 
 **Page layout: the live pilot is the top panel.** On desktop and phone the LIVE Kalshi pilot card (status chip and its HALT button first,
-then shard 0 balance, 7% sizing, shadow/live orders, realized P&L info only, positions, ARM on the desk PC only) is the first panel under the
+then shard 2 balance, cash on other shards, 7% sizing, shadow/live orders, realized P&L info only, positions, ARM on the desk PC only) is the first panel under the
 top bar. It replaced the paper bankroll panel at the top. Below it, a **"Paper desk (simulated)"** divider (PAPER · SIM · NOT REAL MONEY) starts
 the paper desk: the paper desk P&L and paper equity chart (the $10,000 default paper bankroll), the H2 v1/v2/v3 arms, the scoreboard and every
 other card, unchanged and with the same data and ledgers. `public/layout.js` pins `kalshi-live-pilot` and `paper-desk-head` to the top in that
@@ -984,12 +992,12 @@ If the desk key is read-only, the first armed order gets a 401/403 and the pilot
 HALT also halts an ARMED pilot). `POST /api/live/kalshi-pilot/arm|disarm|reset|test-key`: loopback socket only, refused if any forwarding header is
 present, JSON + same-origin; the proxy hard-blocks them whatever the allowlist says. **Test key (read-only balance check)** (`test-key`, card button
 on the desk machine) makes signed GETs only (balance, plus the key list to read scopes), places no orders, writes no ledger rows and works while
-DISABLED: it shows the shard 0 balance and the all-shard total and, if Kalshi reveals scopes, whether trade scope is present; otherwise "trade scope can't be verified until the
+DISABLED: it shows the shard 2 balance, the all-shard total and the per-shard breakdown and, if Kalshi reveals scopes, whether trade scope is present; otherwise "trade scope can't be verified until the
 first armed order". Arming also needs the flag, the key, a read-only preflight (balance, scope if visible, clock) and the typed phrase `ARM LIVE` (exact, from the frozen config).
 
 **Setup on the desk PC (Bryan):**
 1. (a) Confirm the desk's existing Kalshi key is in `C:\HAWSE\hawse.env` (`KALSHI_API_KEY_ID` plus `KALSHI_PRIVATE_KEY_PEM` or `KALSHI_PRIVATE_KEY_PATH`;
    it is already there if the desk shows live Kalshi data). The card should read "Kalshi key: set (existing desk key)".
-2. (b) On the desk PC, press **Test key (read-only balance check)** on the LIVE pilot card. It should say OK with your shard 0 and all-shard balances. No order is placed.
+2. (b) On the desk PC, press **Test key (read-only balance check)** on the LIVE pilot card. It should say OK with your shard 2 balance, the all-shard total and each shard's cash. No order is placed.
 3. (c) Add `LIVE_PILOT_ENABLED=true` to `C:\HAWSE\hawse.env`, restart the desk, and watch the **SHADOW** rows (would-be orders, no money) for a while.
 4. Arming is a separate, deliberate step: type `ARM LIVE` on the desk machine. Every restart comes back DISARMED. HALT is always on the card.

@@ -63,10 +63,11 @@ class KalshiRecorder {
   watchSpec() { return [{ key: 'recorder kalshi books', ids: ['rec.kalshi.book'], intervalMs: this.c.bookMs * 5, restart: () => this.restart() }]; }
   /** Track a market (also used by the paper test to make sure a filled market's settlement is fetched after a restart). */
   track(m, kind = 'crypto', series = null) {
-    const tk = m.ticker; if (this.markets.has(tk)) return this.markets.get(tk);
+    const tk = m.ticker; const xi = Number.isInteger(m.exchange_index) ? m.exchange_index : null; // exchange shard (public /markets field); kept in memory for the live pilot's shard check
+    if (this.markets.has(tk)) { const old = this.markets.get(tk); if (xi != null) old.exchangeIndex = xi; return old; }
     const st = { tk, series: series || m.series_ticker || tk.split('-')[0], kind, open: Date.parse(m.open_time) || null, close: Date.parse(m.close_time) || null, strike: num(m.floor_strike),
       strikeType: m.strike_type || null, pls: m.price_level_structure || null, ranges: m.price_ranges || null, lastBookKey: null, lastBookOk: null, lastTradeOk: null, lastTradeEx: null, seen: new Set(), seenQ: [],
-      settled: !!(m.result && (m.status === 'finalized' || m.status === 'settled')), settleTries: 0, books: 0, bookRows: 0, trades: 0, last: null, firstBookAt: null };
+      settled: !!(m.result && (m.status === 'finalized' || m.status === 'settled')), exchangeIndex: xi, settleTries: 0, books: 0, bookRows: 0, trades: 0, last: null, firstBookAt: null };
     this.markets.set(tk, st);
     if (m.open_time) {
       this.store.write('kalshi.market', { t: 'market', tk, s: st.series, kind, ev: m.event_ticker || null, open: st.open, close: st.close, exp: Date.parse(m.expected_expiration_time) || null, strike: st.strike,

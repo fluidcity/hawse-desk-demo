@@ -113,9 +113,10 @@ function makeTradeClient({ env = process.env, fetchImpl = globalThis.fetch, now 
     cancelOrder: (orderId, ticker) => call('DELETE', EP.cancelOrder(orderId), { query: { market_ticker: ticker, ...subQ() } }),
     /** One IOC limit buy of YES. Validated again here, whatever the caller checked.
      * exchange_index is deliberately omitted: per Kalshi's Exchange Sharding doc, Kalshi then auto-routes by ticker to the market's own
-     * shard (the doc says explicit exchange_index >= 0 routes directly, and no ticker defaults to 0). The pilot SIZES from shard 0 cash
-     * (cfg.balanceExchangeIndex); if a market lives on another shard (the doc lists Crypto under shard 2 for new events; unverified for
-     * these series) that shard's cash is what Kalshi checks, and an insufficient_balance reject halts the pilot after one attempt. */
+     * shard (the doc says explicit exchange_index >= 0 routes directly, and no ticker defaults to 0). The pilot SIZES from shard 2 cash
+     * (cfg.balanceExchangeIndex, p5): the doc lists Crypto under shard 2 and the public GET /markets shows KXBTC15M/KXETH15M/KXSOL15M with
+     * exchange_index 2, and Kalshi checks cash on the market's own shard. The pilot refuses a market whose known exchange_index differs;
+     * any insufficient_balance reject still halts the pilot after one attempt. */
     async createOrder(o) {
       validateOrder(o);
       const body = { ticker: o.ticker, side: 'bid', count: o.count.toFixed(2), price: centsToPrice(o.priceCents), time_in_force: 'immediate_or_cancel',

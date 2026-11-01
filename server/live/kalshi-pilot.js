@@ -1,5 +1,5 @@
 'use strict';
-// Kalshi LIVE PILOT: real money, 7% of exchange shard 0 available cash (compounds; no bankroll cap; no loss limit), follows the frozen paper v3 '7pct' line's 'take' decisions (config/frozen/kalshi-live-pilot.json).
+// Kalshi LIVE PILOT: real money, 7% of exchange shard 2 available cash (the shard the 15-minute crypto markets trade on; compounds; no bankroll cap; no loss limit), follows the frozen paper v3 '7pct' line's 'take' decisions (config/frozen/kalshi-live-pilot.json).
 // Ships DISABLED and DISARMED. It cannot send an order unless ALL of these hold: LIVE_PILOT_ENABLED === 'true', both trade key env
 // key present (dedicated trade key, else the desk's existing key), a passing read-only preflight, and the exact phrase typed on the desk machine (localhost-only endpoint; the auth
 // proxy never forwards it). ARMED is never restored after a restart. HALTED is persisted and needs a manual reset.
@@ -12,7 +12,7 @@ const crypto = require('crypto');
 const rest = require('./kalshi-rest');
 
 const PILOT_FILE = path.join(__dirname, '..', '..', 'config', 'frozen', 'kalshi-live-pilot.json');
-const PILOT_SHA256 = 'e8813ab3765e1759282dd48716c597ebd03572d581133bf3a92abd1a0f2c48b0';
+const PILOT_SHA256 = 'a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7';
 const U = 10000; // u$ per cent
 const BALANCE_REFRESH_MS = 20000, BALANCE_TIMEOUT_MS = 4000; // shadow balance refresh: at most once per 20 s, 4 s timeout
 const INFO_REFRESH_MS = 60000; // display-only reads (pending deposits, all-shard balance): at most once a minute
@@ -43,13 +43,21 @@ const worstCents = (n, limit) => n * limit + feeCents(n, limit);
 const maxN = (budgetCents, limit, hi) => { let n = Math.max(0, Math.min(hi, Math.floor(budgetCents / limit))); while (n > 0 && worstCents(n, limit) > budgetCents) n--; return n; };
 function laDay(ms, tz = 'America/Los_Angeles') { return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms)); }
 const toCents = (d) => Math.round(Number(d) * 100);
-/** One GET /portfolio/balance reply -> available cash (cents), portfolio_value (cents, open positions) and per-shard cash from balance_breakdown (dollar strings). */
+/**
+ * One GET /portfolio/balance reply -> available cash (cents), portfolio_value (cents, open positions) and per-shard cash from
+ * balance_breakdown (dollar strings): otherShardCents = the sum of every shard except `shard`; shards = [{ exchangeIndex, cents }]
+ * sorted by index (null when Kalshi sent no breakdown). Display only: sizing uses `cents` of the shard-scoped read.
+ */
 function parseBalance(b, shard) {
   const cents = Number.isInteger(b && b.balance) ? b.balance : Math.round((rest.dollarsToMicros(b && b.balance_dollars) ?? NaN) / U);
   const pv = Number.isInteger(b && b.portfolio_value) ? b.portfolio_value : null;
-  let other = null; const bd = b && Array.isArray(b.balance_breakdown) ? b.balance_breakdown : null;
-  if (bd) for (const x of bd) { if (x.exchange_index === shard) continue; const m = rest.dollarsToMicros(x.balance); if (m != null) other = (other || 0) + Math.round(m / U); }
-  return { cents, portfolioValueCents: pv, otherShardCents: other };
+  let other = null, shards = null; const bd = b && Array.isArray(b.balance_breakdown) ? b.balance_breakdown : null;
+  if (bd) {
+    shards = [];
+    for (const x of bd) { const m = rest.dollarsToMicros(x.balance); if (m == null || !Number.isInteger(x.exchange_index)) continue; const c = Math.round(m / U); shards.push({ exchangeIndex: x.exchange_index, cents: c }); if (x.exchange_index !== shard) other = (other || 0) + c; }
+    shards.sort((a, z) => a.exchangeIndex - z.exchangeIndex);
+  }
+  return { cents, portfolioValueCents: pv, otherShardCents: other, shards };
 }
 const assetOf = (tk) => { const m = /^KX(BTC|ETH|SOL)15M-/.exec(String(tk)); return m ? m[1] : null; };
 
@@ -79,7 +87,7 @@ function planSlice({ cfg, tk, askCents, limitCents, bankrollCents, availCents, v
 }
 /** Card/ledger sizing fields: bankroll used, percent, order dollars (contracts x limit), 7% target dollars, which cap bound. */
 const CAP_LABEL = { pct: '7% line', asset: 'asset cap', participation: '10% volume', openRisk: 'open-risk', cash: 'balance', daily: 'daily budget', remaining: 'target reached',
-  series: 'series', price: 'price', unknown_volume: 'volume unknown', no_balance: 'no balance yet' };
+  series: 'series', price: 'price', unknown_volume: 'volume unknown', no_balance: 'no balance yet', shard: 'market on another shard' };
 function sizingOf(cfg, bankrollCents, perTradeCents, contracts, limitCents, bound) {
   const caps = (bound || []).map((b) => CAP_LABEL[b] || b);
   return { bankrollCents, pct: Math.round(cfg.perTradePct * 10000) / 100, targetCents: perTradeCents == null ? null : perTradeCents, sizeCents: contracts * (limitCents || 0),
@@ -94,7 +102,7 @@ class KalshiPilot {
     this.presence = rest.tradeEnvPresence(env);
     this.cfg = null; this.hash = null; this.error = null; this.state = 'DISABLED'; this.inert = []; this.haltReason = null;
     this.signals = new Map(); this.shadow = []; this.events = []; this.realizedMicros = 0; this.dayLoss = new Map();
-    this.balanceCents = null; this.balanceAt = null; this.balanceTryAt = null; this.balanceStale = false; this.balanceError = null; this.backoffMs = 0; this.backoffUntil = 0; this.info = { at: null, tryAt: null, backoffMs: 0, backoffUntil: 0 }; this.portfolioValueCents = null; this.otherShardCents = null; this.outOfMoney = null; this.apiErrors = 0; this.busy = new Set(); this.timers = []; this.preflight = null;
+    this.shards = null; this.shardMismatch = null; this.balanceCents = null; this.balanceAt = null; this.balanceTryAt = null; this.balanceStale = false; this.balanceError = null; this.backoffMs = 0; this.backoffUntil = 0; this.info = { at: null, tryAt: null, backoffMs: 0, backoffUntil: 0 }; this.portfolioValueCents = null; this.otherShardCents = null; this.outOfMoney = null; this.apiErrors = 0; this.busy = new Set(); this.timers = []; this.preflight = null;
     try { const f = loadPilotConfig(file, pin); this.cfg = f.cfg; this.hash = f.hash; } catch (e) { this.error = e.message; this.inert.push('config: ' + e.message); }
     if (!this.presence.enabledFlag) this.inert.push('LIVE_PILOT_ENABLED is not "true"');
     if (!this.presence.keySet) this.inert.push('Kalshi key not set');
@@ -102,7 +110,7 @@ class KalshiPilot {
     this.client = null;
     if (!this.inert.length) { try { this.client = client !== undefined ? client : rest.makeTradeClient({ env, fetchImpl, now }); } catch (e) { this.inert.push(e.message); } }
     if (!this.client && !this.inert.length) this.inert.push('trade client unavailable');
-    if (health) health.register('live.kalshi-pilot', { label: 'Kalshi LIVE pilot (v3 7% of shard 0 cash)', group: 'live', note: 'real money; ships disabled and disarmed', staleMs: 600000 });
+    if (health) health.register('live.kalshi-pilot', { label: `Kalshi LIVE pilot (v3 7% of shard ${this.cfg ? this.cfg.balanceExchangeIndex : '?'} cash)`, group: 'live', note: 'real money; ships disabled and disarmed', staleMs: 600000 });
   }
   get enabled() { return !this.inert.length; }
   // ---- ledger -------------------------------------------------------------------------------------------------
@@ -188,7 +196,7 @@ class KalshiPilot {
     try {
       const b = await this.readShard(this.client); pf.balanceCents = b.cents; pf.exchangeIndex = this.cfg.balanceExchangeIndex;
       if (!Number.isFinite(pf.balanceCents)) throw new Error(`shard ${pf.exchangeIndex} balance unreadable`);
-      if (!(pf.balanceCents > 0)) throw new Error(`shard ${pf.exchangeIndex} available cash is $0.00: nothing to trade (move cash to shard ${pf.exchangeIndex})`);
+      if (!(pf.balanceCents > 0)) throw new Error(`shard ${pf.exchangeIndex} available cash is $0.00: nothing to trade (move cash to shard ${pf.exchangeIndex}: Kalshi's app/web move cash between shards, API orders don't)`);
       if (!this.checkSkew()) throw new Error('clock skew');
       // the money about to be risked: one full trade at 7% of the bankroll (shard cash + the pilot's own open cost)
       pf.perTradeCents = Math.floor(((pf.balanceCents + this.openRiskCents()) * Math.round(this.cfg.perTradePct * 10000)) / 10000);
@@ -223,7 +231,7 @@ class KalshiPilot {
     if (!c) { r.error = 'no Kalshi key set'; return (this.keyTest = r); }
     try {
       const b = await this.readShard(c); r.exchangeIndex = this.cfg.balanceExchangeIndex; r.balanceCents = b.cents; r.portfolioValueCents = b.portfolioValueCents;
-      try { const a = parseBalance(await c.getBalance(), r.exchangeIndex); r.aggregateCents = a.cents; r.otherShardCents = a.otherShardCents != null ? a.otherShardCents : Number.isFinite(a.cents) ? a.cents - b.cents : null; } catch (e) { r.aggregateError = String(e.message || e).slice(0, 120); }
+      try { const a = parseBalance(await c.getBalance(), r.exchangeIndex); r.aggregateCents = a.cents; r.shards = a.shards; r.otherShardCents = a.otherShardCents != null ? a.otherShardCents : Number.isFinite(a.cents) ? a.cents - b.cents : null; } catch (e) { r.aggregateError = String(e.message || e).slice(0, 120); }
       r.skewMs = c.lastSkewMs;
       if (r.skewMs != null && Math.abs(r.skewMs) > this.cfg.halts.maxClockSkewMs) r.error = `clock skew: this PC is ${Math.round(r.skewMs / 1000)} s off Kalshi; fix the Windows clock (Settings > Time > Sync now)`;
       Object.assign(r, await this.readScopes(c));
@@ -245,14 +253,31 @@ class KalshiPilot {
   openRiskCents() { let s = 0; for (const x of this.signals.values()) if (!x.settle && x.filled) s += Math.ceil((x.costMicros + x.feeMicros) / U); return s; }
   dayOpenRiskCents(day) { let s = 0; for (const x of this.signals.values()) if (!x.settle && x.filled && laDay(x.at || 0, this.cfg.dailyLossTimeZone) === day) s += Math.ceil((x.costMicros + x.feeMicros) / U); return s; }
   dayLossCents(day) { const v = this.dayLoss.get(day) || 0; return v < 0 ? Math.ceil(-v / U) : 0; }
-  /** Bankroll = shard 0 available cash + the pilot's own open cost (already out of cash). No cap: it compounds. Never portfolio_value, other shards or pending deposits. null until a balance is read. */
+  /** Bankroll = the sizing shard's (cfg.balanceExchangeIndex, 2 in p5) available cash + the pilot's own open cost (already out of cash). No cap: it compounds. Never portfolio_value, other shards or pending deposits. null until a balance is read. */
   bankrollCents() {
     if (this.balanceCents == null) return null;
     return Math.max(0, this.balanceCents + this.openRiskCents());
   }
   /** Read the sizing shard only: GET /portfolio/balance?exchange_index=<cfg.balanceExchangeIndex>. */
   async readShard(client) { return parseBalance(await client.getBalance({ exchangeIndex: this.cfg.balanceExchangeIndex }), this.cfg.balanceExchangeIndex); }
-  noteBalance(b) { if (b.portfolioValueCents != null) this.portfolioValueCents = b.portfolioValueCents; if (b.otherShardCents != null) this.otherShardCents = b.otherShardCents; }
+  noteBalance(b) { if (b.portfolioValueCents != null) this.portfolioValueCents = b.portfolioValueCents; if (b.otherShardCents != null) this.otherShardCents = b.otherShardCents; if (b.shards) this.shards = b.shards; }
+  /**
+   * The market's own exchange shard, from the public market data the desk already has (the recorder's GET /markets discovery
+   * carries exchange_index; no extra request). null = unknown. A KNOWN shard that differs from cfg.balanceExchangeIndex means the
+   * pilot would size from the wrong shard's cash, so that market is never traded (plain status, not a halt).
+   */
+  marketShard(tk, sig) {
+    if (sig && Number.isInteger(sig.exchangeIndex)) return sig.exchangeIndex;
+    const m = this.kalshi && this.kalshi.markets && typeof this.kalshi.markets.get === 'function' ? this.kalshi.markets.get(tk) : null;
+    return m && Number.isInteger(m.exchangeIndex) ? m.exchangeIndex : null;
+  }
+  shardOk(tk, sig) {
+    const ms = this.marketShard(tk, sig), want = this.cfg.balanceExchangeIndex;
+    if (ms == null) return true; // unknown: the configured shard is used; a wrong shard is caught by Kalshi's insufficient-balance reject (one attempt, then HALT)
+    if (ms === want) { if (this.shardMismatch) this.shardMismatch = null; return true; }
+    this.shardMismatch = { at: this.now(), tk, marketShard: ms, balanceShard: want }; return false;
+  }
+  shardMsg() { const m = this.shardMismatch; return m ? `not trading ${m.tk}: that market is on exchange shard ${m.marketShard} but the pilot sizes from shard ${m.balanceShard} cash (Kalshi checks cash on the market's own shard). Nothing was sent; a different sizing shard needs a new config.` : null; }
   /** 429 is never a halt by itself: double the wait (2 s .. 60 s) before the next read of that kind. */
   backoff(o, e) { if (!(e && e.status === 429)) return false; o.backoffMs = Math.min(BACKOFF_MAX_MS, (o.backoffMs || 1000) * 2); o.backoffUntil = this.now() + o.backoffMs; return true; }
   /** Plain status when the shard can't fund one contract at this limit: the pilot just stops trading (not an error, not a halt). */
@@ -276,7 +301,7 @@ class KalshiPilot {
     try {
       const a = parseBalance(await this.client.getBalance(), this.cfg.balanceExchangeIndex);
       if (a.portfolioValueCents != null) this.portfolioValueCents = a.portfolioValueCents;
-      this.otherShardCents = a.otherShardCents != null ? a.otherShardCents : null;
+      this.otherShardCents = a.otherShardCents != null ? a.otherShardCents : null; if (a.shards) this.shards = a.shards;
       o.at = t;
     } catch (e) { this.backoff(o, e); }
   }
@@ -296,7 +321,13 @@ class KalshiPilot {
   onTake(sig) {
     if (this.state === 'DISABLED') return null;
     const askCents = toCents(sig.ya), limit = Math.min(this.cfg.order.maxPriceCents, askCents + this.cfg.order.limitAboveAskCents);
-    this.write({ t: 'signal', tk: sig.tk, asset: sig.asset, decisionAsk: askCents, limit, close: sig.close, bookRx: sig.bookRx, state: this.state });
+    const marketShard = this.marketShard(sig.tk, sig);
+    this.write({ t: 'signal', tk: sig.tk, asset: sig.asset, decisionAsk: askCents, limit, close: sig.close, bookRx: sig.bookRx, state: this.state, marketShard });
+    if (!this.shardOk(sig.tk, sig)) { // wrong shard: never size or send (shadow and armed alike); not a halt
+      if (this.state === 'DISARMED') return this.write({ t: 'shadow', noMoney: true, tk: sig.tk, decisionAsk: askCents, limit, contracts: 0, bound: ['shard'], skipped: this.shardMsg(), sizing: sizingOf(this.cfg, this.bankrollCents(), null, 0, limit, ['shard']), slices: [] });
+      if (this.state === 'ARMED') return this.write({ t: 'slice_skip', tk: sig.tk, slice: 1, reason: this.shardMsg() });
+      return null;
+    }
     if (this.state === 'DISARMED') { const p = this.shadowPlan(sig, askCents, limit).catch((e) => { this.log('pilot shadow: ' + e.message); return null; }); this.sig(sig.tk).run = p; return p; }
     if (this.state === 'ARMED') { const p = this.runSignal(sig.tk).catch((e) => this.halt('exception in order path: ' + e.message, 'exception')); this.sig(sig.tk).run = p; return p; }
     return null;
@@ -309,7 +340,7 @@ class KalshiPilot {
   }
   markBalance() { this.balanceAt = this.balanceTryAt = this.now(); this.balanceStale = false; this.balanceError = null; }
   /**
-   * SHADOW sizing tracks the live shard 0 cash: a read-only signed GET balance?exchange_index=0 before a decision, at most once
+   * SHADOW sizing tracks the live sizing-shard cash: a read-only signed GET balance?exchange_index=<cfg> (2 in p5) before a decision, at most once
    * per 20 s and with a short timeout. A failure never halts in shadow; it marks the balance stale and the last known value is
    * used (or the decision is skipped if there has never been one). A 429 backs off (doubling, up to 60 s) before the next read.
    */
@@ -375,6 +406,7 @@ class KalshiPilot {
     const coid = ('hp1-' + s.tk + '-s' + i).replace(/[^\w-]/g, '').slice(0, 64);
     if (s.intents.has(coid)) return null; // never twice
     if (!this.presence.enabledFlag || this.state !== 'ARMED') return null; // orders are signed only when LIVE_PILOT_ENABLED === 'true' AND ARMED
+    if (!this.shardOk(s.tk)) { this.write({ t: 'slice_skip', tk: s.tk, slice: i, reason: this.shardMsg() }); return null; } // last guard before an intent
     const balBefore = this.balanceCents;
     this.write({ t: 'order_intent', tk: s.tk, coid, slice: i, contracts: z.contracts, limit: s.limit, decisionAsk: s.decisionAsk, tif: 'IOC', side: 'yes', action: 'buy', bound: z.bound, caps: z.caps, sizing: z.sizing, balanceBeforeCents: balBefore });
     if (!this.checkSkew()) return null;
@@ -449,7 +481,7 @@ class KalshiPilot {
       source: k ? 'kalshi settlement' : 'kalshi official result (via v1)', kalshiRevenueCents: k ? k.revenue : undefined, bankrollBeforeCents: before, bankrollAfterCents: before == null ? null : before + Math.floor(pnl / U) });
     this.checkStops();
   }
-  /** No loss limit (p4): realized P&L is information only. Only the optional daily stop (OFF in p4) lives here. */
+  /** No loss limit (p4, p5): realized P&L is information only. Only the optional daily stop (OFF in p5) lives here. */
   checkStops() {
     if (this.cfg.dailyLossStopCents != null) { const d = laDay(this.now(), this.cfg.dailyLossTimeZone); if (this.dayLossCents(d) >= this.cfg.dailyLossStopCents) return this.halt(`daily loss stop (${d})`, 'daily_loss'); }
     return null;
@@ -472,16 +504,16 @@ class KalshiPilot {
         sizing: s.slices.length ? (s.intents.get(s.slices[0]) || {}).sizing || null : sh ? sh.sizing || null : null,
         slippageCents: s.filled ? Math.round((s.costMicros / s.filled / U - s.decisionAsk) * 100) / 100 : null, unfilled: i0Unfilled(s) };
     });
-    return { title: 'LIVE · REAL MONEY · Kalshi pilot (v3 7% of shard 0 cash)', state: this.state, statusChip: this.state === 'DISARMED' ? 'DISARMED-SHADOW' : this.state, inert: this.inert, error: this.error,
+    return { title: `LIVE · REAL MONEY · Kalshi pilot (v3 7% of shard ${c ? c.balanceExchangeIndex : '?'} cash)`, state: this.state, statusChip: this.state === 'DISARMED' ? 'DISARMED-SHADOW' : this.state, inert: this.inert, error: this.error,
       env: this.presence, hash: this.hash, haltReason: this.haltReason, killFile: this.killed(), preflight: this.preflight ? { ok: this.preflight.ok, error: this.preflight.error, warn: this.preflight.warn, scopeNote: this.preflight.scopeNote, at: this.preflight.at } : null,
-      keyTest: this.keyTest ? { at: this.keyTest.at, ok: this.keyTest.ok, balanceCents: this.keyTest.balanceCents, exchangeIndex: this.keyTest.exchangeIndex, aggregateCents: this.keyTest.aggregateCents, otherShardCents: this.keyTest.otherShardCents, tradeScope: this.keyTest.tradeScope, scopeNote: this.keyTest.scopeNote, error: this.keyTest.error, warn: this.keyTest.warn, keySource: this.keyTest.keySource } : null,
+      keyTest: this.keyTest ? { at: this.keyTest.at, ok: this.keyTest.ok, balanceCents: this.keyTest.balanceCents, exchangeIndex: this.keyTest.exchangeIndex, aggregateCents: this.keyTest.aggregateCents, otherShardCents: this.keyTest.otherShardCents, shards: this.keyTest.shards || null, tradeScope: this.keyTest.tradeScope, scopeNote: this.keyTest.scopeNote, error: this.keyTest.error, warn: this.keyTest.warn, keySource: this.keyTest.keySource } : null,
       mainAccount: this.client ? this.client.subaccount == null : !this.presence.subaccount,
       config: c ? { perTradePct: c.perTradePct, perAssetCapCents: c.perAssetCapCents, participationShare: c.participationShare,
         dailyLossStopCents: c.dailyLossStopCents, shrinkToDailyBudget: !!c.shrinkToDailyBudget, balanceExchangeIndex: c.balanceExchangeIndex, maxPriceCents: c.order.maxPriceCents, maxSlices: c.order.maxSlices, sliceGapMs: c.order.sliceGapMs,
         series: c.series, follows: c.follows.line, armPhrase: c.armPhrase } : null,
       money: { real: true, bankrollCents: this.cfg ? this.bankrollCents() : null, perTradeCents: this.cfg && this.bankrollCents() != null ? Math.floor((this.bankrollCents() * Math.round(c.perTradePct * 10000)) / 10000) : null, balanceCents: this.balanceCents, balanceAt: this.balanceAt, balanceStale: this.balanceStale,
         balanceSource: c ? { exchangeIndex: c.balanceExchangeIndex, field: 'balance (available cash)', at: this.balanceAt } : null, backoffMs: this.backoffMs || 0,
-        openPositionsCents: this.portfolioValueCents, otherShardCents: this.otherShardCents, deposits: this.info.deposits || null, outOfMoney: this.outOfMoney ? this.fundsMsg() : null, realizedCents: this.realizedMicros / U, openRiskCents: this.openRiskCents(),
+        openPositionsCents: this.portfolioValueCents, otherShardCents: this.otherShardCents, shards: this.shards, otherShards: c && this.shards ? this.shards.filter((x) => x.exchangeIndex !== c.balanceExchangeIndex) : null, shardMismatch: this.shardMismatch ? this.shardMsg() : null, deposits: this.info.deposits || null, outOfMoney: this.outOfMoney ? this.fundsMsg() : null, realizedCents: this.realizedMicros / U, openRiskCents: this.openRiskCents(),
         dayLossCents: this.cfg ? this.dayLossCents(laDay(this.now(), c.dailyLossTimeZone)) : 0, fills: [...this.signals.values()].reduce((a, s) => a + s.fills.length, 0),
         settled: [...this.signals.values()].filter((s) => s.settle && s.filled).length, wins: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros > 0).length, losses: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros < 0).length },
       trades, compare, shadow: this.shadow.slice(-15).reverse(), events: this.events.slice(-12).reverse().map((e) => ({ at: e.at, t: e.t, tk: e.tk, reason: e.reason, coid: e.coid })) };

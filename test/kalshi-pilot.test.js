@@ -1,5 +1,5 @@
 'use strict';
-// Stage Z: Kalshi LIVE pilot (v3 7% of exchange shard 0 cash, no loss limit). Every exchange call here is a mock: zero real network.
+// Stage Z: Kalshi LIVE pilot (v3 7% of exchange shard 2 cash, the 15-minute crypto shard; no loss limit). Every exchange call here is a mock: zero real network.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -66,7 +66,7 @@ test('frozen hashes: pilot config pinned; v1/v2/v3 unchanged; pilot follows v3 7
   assert.equal(sha('config/frozen/kalshi-h2-v1.json'), '2f0053c4eb13bd48697eb06d4a6c841b327313393e97c619e96e3e9956c9675c');
   assert.equal(sha('config/frozen/kalshi-h2-v2.json'), 'ee5185f8e059a8995c557b474b873f47dae867be5f02fb021368c83cf0294a4c');
   assert.equal(sha('config/frozen/kalshi-h2-v3.json'), '5498e1cbea6c45e427876dd2971f041421ef18ad06c103dc7921898f5179ce1c');
-  assert.equal(CFG.perTradePct, 0.07); assert.equal(CFG.follows.line, '7pct'); assert.equal(CFG.version, 'p4'); assert.equal(CFG.bankrollCents, undefined, 'no bankroll cap'); assert.equal(CFG.balanceExchangeIndex, 0);
+  assert.equal(CFG.perTradePct, 0.07); assert.equal(CFG.follows.line, '7pct'); assert.equal(CFG.version, 'p5'); assert.equal(CFG.bankrollCents, undefined, 'no bankroll cap'); assert.equal(CFG.balanceExchangeIndex, 2); assert.equal(P.PILOT_SHA256, 'a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7');
   assert.equal(CFG.dailyLossStopCents, null); assert.equal(CFG.shrinkToDailyBudget, false);
   assert.equal(CFG.maxOpenRiskCents, undefined); assert.equal(CFG.totalLossStopCents, undefined); assert.equal(CFG.maxTradeCents, undefined, 'no per-trade dollar ceiling');
   assert.ok(!Object.keys(CFG).some((k) => /loss ?limit|totalLoss/i.test(k)), 'no loss-limit field'); assert.equal(CFG.armPhrase, 'ARM LIVE'); assert.equal(P.loadPilotConfig().cfg.armPhrase, 'ARM LIVE'); assert.equal(CFG.order.maxPriceCents, 98);
@@ -133,8 +133,8 @@ test('DISARMED = SHADOW: each v3 take logs a would-be order (no money) and sends
   assert.equal(p.state, 'DISARMED'); v.take(); await p.signals.get(TK).run;
   v.v3.rows.set('KXETH15M-B', { sig: { tk: 'KXETH15M-B', ya: 0.95, decision: 'skip' } }); for (const f of v.v1.rowListeners) f({ t: 'signal', tk: 'KXETH15M-B' });
   assert.equal(p.shadow.length, 1); assert.equal(p.shadow[0].noMoney, true); assert.equal(p.shadow[0].contracts, 7, '7% of the live $100 balance'); assert.equal(p.shadow[0].limit, 96);
-  assert.deepEqual(client.calls, ['balance', 'deposits', 'balance_all'], 'shadow makes read-only GETs only: shard 0 balance (sizing), then display-only deposits and all-shard balance');
-  assert.deepEqual(client.balanceArgs[0], { exchangeIndex: 0 }); assert.equal(p.snapshot().statusChip, 'DISARMED-SHADOW');
+  assert.deepEqual(client.calls, ['balance', 'deposits', 'balance_all'], 'shadow makes read-only GETs only: shard 2 balance (sizing), then display-only deposits and all-shard balance');
+  assert.deepEqual(client.balanceArgs[0], { exchangeIndex: 2 }); assert.equal(p.snapshot().statusChip, 'DISARMED-SHADOW');
   v.line.orders.set(TK, { filled: 7, vwap: 0.955, unfilled: 0, fee: 0.03 }); const cmp = p.snapshot().compare[0]; assert.equal(cmp.paper.filled, 7); assert.equal(cmp.shadow.contracts, 7);
 });
 
@@ -278,9 +278,9 @@ test('repo-wide: only the pilot client names order endpoints / builds orders; ev
 test('card: HALT always visible, ARM only on this machine, "Daily stop: OFF", SHADOW rows say NO MONEY; Scoreboard LIVE chip is separate from paper', async () => {
   const UI = require('../public/pilot.js'), SB = require('../public/scoreboard.js');
   const v = fakes(); const { p } = pilot({ v }); v.take(); await p.signals.get(TK).run; const snap = p.snapshot();
-  assert.equal(snap.title, 'LIVE · REAL MONEY · Kalshi pilot (v3 7% of shard 0 cash)');
+  assert.equal(snap.title, 'LIVE · REAL MONEY · Kalshi pilot (v3 7% of shard 2 cash)');
   const hc = UI.render(snap, {}); assert.match(hc, /No loss limit: the pilot trades until you press HALT or a safety stop trips; the balance can go to zero\./);
-  assert.match(hc, /shard 0 available cash, read at /); assert.match(hc, /open positions \$0\.00 \(not used for sizing\)/); assert.match(hc, /pending deposits/); assert.match(hc, /info only, not a limit/);
+  assert.match(hc, /shard 2 available cash \(the shard the 15-minute crypto markets trade on\), read at /); assert.match(hc, /open positions \$0\.00 \(not used for sizing\)/); assert.match(hc, /pending deposits/); assert.match(hc, /info only, not a limit/);
   assert.doesNotMatch(hc + UI.render(snap, { local: true }), /Loss limit|LOSS LIMIT|realized-loss|headroom|overshoot/); assert.equal((hc.match(/loss limit/gi) || []).length, 1, 'only the No loss limit statement');
   assert.match(UI.render(snap, { local: true }), /ARM LIVE/);
   const h = UI.render(snap, { local: false }); assert.match(h, /data-pilot="halt"/); assert.doesNotMatch(h, /data-pilot="arm"/); assert.match(h, /Daily stop: OFF \(paper arms have none\)/); assert.match(h, /SHADOW · NO MONEY/); assert.match(h, /DISARMED-SHADOW/);
@@ -366,33 +366,84 @@ test('arm phrase: exactly "ARM LIVE" (from the frozen config)', async () => {
   const { file: f3, pin: p3 } = cfgFile((c) => { delete c.balanceExchangeIndex; }); assert.throws(() => P.loadPilotConfig(f3, p3), /balanceExchangeIndex/);
 });
 
-test('sizing uses shard 0 available cash only: aggregate $80.53 with shard 0 $73.50 -> bankroll $73.50; portfolio_value, other shards and pending deposits never size', async () => {
+const BD = [{ exchange_index: 0, balance: '72.5100' }, { exchange_index: 1, balance: '7.0300' }, { exchange_index: 2, balance: '0.0000' }, { exchange_index: 3, balance: '0.0000' }];
+test('p5 sizing uses shard 2 available cash only: shard 2 $50 with $72.51 on shard 0 and $7.03 on shard 1 -> bankroll $50; portfolio_value, other shards and pending deposits never size', async () => {
   let t = Date.parse('2026-11-01T18:00:00Z'); const now = () => t;
-  const v = fakes(), c = fakeClient({ balance: 7350, aggregate: 8053, pv: 5650, breakdown: [{ exchange_index: 0, balance: '73.5000' }, { exchange_index: 1, balance: '7.0300' }, { exchange_index: 2, balance: '0.0000' }, { exchange_index: 3, balance: '0.0000' }],
+  const bd = BD.map((x) => (x.exchange_index === 2 ? { ...x, balance: '50.0000' } : x));
+  const v = fakes(), c = fakeClient({ balance: 5000, aggregate: 12954, pv: 5650, breakdown: bd,
     deposits: [{ id: 'd1', status: 'pending', amount_cents: 5000 }, { id: 'd2', status: 'applied', amount_cents: 10000 }, { id: 'd3', status: 'failed', amount_cents: 700 }] });
   const { p } = pilot({ v, client: c, now }); v.take(TK, t); await p.signals.get(TK).run; const r = p.shadow[p.shadow.length - 1];
-  assert.equal(p.bankrollCents(), 7350); assert.equal(r.sizing.bankrollCents, 7350); assert.equal(r.sizing.targetCents, 514, '7% of $73.50 (not $80.53, not + $56.50 positions, not + $50 pending)');
-  assert.deepEqual(c.balanceArgs[0], { exchangeIndex: 0 }, 'sizing read is GET /portfolio/balance?exchange_index=0');
-  const m = p.snapshot().money; assert.equal(m.openPositionsCents, 5650, "portfolio_value shown as open positions"); assert.equal(m.otherShardCents, 703); assert.deepEqual(m.deposits, { pendingCents: 5000, pendingCount: 1, at: t });
-  assert.deepEqual(m.balanceSource, { exchangeIndex: 0, field: 'balance (available cash)', at: t });
-  const h = require('../public/pilot.js').render(p.snapshot(), {}); assert.match(h, /open positions \$56\.50 \(not used for sizing\)/); assert.match(h, /other shard \$7\.03 \(not used\)/); assert.match(h, /pending deposits \$50\.00/);
+  assert.equal(p.bankrollCents(), 5000); assert.equal(r.sizing.bankrollCents, 5000); assert.equal(r.sizing.targetCents, 350, '7% of shard 2 $50 (not the $129.54 total, not shard 0, not + positions or pending)');
+  assert.deepEqual(c.balanceArgs[0], { exchangeIndex: 2 }, 'sizing read is GET /portfolio/balance?exchange_index=2');
+  assert.ok(c.balanceArgs.filter((a) => a.exchangeIndex != null).every((a) => a.exchangeIndex === 2), 'no sizing read of any other shard');
+  const m = p.snapshot().money; assert.equal(m.openPositionsCents, 5650, 'portfolio_value shown as open positions'); assert.equal(m.otherShardCents, 7954); assert.deepEqual(m.deposits, { pendingCents: 5000, pendingCount: 1, at: t });
+  assert.deepEqual(m.otherShards, [{ exchangeIndex: 0, cents: 7251 }, { exchangeIndex: 1, cents: 703 }, { exchangeIndex: 3, cents: 0 }]);
+  assert.deepEqual(m.balanceSource, { exchangeIndex: 2, field: 'balance (available cash)', at: t });
+  const h = require('../public/pilot.js').render(p.snapshot(), {}); assert.match(h, /open positions \$56\.50 \(not used for sizing\)/); assert.match(h, /pending deposits \$50\.00/);
+  assert.match(h, /cash on other shards<\/span> <b>shard 0 \$72\.51, shard 1 \$7\.03, shard 3 \$0\.00<\/b>, not used for sizing; Kalshi's app\/web move cash between shards, API orders don't/);
   // a bigger pending deposit, more open positions and cash on another shard change nothing about the next size
   c.deposits = [{ id: 'd4', status: 'pending', amount_cents: 100000 }]; c.pv = 900000; c.aggregate = 500000; t += 61000; v.take('KXBTC15M-26NOV011030-B', t); await p.signals.get('KXBTC15M-26NOV011030-B').run;
-  assert.equal(p.shadow[p.shadow.length - 1].sizing.bankrollCents, 7350); assert.equal(p.snapshot().money.deposits.pendingCents, 100000);
+  assert.equal(p.shadow[p.shadow.length - 1].sizing.bankrollCents, 5000); assert.equal(p.snapshot().money.deposits.pendingCents, 100000);
   // deposits read failing = "unknown", never a halt, never sizing
   c.depositsError = new Error('HTTP 500'); t += 61000; await p.refreshInfo(); assert.equal(p.snapshot().money.deposits.unknown, true); assert.equal(p.state, 'DISARMED');
   assert.match(require('../public/pilot.js').render(p.snapshot(), {}), /pending deposits unknown/);
-  // the REAL client sends exchange_index=0 on the sizing read and nothing on the aggregate read; deposits is a GET
-  const f = mockFetch(); const rc = R.makeTradeClient({ env: ENV_ON, fetchImpl: f }); await rc.getBalance({ exchangeIndex: 0 }); await rc.getBalance(); await rc.getDeposits({ limit: 20 });
+  // the REAL client sends exchange_index=2 on the sizing read and nothing on the aggregate read; deposits is a GET
+  const f = mockFetch(); const rc = R.makeTradeClient({ env: ENV_ON, fetchImpl: f }); await rc.getBalance({ exchangeIndex: 2 }); await rc.getBalance(); await rc.getDeposits({ limit: 20 });
   assert.deepEqual(f.reqs.map((q) => q.method + ' ' + q.path), ['GET /trade-api/v2/portfolio/balance', 'GET /trade-api/v2/portfolio/balance', 'GET /trade-api/v2/portfolio/deposits']);
-  assert.deepEqual(P.parseBalance({ balance: 7350, portfolio_value: 5650, balance_breakdown: [{ exchange_index: 0, balance: '73.50' }, { exchange_index: 1, balance: '7.03' }] }, 0), { cents: 7350, portfolioValueCents: 5650, otherShardCents: 703 });
+  assert.deepEqual(P.parseBalance({ balance: 0, portfolio_value: 5650, balance_breakdown: BD }, 2), { cents: 0, portfolioValueCents: 5650, otherShardCents: 7954,
+    shards: [{ exchangeIndex: 0, cents: 7251 }, { exchangeIndex: 1, cents: 703 }, { exchangeIndex: 2, cents: 0 }, { exchangeIndex: 3, cents: 0 }] });
 });
 
-test('test key (read-only) reports the shard 0 balance and the all-shard aggregate', async () => {
-  const c = fakeClient({ balance: 7350, aggregate: 8053, pv: 5650, breakdown: [{ exchange_index: 0, balance: '73.50' }, { exchange_index: 1, balance: '7.03' }] }); const { p } = pilot({ client: c });
-  const r = await p.testKey(); assert.equal(r.ok, true); assert.equal(r.exchangeIndex, 0); assert.equal(r.balanceCents, 7350); assert.equal(r.aggregateCents, 8053); assert.equal(r.otherShardCents, 703);
-  assert.ok(c.calls.every((q) => typeof q === 'string'), 'GETs only'); const k = p.snapshot().keyTest; assert.equal(k.aggregateCents, 8053);
-  assert.match(require('../public/pilot.js').render(p.snapshot(), { local: true }), /shard 0 \$73\.50 · all shards \$80\.53/);
+test('p5: shard 2 at $0 -> stopped trading, no order attempt even when ARMED; shards 0/1 cash shown but never used; resumes when shard 2 is funded', async () => {
+  let t = Date.parse('2026-11-01T19:00:00Z'); const now = () => t;
+  const v = fakes(), c = fakeClient({ balance: 20000, aggregate: 27954, breakdown: BD.map((x) => (x.exchange_index === 2 ? { ...x, balance: '200.0000' } : x)) });
+  const { p, dir } = pilot({ v, client: c, now }); assert.ok((await p.arm('ARM LIVE')).ok, 'arm while shard 2 is funded');
+  c.balance = 0; c.aggregate = 7954; c.breakdown = BD; const before = c.calls.length; t += 1000; v.take(TK, t); await p.signals.get(TK).run;
+  assert.equal(p.state, 'ARMED', 'not a halt'); assert.equal(p.haltReason, null);
+  assert.equal(c.calls.slice(before).filter((q) => Array.isArray(q)).length, 0, 'no order, no cancel'); assert.equal(p.signals.get(TK).slices.length, 0, 'no order intent');
+  const led = fs.readFileSync(path.join(dir, 'ledger.jsonl'), 'utf8'); assert.ok(!/order_intent|order_sent/.test(led));
+  assert.match(p.snapshot().money.outOfMoney, /stopped trading: shard 2 cash \$0\.00 can't buy one contract/);
+  t += 61000; await p.refreshInfo(); const h = require('../public/pilot.js').render(p.snapshot(), {});
+  assert.match(h, /stopped trading: shard 2 cash \$0\.00/); assert.match(h, /shard 0 \$72\.51, shard 1 \$7\.03, shard 3 \$0\.00<\/b>, not used for sizing/);
+  assert.equal(p.bankrollCents(), 0, 'shard 0/1 cash is not the bankroll');
+  // cash lands on shard 2 (e.g. moved in Kalshi's app): the next take trades without a restart
+  c.balance = 10000; const tk2 = 'KXBTC15M-26NOV011100-B'; t += 1000; v.take(tk2, t); await p.signals.get(tk2).run;
+  assert.equal(p.signals.get(tk2).filled, 7); assert.equal(p.snapshot().money.outOfMoney, null);
+  // arming with $0 on shard 2 is refused by the preflight even if other shards hold cash
+  const x = pilot({ client: fakeClient({ balance: 0, aggregate: 7954, breakdown: BD }) }).p; const r = await x.arm('ARM LIVE'); assert.equal(r.ok, false); assert.match(r.error, /shard 2 available cash is \$0\.00/); assert.equal(x.state, 'DISARMED');
+});
+
+test('p5: a market whose exchange_index differs from the sizing shard is never traded (shadow or armed); plain status, not a halt; the recorder keeps exchange_index from discovery', async () => {
+  const markets = new Map([[TK, { tk: TK, exchangeIndex: 0 }], ['KXETH15M-26NOV011015-15', { tk: 'KXETH15M-26NOV011015-15', exchangeIndex: 2 }]]);
+  const kalshi = { markets, on() {} };
+  const mk = (over = {}) => { const v = fakes(), c = fakeClient({ balance: 20000 }), dir = tmp(); const p = new P.KalshiPilot({ v1: v.v1, v3: v.v3, kalshi, dir, killFile: path.join(dir, 'KILL'), env: ENV_ON, client: c, sleep: async () => {}, ...over }); p.start(); p.stop(); return { p, v, c, dir }; };
+  // armed: mismatch -> no intent, no order, not halted
+  let { p, v, c, dir } = mk(); assert.ok((await p.arm('ARM LIVE')).ok); const before = c.calls.length; v.take(TK); await new Promise((r) => setImmediate(r));
+  assert.equal(p.state, 'ARMED'); assert.equal(p.haltReason, null); assert.equal(c.calls.slice(before).filter((q) => Array.isArray(q)).length, 0, 'no order attempt');
+  assert.equal(p.signals.get(TK).slices.length, 0); const led = fs.readFileSync(path.join(dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse);
+  assert.equal(led.find((r) => r.t === 'signal' && r.tk === TK).marketShard, 0); assert.match(led.find((r) => r.t === 'slice_skip').reason, /exchange shard 0 but the pilot sizes from shard 2 cash/);
+  assert.match(require('../public/pilot.js').render(p.snapshot(), {}), /not trading KXBTC15M-26NOV011015-15: that market is on exchange shard 0/);
+  // a matching market (shard 2) trades normally and clears the notice
+  const eth = 'KXETH15M-26NOV011015-15'; v.take(eth); await p.signals.get(eth).run; assert.ok(p.signals.get(eth).filled > 0); assert.equal(p.snapshot().money.shardMismatch, null);
+  // shadow: mismatch -> skipped row, no sizing
+  ({ p, v, c } = mk()); v.take(TK); const sh = p.shadow[p.shadow.length - 1]; assert.equal(sh.contracts, 0); assert.deepEqual(sh.bound, ['shard']); assert.match(sh.skipped, /shard 0/); assert.equal(p.state, 'DISARMED');
+  // the last guard in sendSlice: market moved shard between the signal and the slice
+  ({ p, v, c } = mk()); markets.set(TK, { tk: TK, exchangeIndex: 2 }); await p.arm('ARM LIVE'); const s = p.sig(TK); Object.assign(s, { limit: 96, decisionAsk: 95 }); markets.set(TK, { tk: TK, exchangeIndex: 1 });
+  assert.equal(await p.sendSlice(s, 1, { contracts: 1, bound: [], caps: {}, sizing: null }), null); assert.ok(!c.calls.some((q) => Array.isArray(q) && q[0] === 'create'));
+  // unknown exchange_index: the configured shard is used (an insufficient_balance reject would still halt after one attempt)
+  ({ p, v, c } = mk({ kalshi: { markets: new Map(), on() {} } })); await p.arm('ARM LIVE'); v.take(TK); await p.signals.get(TK).run; assert.ok(p.signals.get(TK).filled > 0);
+  // the recorder keeps exchange_index from the public /markets discovery row (no extra request)
+  const { KalshiRecorder } = require('../server/recorder/kalshi'); const rec = new KalshiRecorder({ store: { write() {} }, health: { register() {} }, get: async () => ({}) });
+  assert.equal(rec.track({ ticker: 'KXBTC15M-X', series_ticker: 'KXBTC15M', exchange_index: 2, open_time: '2026-11-01T18:00:00Z', close_time: '2026-11-01T18:15:00Z' }).exchangeIndex, 2);
+  assert.equal(rec.track({ ticker: 'KXSOL15M-Y', close_time: '2026-11-01T18:15:00Z' }).exchangeIndex, null); assert.equal(rec.track({ ticker: 'KXSOL15M-Y', exchange_index: 2 }).exchangeIndex, 2, 'later discovery fills it in');
+});
+
+test('test key (read-only) reports the shard 2 balance, the all-shard aggregate and the per-shard breakdown', async () => {
+  const c = fakeClient({ balance: 0, aggregate: 7954, pv: 5650, breakdown: BD }); const { p } = pilot({ client: c });
+  const r = await p.testKey(); assert.equal(r.ok, true); assert.equal(r.exchangeIndex, 2); assert.equal(r.balanceCents, 0); assert.equal(r.aggregateCents, 7954); assert.equal(r.otherShardCents, 7954);
+  assert.deepEqual(r.shards.map((x) => x.cents), [7251, 703, 0, 0]); assert.deepEqual(c.balanceArgs[0], { exchangeIndex: 2 });
+  assert.ok(c.calls.every((q) => typeof q === 'string'), 'GETs only'); const k = p.snapshot().keyTest; assert.equal(k.aggregateCents, 7954); assert.equal(k.shards.length, 4);
+  assert.match(require('../public/pilot.js').render(p.snapshot(), { local: true }), /shard 2 \$0\.00 \(sizing\) · all shards \$79\.54 \(shard 0 \$72\.51, shard 1 \$7\.03, shard 2 \$0\.00, shard 3 \$0\.00\)/);
 });
 
 test('insufficient balance: Kalshi rejects the first armed order -> one attempt, HALTED with a plain message, nothing else sent', async () => {
@@ -434,12 +485,12 @@ test('429 too_many_requests is not a halt: reads back off and retry; 3 errors in
   v.take(); await p.signals.get(TK).run; assert.equal(p.state, 'HALTED'); assert.match(p.haltReason, /3 Kalshi API errors in a row/); assert.equal(c.calls.filter((q) => Array.isArray(q)).length, 0);
 });
 
-test('shard 0 cash below one contract: the pilot just stops trading with a plain status (not an error, not a halt); it resumes when cash is back', async () => {
+test('shard 2 cash below one contract: the pilot just stops trading with a plain status (not an error, not a halt); it resumes when cash is back', async () => {
   const v = fakes(), c = fakeClient(); const { p } = pilot({ v, client: c }); await p.arm('ARM LIVE');
   c.balance = 50; v.take(); await p.signals.get(TK).run;
   assert.equal(p.state, 'ARMED', 'not a halt'); assert.equal(p.haltReason, null); assert.equal(c.calls.filter((q) => Array.isArray(q)).length, 0, 'no order');
-  const m = p.snapshot().money.outOfMoney; assert.match(m, /stopped trading: shard 0 cash \$0\.50 can't buy one contract at 96c \(not an error/);
-  assert.match(require('../public/pilot.js').render(p.snapshot(), {}), /stopped trading: shard 0 cash/);
+  const m = p.snapshot().money.outOfMoney; assert.match(m, /stopped trading: shard 2 cash \$0\.50 can't buy one contract at 96c \(not an error/);
+  assert.match(require('../public/pilot.js').render(p.snapshot(), {}), /stopped trading: shard 2 cash/);
   c.balance = 0; const tk2 = 'KXBTC15M-26NOV011030-B'; v.take(tk2); await p.signals.get(tk2).run; assert.equal(p.state, 'ARMED'); assert.match(p.snapshot().money.outOfMoney, /\$0\.00/);
   c.balance = 10000; const tk3 = 'KXBTC15M-26NOV011045-C'; v.take(tk3); await p.signals.get(tk3).run; assert.equal(p.signals.get(tk3).filled, 7); assert.equal(p.snapshot().money.outOfMoney, null, 'resumes with cash');
   // shadow too: a plain skip, not an error
@@ -458,7 +509,7 @@ test('main account (no subaccount): unrelated balance moves never halt; only the
   v = fakes(); c = fakeClient(); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run;
   c.settled = 7 * 100 + 500; await x.onV1Row({ t: 'settle', tk: TK, win: true, result: 'yes' }); assert.equal(x.state, 'ARMED', x.haltReason); assert.ok(x.signals.get(TK).settle);
   // preflight: a zero balance cannot cover a trade
-  x = pilot({ client: fakeClient({ balance: 0 }) }).p; const r = await x.arm('ARM LIVE'); assert.equal(r.ok, false); assert.match(r.error, /shard 0 available cash is \$0\.00/);
+  x = pilot({ client: fakeClient({ balance: 0 }) }).p; const r = await x.arm('ARM LIVE'); assert.equal(r.ok, false); assert.match(r.error, /shard 2 available cash is \$0\.00: nothing to trade \(move cash to shard 2: Kalshi's app\/web move cash between shards, API orders don't\)/);
   // other orders on the account are never cancelled
   v = fakes(); c = fakeClient(); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run;
   c.orders.push({ order_id: 'bryan-1', client_order_id: 'manual-xyz', status: 'resting' }, { order_id: 'bryan-2', status: 'resting' }); await x.halt('test');
@@ -539,10 +590,10 @@ test('shadow sizing tracks the live balance: throttled read-only GET before each
     c.balance = bal; v.take(tk, t); await p.signals.get(tk).run; sized.push(p.shadow[p.shadow.length - 1]); t += 21000;
   }
   assert.deepEqual(sized.map((r) => r.sizing.bankrollCents), [8000, 15000, 40000]);
-  assert.deepEqual(sized.map((r) => r.sizing.targetCents), [560, 1050, 2800], '7% of $80, $150, $400 (shard 0 cash)');
+  assert.deepEqual(sized.map((r) => r.sizing.targetCents), [560, 1050, 2800], '7% of $80, $150, $400 (shard 2 cash)');
   assert.deepEqual(sized.map((r) => r.contracts), [5, 11, 29]); assert.ok(sized.every((r) => r.sizing.pct === 7 && r.noMoney));
   assert.deepEqual(sized.map((r) => r.sizing.sizeCents), [5 * 96, 11 * 96, 29 * 96], 'order dollars = contracts x limit');
-  assert.deepEqual(c.calls.filter((q) => q === 'balance'), ['balance', 'balance', 'balance'], 'one shard 0 read per decision, no restart needed'); assert.ok(c.calls.every((q) => typeof q === 'string'), 'read-only GETs only');
+  assert.deepEqual(c.calls.filter((q) => q === 'balance'), ['balance', 'balance', 'balance'], 'one shard 2 read per decision, no restart needed'); assert.ok(c.calls.every((q) => typeof q === 'string'), 'read-only GETs only');
   // throttle: a second decision within 20 s reuses the last read
   c.balance = 9000; v.take('KXETH15M-26NOV011045-D', t); await p.signals.get('KXETH15M-26NOV011045-D').run; t += 5000; v.take('KXSOL15M-26NOV011045-E', t); await p.signals.get('KXSOL15M-26NOV011045-E').run;
   assert.equal(c.calls.filter((q) => q === 'balance').length, 4, 'at most one balance read per 20 s');

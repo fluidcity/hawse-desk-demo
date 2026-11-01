@@ -15,3 +15,8 @@
 .dev.vars
 .wrangler/
 cloudflare/**/node_modules/
+
+# Kalshi keys never go in git (desk machine files)
+*.pem
+kalshi_trade_key*
+hawse.env

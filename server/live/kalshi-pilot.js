@@ -1,7 +1,7 @@
 'use strict';
-// Kalshi LIVE PILOT: real money, $100, follows the frozen paper v3 '7pct' line's 'take' decisions (config/frozen/kalshi-live-pilot.json).
+// Kalshi LIVE PILOT: real money, $150 bankroll (hard cap, even on a bigger main account), follows the frozen paper v3 '7pct' line's 'take' decisions (config/frozen/kalshi-live-pilot.json).
 // Ships DISABLED and DISARMED. It cannot send an order unless ALL of these hold: LIVE_PILOT_ENABLED === 'true', both trade key env
-// vars present, a passing read-only preflight, and the exact phrase typed on the desk machine (localhost-only endpoint; the auth
+// key present (dedicated trade key, else the desk's existing key), a passing read-only preflight, and the exact phrase typed on the desk machine (localhost-only endpoint; the auth
 // proxy never forwards it). ARMED is never restored after a restart. HALTED is persisted and needs a manual reset.
 // It never edits or re-decides v1/v2/v3: it only reads v3's rows after v3 has written them. All exchange calls go through
 // server/live/kalshi-rest.js (the only file that names Kalshi order endpoints). Money: integer cents for limits and plans;
@@ -12,9 +12,12 @@ const crypto = require('crypto');
 const rest = require('./kalshi-rest');
 
 const PILOT_FILE = path.join(__dirname, '..', '..', 'config', 'frozen', 'kalshi-live-pilot.json');
-const PILOT_SHA256 = '3677c281c81c590c5a3b8f52db98eb5988394446d09f642ea6f1fe9621664869';
+const PILOT_SHA256 = '7c3cec56c216a01bf0c840a356badc3cee16f1907afa664c2e69c37a69290989';
 const U = 10000; // u$ per cent
 const STATES = ['DISABLED', 'DISARMED', 'ARMED', 'HALTED'];
+const PERM_MSG = "this key can't trade, make a read+trade key";
+/** 401/403, or a clear insufficient-scope / permission reply on an order. */
+const isPermission = (e) => !!e && (e.status === 401 || e.status === 403 || /insufficient[_ ]?scope|permission|not authori[sz]ed|forbidden/i.test(String(e.code || '') + ' ' + String(e.message || '')));
 
 function sha256(b) { return crypto.createHash('sha256').update(b).digest('hex'); }
 function loadPilotConfig(file = PILOT_FILE, pin = PILOT_SHA256) {
@@ -67,13 +70,13 @@ class KalshiPilot {
     this.signals = new Map(); this.shadow = []; this.events = []; this.realizedMicros = 0; this.dayLoss = new Map();
     this.balanceCents = null; this.apiErrors = 0; this.busy = new Set(); this.timers = []; this.preflight = null;
     try { const f = loadPilotConfig(file, pin); this.cfg = f.cfg; this.hash = f.hash; } catch (e) { this.error = e.message; this.inert.push('config: ' + e.message); }
-    if (!this.presence.LIVE_PILOT_ENABLED) this.inert.push('LIVE_PILOT_ENABLED is not "true"');
-    if (!this.presence.KALSHI_TRADE_KEY_ID) this.inert.push('KALSHI_TRADE_KEY_ID not set');
-    if (!this.presence.KALSHI_TRADE_PRIVATE_KEY_PEM) this.inert.push('KALSHI_TRADE_PRIVATE_KEY_PEM not set');
+    if (!this.presence.enabledFlag) this.inert.push('LIVE_PILOT_ENABLED is not "true"');
+    if (!this.presence.keySet) this.inert.push('Kalshi key not set');
+    this.fetchImpl = fetchImpl; this.keyTest = null;
     this.client = null;
     if (!this.inert.length) { try { this.client = client !== undefined ? client : rest.makeTradeClient({ env, fetchImpl, now }); } catch (e) { this.inert.push(e.message); } }
     if (!this.client && !this.inert.length) this.inert.push('trade client unavailable');
-    if (health) health.register('live.kalshi-pilot', { label: 'Kalshi LIVE pilot (v3 7%, $100)', group: 'live', note: 'real money; ships disabled and disarmed', staleMs: 600000 });
+    if (health) health.register('live.kalshi-pilot', { label: 'Kalshi LIVE pilot (v3 7%, $150)', group: 'live', note: 'real money; ships disabled and disarmed', staleMs: 600000 });
   }
   get enabled() { return !this.inert.length; }
   // ---- ledger -------------------------------------------------------------------------------------------------
@@ -121,7 +124,7 @@ class KalshiPilot {
   async halt(reason, kind = 'halt') {
     const first = this.state !== 'HALTED' || (kind === 'total_loss' && !this.totalStop);
     if (first) { this.write({ t: 'stop', kind, reason: String(reason).slice(0, 200) }); this.log('[kalshi-pilot] HALTED: ' + reason); }
-    if (this.client) await this.cancelResting('halt'); // only the pilot's own orders (client_order_id hp1-...), never anything else on the account
+    if (this.client && kind !== 'permission' && kind !== 'auth') await this.cancelResting('halt'); // auth halts send nothing else; otherwise only the pilot's own orders (client_order_id hp1-...), never anything else on the account
     return { ok: true, state: this.state, reason: this.haltReason };
   }
   async cancelResting(why) {
@@ -136,7 +139,7 @@ class KalshiPilot {
   }
   apiError(e) {
     this.apiErrors++;
-    if (e && (e.status === 401 || e.status === 403)) return this.halt('auth failure from Kalshi (' + e.status + ')', 'auth');
+    if (e && (e.status === 401 || e.status === 403)) return this.halt('auth failure from Kalshi (' + e.status + '); nothing else is sent', 'auth');
     if (this.apiErrors >= this.cfg.halts.apiErrorsInRow) return this.halt(`${this.apiErrors} Kalshi API errors in a row`, 'api_errors');
     return null;
   }
@@ -149,7 +152,7 @@ class KalshiPilot {
     if (phrase !== this.cfg.armPhrase) return { ok: false, error: 'type the exact phrase to arm' };
     if (this.killed()) return { ok: false, error: 'kill file present' };
     const pf = await this.runPreflight(); if (!pf.ok) return { ok: false, error: 'preflight failed: ' + pf.error, preflight: pf };
-    this.state = 'ARMED'; this.write({ t: 'arm', balanceCents: pf.balanceCents, scopes: pf.scopes, subaccount: pf.subaccount });
+    this.state = 'ARMED'; this.write({ t: 'arm', balanceCents: pf.balanceCents, scopes: pf.scopes, scopeNote: pf.scopeNote, subaccount: pf.subaccount, keySource: pf.keySource });
     return { ok: true, state: 'ARMED', preflight: pf };
   }
   disarm() { if (this.state === 'ARMED') { this.state = 'DISARMED'; this.write({ t: 'disarm' }); } return { ok: true, state: this.state }; }
@@ -159,17 +162,49 @@ class KalshiPilot {
       const b = await this.client.getBalance(); pf.balanceCents = Number.isInteger(b.balance) ? b.balance : Math.round((rest.dollarsToMicros(b.balance_dollars) || 0) / U);
       if (!(pf.balanceCents > 0)) throw new Error('balance is zero or unreadable');
       if (!this.checkSkew()) throw new Error('clock skew');
-      const k = await this.client.getApiKeys(); const mine = (k.api_keys || []).find((x) => x.api_key_id === this.client.keyId);
-      pf.scopes = mine ? mine.scopes || [] : null;
-      if (!mine) throw new Error('trade key not found in GET /api_keys');
-      if (!pf.scopes.some((s) => s === 'write' || s === 'write::trade')) throw new Error('trade key has no trading scope');
-      if (pf.scopes.includes('write::transfer') || pf.scopes.includes('write')) pf.warn = 'key can also move funds (write / write::transfer); a write::trade-only key is safer';
+      // the money about to be risked: one full trade at the capped bankroll (7% of min(balance, $150 + realized))
+      pf.perTradeCents = Math.floor((Math.min(pf.balanceCents, this.bookCents()) * Math.round(this.cfg.perTradePct * 10000)) / 10000);
+      if (pf.balanceCents < pf.perTradeCents || pf.perTradeCents < 1) throw new Error(`balance ${pf.balanceCents}c is below one trade (${pf.perTradeCents}c)`);
+      const sc = await this.readScopes(this.client); Object.assign(pf, sc);
+      if (sc.tradeScope === false) throw new Error(PERM_MSG);
+      pf.keySource = this.client.keySource || this.presence.keySource;
       pf.subaccount = this.client.subaccount;
       if (pf.subaccount != null && (pf.subaccount < 0 || pf.subaccount > 63)) throw new Error('bad subaccount');
       this.write({ t: 'balance', balanceCents: pf.balanceCents, src: 'preflight' });
       pf.ok = true; this.apiErrors = 0;
     } catch (e) { pf.error = e.message; if (e.status) this.apiError(e); }
     this.preflight = pf; return pf;
+  }
+  /** Read-only: GET /api_keys for this key's scopes. Never fails the caller: if Kalshi does not reveal scopes, says so. */
+  async readScopes(client) {
+    let k = null; try { k = await client.getApiKeys(); } catch { k = null; }
+    const mine = k && (k.api_keys || []).find((x) => x.api_key_id === client.keyId);
+    if (!mine || !Array.isArray(mine.scopes)) return { scopes: null, tradeScope: null, scopeNote: "trade scope can't be verified until the first armed order" };
+    const tradeScope = mine.scopes.some((x) => x === 'write' || x === 'write::trade');
+    return { scopes: mine.scopes, tradeScope, scopeNote: tradeScope ? 'trade scope present' : PERM_MSG,
+      warn: mine.scopes.includes('write::transfer') ? 'key can also move funds (write::transfer); a read+trade-only key is safer' : undefined };
+  }
+  /**
+   * "Test key (read-only balance check)": signed GETs only (balance, then this key's scopes). No orders, no writes, no ledger rows.
+   * Works while DISABLED as long as a key is set. Result has no key material.
+   */
+  async testKey() {
+    const r = { at: this.now(), ok: false, keySource: this.presence.keySource, readOnly: true };
+    let c = this.client;
+    if (!c) { try { c = rest.makeTradeClient({ env: this.env, fetchImpl: this.fetchImpl, now: this.now }); } catch (e) { r.error = e.message; return (this.keyTest = r); } }
+    if (!c) { r.error = 'no Kalshi key set'; return (this.keyTest = r); }
+    try {
+      const b = await c.getBalance(); r.balanceCents = Number.isInteger(b.balance) ? b.balance : Math.round((rest.dollarsToMicros(b.balance_dollars) || 0) / U);
+      r.skewMs = c.lastSkewMs;
+      if (r.skewMs != null && Math.abs(r.skewMs) > this.cfg.halts.maxClockSkewMs) r.error = `clock skew: this PC is ${Math.round(r.skewMs / 1000)} s off Kalshi; fix the Windows clock (Settings > Time > Sync now)`;
+      Object.assign(r, await this.readScopes(c));
+      r.ok = !r.error;
+    } catch (e) {
+      r.status = e.status || null;
+      r.error = e.status === 401 ? 'Kalshi rejected the key (401): the key ID and private key do not match, the key was revoked, or the PC clock is off'
+        : e.status === 403 ? 'Kalshi refused this key (403)' : 'balance check failed: ' + String(e.message || e).slice(0, 120);
+    }
+    return (this.keyTest = r);
   }
   reset(phrase) {
     if (this.state !== 'HALTED') return { ok: true, state: this.state };
@@ -183,8 +218,11 @@ class KalshiPilot {
   openRiskCents() { let s = 0; for (const x of this.signals.values()) if (!x.settle && x.filled) s += Math.ceil((x.costMicros + x.feeMicros) / U); return s; }
   dayOpenRiskCents(day) { let s = 0; for (const x of this.signals.values()) if (!x.settle && x.filled && laDay(x.at || 0, this.cfg.dailyLossTimeZone) === day) s += Math.ceil((x.costMicros + x.feeMicros) / U); return s; }
   dayLossCents(day) { const v = this.dayLoss.get(day) || 0; return v < 0 ? Math.ceil(-v / U) : 0; }
+  /** $150 + realized pilot P&L: the most the pilot may ever count, however large the real account is. */
+  bookCents() { return this.cfg.bankrollCents + Math.floor(this.realizedMicros / U); }
+  /** Hard cap: min(real balance (+ the pilot's own open cost, already out of cash), $150 + realized). Other account money is never counted. */
   bankrollCents() {
-    const book = this.cfg.bankrollCents + Math.floor(this.realizedMicros / U);
+    const book = this.bookCents();
     if (this.balanceCents == null) return book;
     return Math.max(0, Math.min(this.balanceCents + this.openRiskCents(), book)); // open positions have already left the cash balance
   }
@@ -243,13 +281,16 @@ class KalshiPilot {
   async sendSlice(s, i, z) {
     const coid = ('hp1-' + s.tk + '-s' + i).replace(/[^\w-]/g, '').slice(0, 64);
     if (s.intents.has(coid)) return null; // never twice
+    if (!this.presence.enabledFlag || this.state !== 'ARMED') return null; // orders are signed only when LIVE_PILOT_ENABLED === 'true' AND ARMED
     const balBefore = this.balanceCents;
     this.write({ t: 'order_intent', tk: s.tk, coid, slice: i, contracts: z.contracts, limit: s.limit, decisionAsk: s.decisionAsk, tif: 'IOC', side: 'yes', action: 'buy', bound: z.bound, caps: z.caps, balanceBeforeCents: balBefore });
     if (!this.checkSkew()) return null;
     this.write({ t: 'order_sent', tk: s.tk, coid });
     let ack;
     try { ack = await this.client.createOrder({ ticker: s.tk, side: 'yes', action: 'buy', count: z.contracts, priceCents: s.limit, clientOrderId: coid }); this.apiErrors = 0; }
-    catch (e) { if (e.status && e.status < 500 && e.status !== 429) { this.write({ t: 'not_sent', tk: s.tk, coid, error: e.message }); } else { await this.halt('order send failed without a clear answer (' + e.message + '); reconcile before resuming', 'unreconciled'); return null; } this.apiError(e); return null; }
+    catch (e) {
+      if (isPermission(e)) { this.write({ t: 'not_sent', tk: s.tk, coid, error: e.message }); await this.halt(`permission denied (${e.status || 'scope'}): ${PERM_MSG}`, 'permission'); return null; }
+      if (e.status && e.status < 500 && e.status !== 429) { this.write({ t: 'not_sent', tk: s.tk, coid, error: e.message }); } else { await this.halt('order send failed without a clear answer (' + e.message + '); reconcile before resuming', 'unreconciled'); return null; } this.apiError(e); return null; }
     const fc = rest.countToInt(ack.fill_count), rc = rest.countToInt(ack.remaining_count);
     this.write({ t: 'ack', tk: s.tk, coid, orderId: ack.order_id, fillCount: fc, remainingCount: rc, avgFillPrice: ack.average_fill_price, avgFee: ack.average_fee_paid });
     if (rc > 0) this.write({ t: 'cancel', tk: s.tk, coid, orderId: ack.order_id, contracts: rc, reason: 'IOC remainder expired unfilled' });
@@ -273,7 +314,14 @@ class KalshiPilot {
     try {
       const b = await this.client.getBalance(); const now = Number.isInteger(b.balance) ? b.balance : Math.round((rest.dollarsToMicros(b.balance_dollars) || 0) / U);
       const spent = s.fills.filter((f) => f.coid === coid).reduce((a, f) => a + f.costMicros + f.feeMicros, 0);
-      this.write({ t: 'balance', balanceCents: now, src: 'after ' + coid, beforeCents: before });
+      const mine = s.fills.filter((f) => f.coid === coid);
+      this.write({ t: 'balance', balanceCents: now, src: 'after ' + coid, beforeCents: before, pilotSpentCents: Math.round(spent / U), shared: this.client.subaccount == null });
+      // the pilot's OWN fills must be inside its own order: never above the limit, never more than asked
+      const over = mine.find((f) => f.priceMicros > s.limit * U);
+      if (over) return void (await this.halt(`fill ${over.fillId} at ${over.priceMicros / U}c is above the ${s.limit}c limit`, 'balance'));
+      // Main account (no subaccount): the balance is not the pilot's alone (other trades, deposits, settlements), so it is never compared as an
+      // absolute. Only a dedicated subaccount gets the strict before - pilot spend = after check.
+      if (this.client.subaccount == null) return;
       if (before != null && Math.abs(before - Math.round(spent / U) - now) > this.cfg.halts.balanceToleranceCents) await this.halt(`balance mismatch after ${coid}: before ${before}c, spent ${Math.round(spent / U)}c, now ${now}c`, 'balance');
     } catch (e) { this.apiError(e); }
   }
@@ -297,7 +345,9 @@ class KalshiPilot {
     let k = null;
     if (this.client) { try { const r = await this.client.getSettlements(tk); k = (r.settlements || []).find((x) => x.ticker === tk) || null; } catch (e) { this.apiError(e); } }
     if (this.client && !k) { s.settlePending = s.settlePending || { at: this.now() }; if (this.now() - s.settlePending.at < 30 * 60000) return; }
-    if (k && Math.abs(k.revenue * U - winMicros) > this.cfg.halts.balanceToleranceCents * U) await this.halt(`settlement mismatch on ${tk}: kalshi revenue ${k.revenue}c vs ${winMicros / U}c`, 'balance');
+    const tol = this.cfg.halts.balanceToleranceCents * U, shared = this.client && this.client.subaccount == null;
+    // main account: Kalshi's per-market revenue can include positions the pilot did not open, so only LESS than the pilot's payout is a mismatch
+    if (k && (shared ? winMicros - k.revenue * U > tol : Math.abs(k.revenue * U - winMicros) > tol)) await this.halt(`settlement mismatch on ${tk}: kalshi revenue ${k.revenue}c vs ${winMicros / U}c`, 'balance');
     const before = this.bankrollCents();
     this.write({ t: 'settle', tk, win: s.official.win, result: s.official.result, contracts: s.filled, costMicros: s.costMicros, feeMicros: s.feeMicros, pnlMicros: pnl,
       source: k ? 'kalshi settlement' : 'kalshi official result (via v1)', kalshiRevenueCents: k ? k.revenue : undefined, bankrollBeforeCents: before, bankrollAfterCents: before + Math.floor(pnl / U) });
@@ -324,8 +374,10 @@ class KalshiPilot {
         live: s.filled ? { filled: s.filled, vwapCents: Math.round(s.costMicros / s.filled) / U, feeCents: s.feeMicros / U } : null, shadow: sh ? { contracts: sh.contracts, limit: sh.limit } : null,
         slippageCents: s.filled ? Math.round((s.costMicros / s.filled / U - s.decisionAsk) * 100) / 100 : null, unfilled: i0Unfilled(s) };
     });
-    return { title: 'LIVE · REAL MONEY · Kalshi pilot (v3 7%, $100)', state: this.state, statusChip: this.state === 'DISARMED' ? 'DISARMED-SHADOW' : this.state, inert: this.inert, error: this.error,
-      env: this.presence, hash: this.hash, haltReason: this.haltReason, totalStop: this.totalStop, killFile: this.killed(), preflight: this.preflight ? { ok: this.preflight.ok, error: this.preflight.error, warn: this.preflight.warn, at: this.preflight.at } : null,
+    return { title: 'LIVE · REAL MONEY · Kalshi pilot (v3 7%, $150)', state: this.state, statusChip: this.state === 'DISARMED' ? 'DISARMED-SHADOW' : this.state, inert: this.inert, error: this.error,
+      env: this.presence, hash: this.hash, haltReason: this.haltReason, totalStop: this.totalStop, killFile: this.killed(), preflight: this.preflight ? { ok: this.preflight.ok, error: this.preflight.error, warn: this.preflight.warn, scopeNote: this.preflight.scopeNote, at: this.preflight.at } : null,
+      keyTest: this.keyTest ? { at: this.keyTest.at, ok: this.keyTest.ok, balanceCents: this.keyTest.balanceCents, tradeScope: this.keyTest.tradeScope, scopeNote: this.keyTest.scopeNote, error: this.keyTest.error, warn: this.keyTest.warn, keySource: this.keyTest.keySource } : null,
+      mainAccount: this.client ? this.client.subaccount == null : !this.presence.subaccount,
       config: c ? { bankrollCents: c.bankrollCents, perTradePct: c.perTradePct, perAssetCapCents: c.perAssetCapCents, participationShare: c.participationShare, maxOpenRiskCents: c.maxOpenRiskCents,
         dailyLossStopCents: c.dailyLossStopCents, shrinkToDailyBudget: !!c.shrinkToDailyBudget, totalLossStopCents: c.totalLossStopCents, maxPriceCents: c.order.maxPriceCents, maxSlices: c.order.maxSlices, sliceGapMs: c.order.sliceGapMs,
         series: c.series, follows: c.follows.line, armPhrase: c.armPhrase } : null,
@@ -337,4 +389,4 @@ class KalshiPilot {
   }
 }
 
-module.exports = { KalshiPilot, planSlice, feeCents, worstCents, laDay, loadPilotConfig, PILOT_FILE, PILOT_SHA256, STATES };
+module.exports = { KalshiPilot, PERM_MSG, isPermission, planSlice, feeCents, worstCents, laDay, loadPilotConfig, PILOT_FILE, PILOT_SHA256, STATES };

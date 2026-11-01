@@ -915,28 +915,48 @@ v3 trades exactly v2's decisions and adds size caps. v1 and v2 are unchanged (`2
 
 `server/live/kalshi-pilot.js` + `server/live/kalshi-rest.js` (the only file in the repo that names Kalshi order endpoints or builds an order).
 Follows frozen paper v3's **7% line** (`decision: take`) with real money: frozen config `config/frozen/kalshi-live-pilot.json`
-(sha256 `3677c281c81c590c5a3b8f52db98eb5988394446d09f642ea6f1fe9621664869`, pinned in code; any edit refuses to load).
-v1/v2/v3 paper code and configs are untouched; the pilot only reads v3's rows after v3 wrote them.
+(version p2, sha256 `7c3cec56c216a01bf0c840a356badc3cee16f1907afa664c2e69c37a69290989`, pinned in code; any edit refuses to load).
+v1/v2/v3 paper code and configs are untouched; the pilot only reads v3's rows after v3 wrote them. The order path is **REST over HTTPS only**
+(no websocket; the WS recorder stays read-only market data).
 
-**Rules (frozen):** $100 bankroll · per trade 7% of bankroll = min(Kalshi balance, $100 + realized P&L), also capped by the v3 asset caps
-(BTC $5,000 / ETH $400 / SOL $250) and 10% of known volume · total open risk ≤ $100 · **total-loss stop $100 = permanent HALT** until
-`data/live/kalshi-pilot/RESET_TOTAL_STOP` exists *and* `RESET PILOT` is typed on the desk machine · **Daily stop: OFF** (paper arms have none;
+**Rules (frozen):** **$150 hard cap**: bankroll = min(real Kalshi balance, $150 + the pilot's realized P&L), so a $400 account still counts
+$150 and a $90 account counts $90 · per trade 7% of that bankroll (≈ $10.50 at $150), also capped by the v3 asset caps
+(BTC $5,000 / ETH $400 / SOL $250) and 10% of known volume · total open risk ≤ $150 · **total-loss stop $150 = permanent HALT** until
+`data/live/kalshi-pilot/RESET_TOTAL_STOP` exists *and* `RESET PILOT` is typed on the desk machine · **Daily stop: OFF**, shrink OFF (paper arms have none;
 `dailyLossStopCents`/`shrinkToDailyBudget` exist, are tested, and default to null/false) · KXBTC15M / KXETH15M / KXSOL15M only · YES BUY only ·
 limit ≤ ask+1¢ and ≤ 98¢ · IOC · up to 3 slices 10 s apart · only inside v3's window (360–600 s left) · hold to settlement.
 
+**Main account (no subaccount).** The pilot trades in Bryan's main Kalshi account. **Other positions and orders in that account are not managed,
+not counted and never cancelled** (no cancel-all; HALT cancels only the pilot's own `hp1-…` orders). Because the balance moves with unrelated
+activity, the balance check compares only the pilot's **own** fills and fees (fill price ≤ its limit, fills = acks, settlement credit ≥ its own
+payout); an unrelated deposit, withdrawal or trade never halts it. Preflight requires the balance to cover the money about to be risked.
+(Optional `KALSHI_TRADE_SUBACCOUNT` 0–63 switches back to the strict whole-balance check.)
+
 **States:** `DISABLED` (inert: no client, no listeners, no files) → `DISARMED` (SHADOW: would-be orders logged, no money) → `ARMED` → `HALTED`.
-Every start is DISARMED (or HALTED if it was); ARMED is never restored. Auto-HALT on: auth failure (401/403), 3 API errors in a row, a send
-without a clear answer, fills that do not match the ack, balance mismatch > 2¢, clock skew > 5 s, an exception in the order path, the kill file
-`data/live/KILL`, the total-loss stop. HALT cancels only the pilot's own resting orders (`client_order_id` `hp1-…`).
+Every start is DISARMED (or HALTED if it was); ARMED is never restored. Auto-HALT on: **permission denied** (401 / 403 / insufficient scope on an
+order: halts at once, sends nothing else, not even a cancel; the card and ledger say **"this key can't trade, make a read+trade key"**), any other auth
+failure, 3 API errors in a row, a send without a clear answer, fills that do not match the ack or exceed the limit, clock skew > 5 s, an exception
+in the order path, the kill file `data/live/KILL`, the total-loss stop.
 Safety: intent written to `data/live/kalshi-pilot/ledger.jsonl` before every send; deterministic `client_order_id` per slice; reconcile after every
 slice and on startup (by listing orders, matched on `client_order_id`); a market is never traded twice; integer cents / micro-dollars; fees from fills.
 
-**Env (presence-checked only; values never logged or sent to the browser):**
-`LIVE_PILOT_ENABLED=true` (exactly), `KALSHI_TRADE_KEY_ID`, `KALSHI_TRADE_PRIVATE_KEY_PEM` (a separate key with trade scope, no transfer scope),
-optional `KALSHI_TRADE_SUBACCOUNT` (0–63; recommended so the balance check only sees pilot money). The read-only `KALSHI_API_KEY_ID` /
-`KALSHI_PRIVATE_KEY_PEM` are never used for orders.
+**Key (process env only; values never printed, logged, returned or sent to the browser; the card shows only the source and set / not set):**
+if **both** `KALSHI_TRADE_KEY_ID` and `KALSHI_TRADE_PRIVATE_KEY_PEM` are set the pilot uses that **dedicated trade key**; otherwise it reuses the
+**existing desk key** (`KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY_PEM`, or `KALSHI_PRIVATE_KEY_PATH`, exactly as the desk already loads it). Only the
+pilot module can sign an order with it, and only when `LIVE_PILOT_ENABLED=true` (exactly) **and** ARMED; every other live order path is a stub.
+If the desk key is read-only, the first armed order gets a 401/403 and the pilot halts with "this key can't trade, make a read+trade key".
+`*.pem`, `kalshi_trade_key*` and `hawse.env` are git-ignored.
 
 **Routes:** `POST /api/live/kalshi-pilot/halt` (works from the phone through the proxy when `pilot-halt` is in `HAWSE_PROXY_ALLOW_POST`; the desk
-HALT also halts an ARMED pilot). `POST /api/live/kalshi-pilot/arm|disarm|reset`: loopback socket only, refused if any forwarding header is present,
-JSON + same-origin; the proxy hard-blocks them whatever the allowlist says. Arming also needs the flag, the keys, a read-only preflight (balance,
-key scope, subaccount) and the typed phrase `ARM LIVE $100`.
+HALT also halts an ARMED pilot). `POST /api/live/kalshi-pilot/arm|disarm|reset|test-key`: loopback socket only, refused if any forwarding header is
+present, JSON + same-origin; the proxy hard-blocks them whatever the allowlist says. **Test key (read-only balance check)** (`test-key`, card button
+on the desk machine) makes signed GETs only (balance, plus the key list to read scopes), places no orders, writes no ledger rows and works while
+DISABLED: it shows the balance and, if Kalshi reveals scopes, whether trade scope is present; otherwise "trade scope can't be verified until the
+first armed order". Arming also needs the flag, the key, a read-only preflight (balance, scope if visible, clock) and the typed phrase `ARM LIVE $150`.
+
+**Setup on the desk PC (Bryan):**
+1. (a) Confirm the desk's existing Kalshi key is in `C:\HAWSE\hawse.env` (`KALSHI_API_KEY_ID` plus `KALSHI_PRIVATE_KEY_PEM` or `KALSHI_PRIVATE_KEY_PATH`;
+   it is already there if the desk shows live Kalshi data). The card should read "Kalshi key: set (existing desk key)".
+2. (b) On the desk PC, press **Test key (read-only balance check)** on the LIVE pilot card. It should say OK with your balance. No order is placed.
+3. (c) Add `LIVE_PILOT_ENABLED=true` to `C:\HAWSE\hawse.env`, restart the desk, and watch the **SHADOW** rows (would-be orders, no money) for a while.
+4. Arming is a separate, deliberate step: type `ARM LIVE $150` on the desk machine. Every restart comes back DISARMED. HALT is always on the card.

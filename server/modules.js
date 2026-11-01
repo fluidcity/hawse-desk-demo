@@ -104,7 +104,7 @@ module.exports = {
     const file = engine.cfg.lab && engine.cfg.lab.file !== undefined ? engine.cfg.lab.file : path.join(__dirname, '..', 'data', 'lab', 'strategies.json');
     engine.lab = engine.addFeed('lab', new Lab({ file, health: engine.health })); engine.lab.importers = engine.importers || (engine.importers = []); // modules (e.g. betting) register import handlers
   },
-  kalshiPilot(engine) { // Stage Z: real-money Kalshi pilot (v3 7%, $100). Ships DISABLED/DISARMED; inert unless LIVE_PILOT_ENABLED=true and the trade key env vars are set.
+  kalshiPilot(engine) { // Stage Z: real-money Kalshi pilot (v3 7%, $150). Ships DISABLED/DISARMED; inert unless LIVE_PILOT_ENABLED=true and the trade key env vars are set.
     const c = engine.cfg.livePilot || {}; // registered last, so it starts after v3 and reads v3's rows only after v3 wrote them
     engine.kalshiPilot = engine.addFeed('kalshiPilot', new KalshiPilot({ v1: engine.kalshiH2 || null, v3: engine.kalshiH2v3 || null, kalshi: engine.recorder && engine.recorder.kalshi, health: engine.health,
       dir: c.dir, killFile: c.killFile, env: process.env, log: engine.log || ((m) => console.log(m)) }));

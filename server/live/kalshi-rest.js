@@ -26,7 +26,7 @@ const PREFIX = '/trade-api/v2';
 const SERIES = ['KXBTC15M', 'KXETH15M', 'KXSOL15M'];
 const MAX_PRICE_CENTS = 98;
 const EP = Object.freeze({
-  balance: '/portfolio/balance', fills: '/portfolio/fills', orders: '/portfolio/orders', settlements: '/portfolio/settlements',
+  balance: '/portfolio/balance', deposits: '/portfolio/deposits', fills: '/portfolio/fills', orders: '/portfolio/orders', settlements: '/portfolio/settlements',
   createOrder: '/portfolio/events/orders', cancelOrder: (id) => '/portfolio/events/orders/' + encodeURIComponent(id),
   apiKeys: '/api_keys',
 });
@@ -102,13 +102,20 @@ function makeTradeClient({ env = process.env, fetchImpl = globalThis.fetch, now 
   }
   const subQ = () => (subaccount != null ? { subaccount } : {});
   Object.assign(c, {
-    getBalance: () => call('GET', EP.balance, { query: subQ() }),
+    /** Read-only. exchangeIndex scopes `balance` (available cash, cents) and portfolio_value to one exchange shard; omitted = all shards (aggregate). */
+    getBalance: ({ exchangeIndex } = {}) => call('GET', EP.balance, { query: { ...subQ(), exchange_index: exchangeIndex } }),
+    /** Read-only list of deposits ({ deposits: [{ id, status: pending|applied|failed|returned, amount_cents, ... }] }). Display only. */
+    getDeposits: ({ limit = 20 } = {}) => call('GET', EP.deposits, { query: { limit } }),
     getApiKeys: () => call('GET', EP.apiKeys),
     getOrders: (ticker) => call('GET', EP.orders, { query: { ticker, ...subQ() } }),
     getFills: ({ ticker, orderId } = {}) => call('GET', EP.fills, { query: { ticker, order_id: orderId, ...subQ() } }),
     getSettlements: (ticker) => call('GET', EP.settlements, { query: { ticker, ...subQ() } }),
     cancelOrder: (orderId, ticker) => call('DELETE', EP.cancelOrder(orderId), { query: { market_ticker: ticker, ...subQ() } }),
-    /** One IOC limit buy of YES. Validated again here, whatever the caller checked. */
+    /** One IOC limit buy of YES. Validated again here, whatever the caller checked.
+     * exchange_index is deliberately omitted: per Kalshi's Exchange Sharding doc, Kalshi then auto-routes by ticker to the market's own
+     * shard (the doc says explicit exchange_index >= 0 routes directly, and no ticker defaults to 0). The pilot SIZES from shard 0 cash
+     * (cfg.balanceExchangeIndex); if a market lives on another shard (the doc lists Crypto under shard 2 for new events; unverified for
+     * these series) that shard's cash is what Kalshi checks, and an insufficient_balance reject halts the pilot after one attempt. */
     async createOrder(o) {
       validateOrder(o);
       const body = { ticker: o.ticker, side: 'bid', count: o.count.toFixed(2), price: centsToPrice(o.priceCents), time_in_force: 'immediate_or_cancel',

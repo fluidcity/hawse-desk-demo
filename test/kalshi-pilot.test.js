@@ -1,5 +1,5 @@
 'use strict';
-// Stage Z: Kalshi LIVE pilot (v3 7% of the full balance, $150 realized-loss limit). Every exchange call here is a mock: zero real network.
+// Stage Z: Kalshi LIVE pilot (v3 7% of exchange shard 0 cash, no loss limit). Every exchange call here is a mock: zero real network.
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('fs');
@@ -33,8 +33,11 @@ function cfgFile(patch) { const d = tmp(), f = path.join(d, 'p.json'); const c =
 
 function fakeClient(over = {}) {
   const calls = []; let n = 0;
-  const c = { keyId: 'trade-kid', subaccount: null, lastSkewMs: 0, calls, balance: 10000, orders: [], fills: [], fillRatio: 1,
-    async getBalance() { calls.push('balance'); return { balance: c.balance }; },
+  const c = { keyId: 'trade-kid', subaccount: null, lastSkewMs: 0, calls, balance: 10000, balanceArgs: [], pv: 0, aggregate: null, breakdown: undefined, deposits: [], orders: [], fills: [], fillRatio: 1,
+    // shard-scoped read ({ exchangeIndex }) = 'balance' (sizing); unscoped = 'balance_all' (display only: all shards)
+    async getBalance(o = {}) { calls.push(o.exchangeIndex == null ? 'balance_all' : 'balance'); c.balanceArgs.push(o);
+      return o.exchangeIndex == null ? { balance: c.aggregate != null ? c.aggregate : c.balance, portfolio_value: c.pv, balance_breakdown: c.breakdown } : { balance: c.balance, portfolio_value: c.pv }; },
+    async getDeposits() { calls.push('deposits'); if (c.depositsError) throw c.depositsError; return { deposits: c.deposits }; },
     async getApiKeys() { calls.push('api_keys'); return { api_keys: [{ api_key_id: 'trade-kid', scopes: ['read', 'write::trade'] }] }; },
     async createOrder(o) { R.validateOrder(o); calls.push(['create', o]); const id = 'oid-' + (++n), f = Math.floor(o.count * c.fillRatio);
       c.orders.push({ order_id: id, client_order_id: o.clientOrderId, status: 'executed', fill_count_fp: f.toFixed(2) });
@@ -63,10 +66,10 @@ test('frozen hashes: pilot config pinned; v1/v2/v3 unchanged; pilot follows v3 7
   assert.equal(sha('config/frozen/kalshi-h2-v1.json'), '2f0053c4eb13bd48697eb06d4a6c841b327313393e97c619e96e3e9956c9675c');
   assert.equal(sha('config/frozen/kalshi-h2-v2.json'), 'ee5185f8e059a8995c557b474b873f47dae867be5f02fb021368c83cf0294a4c');
   assert.equal(sha('config/frozen/kalshi-h2-v3.json'), '5498e1cbea6c45e427876dd2971f041421ef18ad06c103dc7921898f5179ce1c');
-  assert.equal(CFG.perTradePct, 0.07); assert.equal(CFG.follows.line, '7pct'); assert.equal(CFG.version, 'p3'); assert.equal(CFG.bankrollCents, undefined, 'no $150 bankroll cap in p3');
+  assert.equal(CFG.perTradePct, 0.07); assert.equal(CFG.follows.line, '7pct'); assert.equal(CFG.version, 'p4'); assert.equal(CFG.bankrollCents, undefined, 'no bankroll cap'); assert.equal(CFG.balanceExchangeIndex, 0);
   assert.equal(CFG.dailyLossStopCents, null); assert.equal(CFG.shrinkToDailyBudget, false);
-  assert.equal(CFG.lossLimitCents, 15000); assert.equal(CFG.maxOpenRiskCents, undefined); assert.equal(CFG.totalLossStopCents, undefined); assert.equal(CFG.armPhrase, undefined, 'the phrase is derived, not stored');
-  assert.equal(P.loadPilotConfig().cfg.armPhrase, 'ARM LIVE $150 LOSS LIMIT'); assert.equal(CFG.order.maxPriceCents, 98);
+  assert.equal(CFG.maxOpenRiskCents, undefined); assert.equal(CFG.totalLossStopCents, undefined); assert.equal(CFG.maxTradeCents, undefined, 'no per-trade dollar ceiling');
+  assert.ok(!Object.keys(CFG).some((k) => /loss ?limit|totalLoss/i.test(k)), 'no loss-limit field'); assert.equal(CFG.armPhrase, 'ARM LIVE'); assert.equal(P.loadPilotConfig().cfg.armPhrase, 'ARM LIVE'); assert.equal(CFG.order.maxPriceCents, 98);
   const { file } = cfgFile((c) => { c.perTradePct = 0.5; }); assert.throws(() => P.loadPilotConfig(file), /edited after the freeze/);
 });
 
@@ -130,26 +133,27 @@ test('DISARMED = SHADOW: each v3 take logs a would-be order (no money) and sends
   assert.equal(p.state, 'DISARMED'); v.take(); await p.signals.get(TK).run;
   v.v3.rows.set('KXETH15M-B', { sig: { tk: 'KXETH15M-B', ya: 0.95, decision: 'skip' } }); for (const f of v.v1.rowListeners) f({ t: 'signal', tk: 'KXETH15M-B' });
   assert.equal(p.shadow.length, 1); assert.equal(p.shadow[0].noMoney, true); assert.equal(p.shadow[0].contracts, 7, '7% of the live $100 balance'); assert.equal(p.shadow[0].limit, 96);
-  assert.deepEqual(client.calls, ['balance'], 'shadow makes one read-only balance GET and nothing else'); assert.equal(p.snapshot().statusChip, 'DISARMED-SHADOW');
+  assert.deepEqual(client.calls, ['balance', 'deposits', 'balance_all'], 'shadow makes read-only GETs only: shard 0 balance (sizing), then display-only deposits and all-shard balance');
+  assert.deepEqual(client.balanceArgs[0], { exchangeIndex: 0 }); assert.equal(p.snapshot().statusChip, 'DISARMED-SHADOW');
   v.line.orders.set(TK, { filled: 7, vwap: 0.955, unfilled: 0, fee: 0.03 }); const cmp = p.snapshot().compare[0]; assert.equal(cmp.paper.filled, 7); assert.equal(cmp.shadow.contracts, 7);
 });
 
 test('arm refused without the phrase, without the flag, on a failed preflight, while HALTED; armed state is never restored on restart', async () => {
   const dir = tmp(); const { p } = pilot({ dir });
   assert.equal((await p.arm('arm live $150')).ok, false); assert.equal((await p.arm('')).ok, false); assert.equal(p.state, 'DISARMED');
-  const off = pilot({ env: { ...ENV_ON, LIVE_PILOT_ENABLED: 'false' } }).p; assert.equal((await off.arm('ARM LIVE $150 LOSS LIMIT')).ok, false); assert.equal(off.state, 'DISABLED');
+  const off = pilot({ env: { ...ENV_ON, LIVE_PILOT_ENABLED: 'false' } }).p; assert.equal((await off.arm('ARM LIVE')).ok, false); assert.equal(off.state, 'DISABLED');
   const bad = pilot({ client: fakeClient({ async getApiKeys() { return { api_keys: [{ api_key_id: 'trade-kid', scopes: ['read'] }] }; } }) }).p;
-  const r = await bad.arm('ARM LIVE $150 LOSS LIMIT'); assert.equal(r.ok, false); assert.match(r.error, /this key can't trade, make a read\+trade key/);
-  const skew = pilot({ client: fakeClient({ lastSkewMs: 9000 }) }).p; assert.equal((await skew.arm('ARM LIVE $150 LOSS LIMIT')).ok, false);
-  assert.equal((await p.arm('ARM LIVE $150 LOSS LIMIT')).ok, true); assert.equal(p.state, 'ARMED');
+  const r = await bad.arm('ARM LIVE'); assert.equal(r.ok, false); assert.match(r.error, /this key can't trade, make a read\+trade key/);
+  const skew = pilot({ client: fakeClient({ lastSkewMs: 9000 }) }).p; assert.equal((await skew.arm('ARM LIVE')).ok, false);
+  assert.equal((await p.arm('ARM LIVE')).ok, true); assert.equal(p.state, 'ARMED');
   const again = pilot({ dir }).p; assert.equal(again.state, 'DISARMED', 'restart comes back DISARMED');
-  await again.halt('test'); assert.equal((await again.arm('ARM LIVE $150 LOSS LIMIT')).ok, false);
+  await again.halt('test'); assert.equal((await again.arm('ARM LIVE')).ok, false);
   assert.equal(pilot({ dir }).p.state, 'HALTED', 'HALTED survives a restart');
 });
 
 test('armed: IOC slices, intent persisted before send, partial fill -> next slice, real fees from fills, balance before/after; hold to settlement', async () => {
   const v = fakes(), client = fakeClient({ fillRatio: 0.5 }); const { p, dir } = pilot({ v, client });
-  assert.ok((await p.arm('ARM LIVE $150 LOSS LIMIT')).ok); v.take(); await p.signals.get(TK).run;
+  assert.ok((await p.arm('ARM LIVE')).ok); v.take(); await p.signals.get(TK).run;
   const creates = client.calls.filter((c) => c[0] === 'create').map((c) => c[1]);
   assert.deepEqual(creates.map((o) => o.count), [7, 4, 2]); for (const o of creates) { assert.equal(o.priceCents, 96); assert.equal(o.side, 'yes'); assert.equal(o.action, 'buy'); }
   assert.equal(new Set(creates.map((o) => o.clientOrderId)).size, 3, 'unique client_order_id per slice');
@@ -166,51 +170,49 @@ test('armed: IOC slices, intent persisted before send, partial fill -> next slic
 });
 
 test('outside the frozen v3 entry window, or with the ask above the limit: no order', async () => {
-  const v = fakes({ close: Date.now() + 120000 }), client = fakeClient(); const { p } = pilot({ v, client }); await p.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await p.signals.get(TK).run;
+  const v = fakes({ close: Date.now() + 120000 }), client = fakeClient(); const { p } = pilot({ v, client }); await p.arm('ARM LIVE'); v.take(); await p.signals.get(TK).run;
   assert.equal(client.calls.filter((c) => c[0] === 'create').length, 0);
 });
 
 test('HALT cancels the pilot\'s own resting orders (never others) and blocks; kill file halts', async () => {
-  const v = fakes(), client = fakeClient(); const { p, dir } = pilot({ v, client }); await p.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await p.signals.get(TK).run;
+  const v = fakes(), client = fakeClient(); const { p, dir } = pilot({ v, client }); await p.arm('ARM LIVE'); v.take(); await p.signals.get(TK).run;
   client.orders.push({ order_id: 'rest-1', client_order_id: 'hp1-' + TK + '-s9', status: 'resting' }, { order_id: 'mine-manual', client_order_id: 'bryan-1', status: 'resting' });
   await p.halt('HALT button'); assert.equal(p.state, 'HALTED');
   const cancels = client.calls.filter((c) => c[0] === 'cancel').map((c) => c[1]); assert.deepEqual(cancels, ['rest-1']);
   v.take('KXETH15M-C'); assert.equal(client.calls.filter((c) => c[0] === 'create').length, 1, 'nothing new after HALT');
-  const k = pilot({ client: fakeClient() }); await k.p.arm('ARM LIVE $150 LOSS LIMIT'); fs.writeFileSync(path.join(k.dir, 'KILL'), ''); k.p.tick(); assert.equal(k.p.state, 'HALTED'); assert.match(k.p.haltReason, /kill file/);
+  const k = pilot({ client: fakeClient() }); await k.p.arm('ARM LIVE'); fs.writeFileSync(path.join(k.dir, 'KILL'), ''); k.p.tick(); assert.equal(k.p.state, 'HALTED'); assert.match(k.p.haltReason, /kill file/);
   void dir;
 });
 
 test('auto-HALT: auth failure, repeated API errors, unreconciled fills, balance mismatch, exception in the order path', async () => {
   const err = (s) => Object.assign(new Error('x'), { status: s });
-  let v = fakes(), c = fakeClient({ async createOrder() { throw err(401); } }), x = pilot({ v, client: c }).p; await x.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await x.signals.get(TK).run; assert.equal(x.state, 'HALTED');
-  v = fakes(); c = fakeClient({ async createOrder() { throw err(503); } }); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /without a clear answer/);
-  v = fakes(); c = fakeClient(); c.getFills = async () => ({ fills: [] }); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /unreconciled/);
-  v = fakes(); c = fakeClient({ subaccount: 3 }); const cg = c.getBalance; let k = 0; c.getBalance = async () => (k++ ? { balance: 5000 } : cg()); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /balance mismatch/);
-  v = fakes(); c = fakeClient({ async createOrder() { return null; } }); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await x.signals.get(TK).run; assert.equal(x.state, 'HALTED');
+  let v = fakes(), c = fakeClient({ async createOrder() { throw err(401); } }), x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.equal(x.state, 'HALTED');
+  v = fakes(); c = fakeClient({ async createOrder() { throw err(503); } }); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /without a clear answer/);
+  v = fakes(); c = fakeClient(); c.getFills = async () => ({ fills: [] }); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /unreconciled/);
+  v = fakes(); c = fakeClient({ subaccount: 3 }); const cg = c.getBalance; let k = 0; c.getBalance = async () => (k++ ? { balance: 5000 } : cg()); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /balance mismatch/);
+  v = fakes(); c = fakeClient({ async createOrder() { return null; } }); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.equal(x.state, 'HALTED');
   x = pilot({ client: fakeClient() }).p; for (let i = 0; i < 3; i++) x.apiError(err(500)); assert.match(x.haltReason, /3 Kalshi API errors/);
 });
 
 test('idempotent restart: an intent sent before a crash is reconciled by client_order_id and never re-sent', async () => {
   const dir = tmp(), v = fakes(), c1 = fakeClient(); c1.getFills = () => new Promise(() => {}); // crash after the order went out
-  const a = pilot({ dir, v, client: c1 }).p; await a.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await new Promise((r) => setImmediate(r));
+  const a = pilot({ dir, v, client: c1 }).p; await a.arm('ARM LIVE'); v.take(); await new Promise((r) => setImmediate(r));
   assert.equal(c1.calls.filter((c) => c[0] === 'create').length, 1);
   const rows = fs.readFileSync(path.join(dir, 'ledger.jsonl'), 'utf8').trim().split('\n').map(JSON.parse); fs.writeFileSync(path.join(dir, 'ledger.jsonl'), rows.filter((r) => r.t !== 'ack' && r.t !== 'cancel').map((r) => JSON.stringify(r)).join('\n') + '\n');
   const c2 = fakeClient(); c2.orders = c1.orders; c2.fills = c1.fills; const v2 = fakes(); const b = pilot({ dir, v: v2, client: c2 }).p; await b.startupReconcile;
   assert.equal(b.state, 'DISARMED'); assert.equal(c2.calls.filter((c) => c[0] === 'create').length, 0); assert.equal(b.signals.get(TK).filled, 7);
   assert.ok(fs.readFileSync(path.join(dir, 'ledger.jsonl'), 'utf8').includes('"t":"reconciled"'));
-  await b.arm('ARM LIVE $150 LOSS LIMIT'); v2.take(); await new Promise((r) => setImmediate(r)); assert.equal(c2.calls.filter((c) => c[0] === 'create').length, 0, 'the same market is never traded twice');
+  await b.arm('ARM LIVE'); v2.take(); await new Promise((r) => setImmediate(r)); assert.equal(c2.calls.filter((c) => c[0] === 'create').length, 0, 'the same market is never traded twice');
   const d2 = tmp(); fs.writeFileSync(path.join(d2, 'ledger.jsonl'), rows.filter((r) => r.t === 'order_intent').map((r) => JSON.stringify(r)).join('\n') + '\n');
   const c3 = new P.KalshiPilot({ dir: d2, env: {} }); c3.start(); await c3.startupReconcile; assert.equal(c3.state, 'DISABLED');
 });
 
-test('loss limit: $150 realized since start halts permanently (not before): reset needs the manual file AND the phrase on localhost', async () => {
-  const { p, dir } = pilot(); p.write({ t: 'settle', tk: 'KXBTC15M-Y', pnlMicros: -100e6 }); p.checkStops(); assert.equal(p.state, 'DISARMED', '$100 lost is not yet the $150 limit');
-  p.write({ t: 'settle', tk: 'KXBTC15M-X', pnlMicros: 30e6 }); p.write({ t: 'settle', tk: 'KXBTC15M-W', pnlMicros: -79.99e6 }); p.checkStops(); assert.equal(p.state, 'DISARMED', 'cumulative -$149.99 (a win counts too) is not yet the limit');
-  assert.deepEqual(p.lossView(), { limitCents: 15000, realizedCents: -14999, lossCents: 14999, headroomCents: 1 });
-  p.write({ t: 'settle', tk: 'KXBTC15M-Z', pnlMicros: -0.01e6 }); p.checkStops(); assert.match(p.haltReason, /loss limit: realized -150\.00/);
-  assert.equal(p.state, 'HALTED'); assert.equal(p.totalStop, true);
-  assert.equal(p.reset('RESET PILOT').ok, false, 'needs the reset file'); fs.writeFileSync(path.join(dir, 'RESET_TOTAL_STOP'), '');
-  assert.equal(p.reset('nope').ok, false); assert.equal(p.reset('RESET PILOT').ok, true); assert.equal(p.state, 'DISARMED'); assert.ok(!fs.existsSync(path.join(dir, 'RESET_TOTAL_STOP')));
+test('no loss limit: realized P&L deeply negative never halts (info only); reset after any HALT still needs the phrase on localhost', async () => {
+  const { p } = pilot(); for (let i = 0; i < 40; i++) p.write({ t: 'settle', tk: 'KXBTC15M-L' + i, pnlMicros: -500e6 });
+  assert.equal(p.realizedMicros, -20000e6); assert.equal(p.checkStops(), null); assert.equal(p.state, 'DISARMED', '-$20,000 realized: still no halt');
+  assert.equal(p.snapshot().money.realizedCents, -2000000); assert.equal(p.snapshot().loss, undefined);
+  assert.match(require('../public/pilot.js').render(p.snapshot(), {}), /info only, not a limit/);
+  await p.halt('manual'); assert.equal(p.state, 'HALTED'); assert.equal(p.reset('nope').ok, false); assert.equal(p.reset('RESET PILOT').ok, true); assert.equal(p.state, 'DISARMED');
 });
 
 test('daily stop is OFF by default: a large day loss does not halt and does not shrink size', () => {
@@ -225,8 +227,8 @@ test('daily stop explicitly ON ($10): halts and blocks; shrink-to-budget sizes d
   let z = P.planSlice({ ...base, dayLossCents: 700 }); assert.equal(z.contracts, 3); assert.ok(700 + z.worstCents <= 1000); assert.deepEqual(z.bound, ['daily']);
   z = P.planSlice({ ...base, dayLossCents: 500, dayOpenRiskCents: 300 }); assert.equal(z.contracts, 2);
   z = P.planSlice({ ...base, dayLossCents: 920 }); assert.equal(z.contracts, 0, 'under 1 contract -> skip');
-  const { p } = pilot({ file: on.file, pin: on.pin }); await p.arm('ARM LIVE $150 LOSS LIMIT'); p.write({ t: 'settle', tk: 'KXBTC15M-W', pnlMicros: -10e6 }); p.checkStops();
-  assert.equal(p.state, 'HALTED'); assert.match(p.haltReason, /daily loss stop/); assert.equal((await p.arm('ARM LIVE $150 LOSS LIMIT')).ok, false);
+  const { p } = pilot({ file: on.file, pin: on.pin }); await p.arm('ARM LIVE'); p.write({ t: 'settle', tk: 'KXBTC15M-W', pnlMicros: -10e6 }); p.checkStops();
+  assert.equal(p.state, 'HALTED'); assert.match(p.haltReason, /daily loss stop/); assert.equal((await p.arm('ARM LIVE')).ok, false);
 });
 
 test('desk: arm/reset are loopback-only and refuse any forwarded request; halt is open; proxy hard-blocks arm and forwards pilot-halt', async () => {
@@ -238,7 +240,7 @@ test('desk: arm/reset are loopback-only and refuse any forwarded request; halt i
   const { p } = pilot(); const srv = createServer({ kalshiPilot: p, routes: [] }, {}); await new Promise((r) => srv.listen(0, '127.0.0.1', r)); const port = srv.address().port;
   const post = (pth, body, headers = {}) => new Promise((res) => { const q = http.request({ host: '127.0.0.1', port, path: pth, method: 'POST', headers: { 'content-type': 'application/json', ...headers } }, (r) => { let d = ''; r.on('data', (x) => { d += x; }); r.on('end', () => res([r.statusCode, JSON.parse(d)])); }); q.end(JSON.stringify(body)); });
   try {
-    assert.equal((await post('/api/live/kalshi-pilot/arm', { phrase: 'ARM LIVE $150 LOSS LIMIT' }, { 'x-forwarded-for': '100.64.1.2' }))[0], 403);
+    assert.equal((await post('/api/live/kalshi-pilot/arm', { phrase: 'ARM LIVE' }, { 'x-forwarded-for': '100.64.1.2' }))[0], 403);
     assert.equal((await post('/api/live/kalshi-pilot/arm', { phrase: 'wrong' }))[0], 403);
     assert.equal(p.state, 'DISARMED');
     assert.equal((await post('/api/live/kalshi-pilot/test-key', {}, { 'x-forwarded-for': '100.64.1.2' }))[0], 403, 'Test key is this-machine only');
@@ -276,9 +278,11 @@ test('repo-wide: only the pilot client names order endpoints / builds orders; ev
 test('card: HALT always visible, ARM only on this machine, "Daily stop: OFF", SHADOW rows say NO MONEY; Scoreboard LIVE chip is separate from paper', async () => {
   const UI = require('../public/pilot.js'), SB = require('../public/scoreboard.js');
   const v = fakes(); const { p } = pilot({ v }); v.take(); await p.signals.get(TK).run; const snap = p.snapshot();
-  assert.equal(snap.title, 'LIVE · REAL MONEY · Kalshi pilot (v3 7% of full balance)');
-  assert.match(UI.render(snap, {}), /Loss limit: \$150\.00 realized since start \(halts permanently\)/); assert.match(UI.render(snap, {}), /realized so far/); assert.match(UI.render(snap, {}), /headroom <b>\$150\.00/); assert.match(UI.render(snap, {}), /One trade can overshoot it/);
-  assert.match(UI.render(snap, { local: true }), /ARM LIVE \$150 LOSS LIMIT/); assert.doesNotMatch(UI.render(snap, { local: true }), /only ever counts \$150/);
+  assert.equal(snap.title, 'LIVE · REAL MONEY · Kalshi pilot (v3 7% of shard 0 cash)');
+  const hc = UI.render(snap, {}); assert.match(hc, /No loss limit: the pilot trades until you press HALT or a safety stop trips; the balance can go to zero\./);
+  assert.match(hc, /shard 0 available cash, read at /); assert.match(hc, /open positions \$0\.00 \(not used for sizing\)/); assert.match(hc, /pending deposits/); assert.match(hc, /info only, not a limit/);
+  assert.doesNotMatch(hc + UI.render(snap, { local: true }), /Loss limit|LOSS LIMIT|realized-loss|headroom|overshoot/); assert.equal((hc.match(/loss limit/gi) || []).length, 1, 'only the No loss limit statement');
+  assert.match(UI.render(snap, { local: true }), /ARM LIVE/);
   const h = UI.render(snap, { local: false }); assert.match(h, /data-pilot="halt"/); assert.doesNotMatch(h, /data-pilot="arm"/); assert.match(h, /Daily stop: OFF \(paper arms have none\)/); assert.match(h, /SHADOW · NO MONEY/); assert.match(h, /DISARMED-SHADOW/);
   assert.match(UI.render(snap, { local: true }), /data-pilot="arm"/);
   const off = new P.KalshiPilot({ dir: tmp(), env: {} }); off.start(); const ho = UI.render(off.snapshot(), { local: true }); assert.match(ho, /data-pilot="halt"/); assert.doesNotMatch(ho, /data-pilot="arm"/); assert.match(ho, />DISABLED</);
@@ -303,7 +307,7 @@ test('a settlement credit from an earlier market landing between slices is not a
   c.createOrder = async (o) => { const r = await orig(o); if (++k === 1) { await new Promise((x) => setImmediate(x)); } return r; };
   const sleepCredit = async () => { c.balance += 700; }; // the earlier market paid out while we waited 10 s
   const dir = tmp(); const p = new P.KalshiPilot({ v1: v.v1, v3: v.v3, dir, killFile: path.join(dir, 'KILL'), env: ENV_ON, client: c, sleep: sleepCredit }); p.start(); p.stop();
-  await p.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await p.signals.get(TK).run;
+  await p.arm('ARM LIVE'); v.take(); await p.signals.get(TK).run;
   assert.equal(p.state, 'ARMED', p.haltReason); assert.equal(c.calls.filter((x) => x[0] === 'create').length, 3);
 });
 
@@ -340,44 +344,122 @@ test('bankroll follows deposits and wins (compounds) with no restart; armed halt
   await p.refreshBalance(); assert.equal(p.bankrollCents(), 8000);
   c.balance = 15000; t += 21000; await p.refreshBalance(); assert.equal(p.bankrollCents(), 15000, 'deposit to $150 counts');
   c.balance = 40000; t += 21000; await p.refreshBalance(); assert.equal(p.bankrollCents(), 40000, 'deposit to $400 counts');
-  assert.ok((await p.arm('ARM LIVE $150 LOSS LIMIT')).ok); v.take(TK, t); await p.signals.get(TK).run;
+  assert.ok((await p.arm('ARM LIVE')).ok); v.take(TK, t); await p.signals.get(TK).run;
   const s = p.signals.get(TK); assert.equal(s.filled, 29); assert.equal(p.bankrollCents(), 40000, 'own open cost is still counted while the position is open');
   // win: Kalshi pays $1 per contract; the next decision sizes from the bigger balance
   c.settled = 2900; c.balance += 2900; await p.onV1Row({ t: 'settle', tk: TK, win: true, result: 'yes' }); assert.ok(p.signals.get(TK).settle); assert.ok(p.realizedMicros > 0);
   t += 21000; p.disarm(); await p.refreshBalance(); const after = p.bankrollCents(); assert.ok(after > 40000, 'the win compounds: ' + after); assert.equal(after, c.balance);
   const tk2 = 'KXBTC15M-26NOV011030-B'; v.take(tk2, t); await p.signals.get(tk2).run; assert.equal(p.shadow[p.shadow.length - 1].sizing.targetCents, Math.floor(after * 0.07));
   // armed and the balance can't be read: halt (never size blind)
-  const v2 = fakes(), c2 = fakeClient(); const x = pilot({ v: v2, client: c2 }).p; assert.ok((await x.arm('ARM LIVE $150 LOSS LIMIT')).ok);
+  const v2 = fakes(), c2 = fakeClient(); const x = pilot({ v: v2, client: c2 }).p; assert.ok((await x.arm('ARM LIVE')).ok);
   c2.getBalance = async () => { throw new Error('HTTP 503'); }; v2.take(); await x.signals.get(TK).run;
   assert.equal(x.state, 'HALTED'); assert.match(x.haltReason, /balance unreadable/); assert.equal(c2.calls.filter((q) => q[0] === 'create').length, 0);
 });
 
-test('arm phrase: exactly "ARM LIVE $150 LOSS LIMIT", derived from the frozen loss limit', async () => {
-  for (const bad of ['ARM LIVE $150', 'arm live $150 loss limit', 'ARM LIVE $150 LOSS LIMIT ', ' ARM LIVE $150 LOSS LIMIT', 'ARM LIVE 150 LOSS LIMIT', 'ARM LIVE $150  LOSS LIMIT', '']) {
+test('arm phrase: exactly "ARM LIVE" (from the frozen config)', async () => {
+  for (const bad of ['ARM LIVE $150 LOSS LIMIT', 'ARM LIVE $150', 'arm live', 'ARM LIVE ', ' ARM LIVE', 'ARM  LIVE', 'ARMLIVE', '']) {
     const { p } = pilot(); assert.equal((await p.arm(bad)).ok, false, JSON.stringify(bad)); assert.equal(p.state, 'DISARMED');
   }
-  const { p } = pilot(); assert.equal(p.snapshot().config.armPhrase, 'ARM LIVE $150 LOSS LIMIT'); assert.ok((await p.arm('ARM LIVE $150 LOSS LIMIT')).ok);
-  assert.equal(P.armPhraseFor({ lossLimitCents: 25000 }), 'ARM LIVE $250 LOSS LIMIT'); assert.equal(P.armPhraseFor({ lossLimitCents: 12550 }), 'ARM LIVE $125.50 LOSS LIMIT');
-  const { file, pin } = cfgFile((c) => { c.lossLimitCents = 20000; }); const q = pilot({ file, pin }).p;
-  assert.equal((await q.arm('ARM LIVE $150 LOSS LIMIT')).ok, false); assert.ok((await q.arm('ARM LIVE $200 LOSS LIMIT')).ok, 'the phrase follows the config, so it cannot drift');
-  const { file: f2, pin: p2 } = cfgFile((c) => { delete c.lossLimitCents; }); assert.throws(() => P.loadPilotConfig(f2, p2), /lossLimitCents/);
+  const { p } = pilot(); assert.equal(p.snapshot().config.armPhrase, 'ARM LIVE'); assert.ok((await p.arm('ARM LIVE')).ok); assert.equal(p.state, 'ARMED');
+  const { file: f2, pin: p2 } = cfgFile((c) => { delete c.armPhrase; }); assert.throws(() => P.loadPilotConfig(f2, p2), /armPhrase/);
+  const { file: f3, pin: p3 } = cfgFile((c) => { delete c.balanceExchangeIndex; }); assert.throws(() => P.loadPilotConfig(f3, p3), /balanceExchangeIndex/);
+});
+
+test('sizing uses shard 0 available cash only: aggregate $80.53 with shard 0 $73.50 -> bankroll $73.50; portfolio_value, other shards and pending deposits never size', async () => {
+  let t = Date.parse('2026-11-01T18:00:00Z'); const now = () => t;
+  const v = fakes(), c = fakeClient({ balance: 7350, aggregate: 8053, pv: 5650, breakdown: [{ exchange_index: 0, balance: '73.5000' }, { exchange_index: 1, balance: '7.0300' }, { exchange_index: 2, balance: '0.0000' }, { exchange_index: 3, balance: '0.0000' }],
+    deposits: [{ id: 'd1', status: 'pending', amount_cents: 5000 }, { id: 'd2', status: 'applied', amount_cents: 10000 }, { id: 'd3', status: 'failed', amount_cents: 700 }] });
+  const { p } = pilot({ v, client: c, now }); v.take(TK, t); await p.signals.get(TK).run; const r = p.shadow[p.shadow.length - 1];
+  assert.equal(p.bankrollCents(), 7350); assert.equal(r.sizing.bankrollCents, 7350); assert.equal(r.sizing.targetCents, 514, '7% of $73.50 (not $80.53, not + $56.50 positions, not + $50 pending)');
+  assert.deepEqual(c.balanceArgs[0], { exchangeIndex: 0 }, 'sizing read is GET /portfolio/balance?exchange_index=0');
+  const m = p.snapshot().money; assert.equal(m.openPositionsCents, 5650, "portfolio_value shown as open positions"); assert.equal(m.otherShardCents, 703); assert.deepEqual(m.deposits, { pendingCents: 5000, pendingCount: 1, at: t });
+  assert.deepEqual(m.balanceSource, { exchangeIndex: 0, field: 'balance (available cash)', at: t });
+  const h = require('../public/pilot.js').render(p.snapshot(), {}); assert.match(h, /open positions \$56\.50 \(not used for sizing\)/); assert.match(h, /other shard \$7\.03 \(not used\)/); assert.match(h, /pending deposits \$50\.00/);
+  // a bigger pending deposit, more open positions and cash on another shard change nothing about the next size
+  c.deposits = [{ id: 'd4', status: 'pending', amount_cents: 100000 }]; c.pv = 900000; c.aggregate = 500000; t += 61000; v.take('KXBTC15M-26NOV011030-B', t); await p.signals.get('KXBTC15M-26NOV011030-B').run;
+  assert.equal(p.shadow[p.shadow.length - 1].sizing.bankrollCents, 7350); assert.equal(p.snapshot().money.deposits.pendingCents, 100000);
+  // deposits read failing = "unknown", never a halt, never sizing
+  c.depositsError = new Error('HTTP 500'); t += 61000; await p.refreshInfo(); assert.equal(p.snapshot().money.deposits.unknown, true); assert.equal(p.state, 'DISARMED');
+  assert.match(require('../public/pilot.js').render(p.snapshot(), {}), /pending deposits unknown/);
+  // the REAL client sends exchange_index=0 on the sizing read and nothing on the aggregate read; deposits is a GET
+  const f = mockFetch(); const rc = R.makeTradeClient({ env: ENV_ON, fetchImpl: f }); await rc.getBalance({ exchangeIndex: 0 }); await rc.getBalance(); await rc.getDeposits({ limit: 20 });
+  assert.deepEqual(f.reqs.map((q) => q.method + ' ' + q.path), ['GET /trade-api/v2/portfolio/balance', 'GET /trade-api/v2/portfolio/balance', 'GET /trade-api/v2/portfolio/deposits']);
+  assert.deepEqual(P.parseBalance({ balance: 7350, portfolio_value: 5650, balance_breakdown: [{ exchange_index: 0, balance: '73.50' }, { exchange_index: 1, balance: '7.03' }] }, 0), { cents: 7350, portfolioValueCents: 5650, otherShardCents: 703 });
+});
+
+test('test key (read-only) reports the shard 0 balance and the all-shard aggregate', async () => {
+  const c = fakeClient({ balance: 7350, aggregate: 8053, pv: 5650, breakdown: [{ exchange_index: 0, balance: '73.50' }, { exchange_index: 1, balance: '7.03' }] }); const { p } = pilot({ client: c });
+  const r = await p.testKey(); assert.equal(r.ok, true); assert.equal(r.exchangeIndex, 0); assert.equal(r.balanceCents, 7350); assert.equal(r.aggregateCents, 8053); assert.equal(r.otherShardCents, 703);
+  assert.ok(c.calls.every((q) => typeof q === 'string'), 'GETs only'); const k = p.snapshot().keyTest; assert.equal(k.aggregateCents, 8053);
+  assert.match(require('../public/pilot.js').render(p.snapshot(), { local: true }), /shard 0 \$73\.50 · all shards \$80\.53/);
+});
+
+test('insufficient balance: Kalshi rejects the first armed order -> one attempt, HALTED with a plain message, nothing else sent', async () => {
+  for (const [st, code, msg] of [[400, 'insufficient_balance', 'Insufficient balance to place this order'], [422, 'insufficient_balance', 'Required: $5.00, Available: $0.00'], [400, 'bad_request', 'INSUFFICIENT_FUNDS']]) {
+    const v = fakes(), c = fakeClient({ async createOrder(o) { c.calls.push(['create', o]); throw new R.KalshiHttpError(st, code, msg); } });
+    const { p, dir } = pilot({ v, client: c }); await p.arm('ARM LIVE'); const before = c.calls.length; v.take(); await p.signals.get(TK).run;
+    const after = c.calls.slice(before); assert.deepEqual(after.filter((q) => Array.isArray(q)).map((q) => q[0]), ['create'], code + ': exactly one order attempt, no cancels');
+    assert.equal(after[after.length - 1][0], 'create', 'no request after the rejected order');
+    assert.equal(p.state, 'HALTED'); assert.match(p.haltReason, /Kalshi rejected the order for insufficient balance on the trading shard/);
+    assert.match(fs.readFileSync(path.join(dir, 'ledger.jsonl'), 'utf8'), /insufficient balance on the trading shard/);
+    assert.match(require('../public/pilot.js').render(p.snapshot(), {}), /Kalshi rejected the order for insufficient balance on the trading shard/);
+    v.take('KXETH15M-26NOV011015-15'); await new Promise((r) => setImmediate(r)); assert.equal(c.calls.slice(before).length, after.length, 'later signals send nothing');
+  }
+  // any other clear reject (e.g. 400 invalid_price, 409, 429 on the order) is also one attempt then HALT
+  for (const st of [400, 409, 429]) {
+    const v = fakes(), c = fakeClient({ async createOrder(o) { c.calls.push(['create', o]); throw new R.KalshiHttpError(st, 'invalid_price', 'no'); } });
+    const { p } = pilot({ v, client: c }); await p.arm('ARM LIVE'); const before = c.calls.length; v.take(); await p.signals.get(TK).run;
+    assert.equal(p.state, 'HALTED'); assert.match(p.haltReason, new RegExp('Kalshi rejected the order \\(' + st)); assert.equal(c.calls.slice(before).filter((q) => Array.isArray(q)).length, 1);
+  }
+  assert.ok(P.isInsufficient({ status: 400, code: 'insufficient_balance' }) && !P.isInsufficient({ status: 400, code: 'insufficient_scope' }) && !P.isPermission({ status: 400, code: 'insufficient_balance' }));
+});
+
+test('429 too_many_requests is not a halt: reads back off and retry; 3 errors in a row is still the existing halt', async () => {
+  const e429 = () => new R.KalshiHttpError(429, 'too_many_requests', 'slow down');
+  // shadow: 429 -> stale + backoff (no read until it passes), never a halt
+  let t = Date.parse('2026-11-01T18:00:00Z'); const now = () => t;
+  let v = fakes(), c = fakeClient({ balance: 10000 }); let { p } = pilot({ v, client: c, now }); await p.refreshBalance(); assert.equal(p.balanceCents, 10000);
+  const ok = c.getBalance; c.getBalance = async (o) => { c.calls.push('balance429'); throw e429(); };
+  t += 21000; await p.refreshBalance(); assert.equal(p.balanceStale, true); assert.equal(p.backoffMs, 2000); assert.equal(p.state, 'DISARMED');
+  t += 1000; await p.refreshBalance(); assert.equal(c.calls.filter((q) => q === 'balance429').length, 1, 'no read during the backoff');
+  t += 20000; await p.refreshBalance(); assert.equal(p.backoffMs, 4000, 'doubles');
+  c.getBalance = ok; c.balance = 12000; t += 25000; await p.refreshBalance(); assert.equal(p.balanceCents, 12000); assert.equal(p.backoffMs, 0); assert.equal(p.balanceStale, false);
+  // armed: one 429 on the pre-slice read waits and retries the READ only, then trades normally
+  v = fakes(); c = fakeClient(); ({ p } = pilot({ v, client: c })); await p.arm('ARM LIVE'); let n = 0; const g = c.getBalance; c.getBalance = async (o) => { if (n++ === 0) { c.calls.push('balance429'); throw e429(); } return g(o); };
+  v.take(); await p.signals.get(TK).run; assert.equal(p.state, 'ARMED', p.haltReason); assert.equal(p.signals.get(TK).filled, 7);
+  assert.equal(c.calls.filter((q) => Array.isArray(q) && q[0] === 'create').length, 1, 'the order itself is never retried');
+  // armed: 429 three times in a row -> the existing consecutive-API-error halt, no order sent
+  v = fakes(); c = fakeClient(); ({ p } = pilot({ v, client: c })); await p.arm('ARM LIVE'); c.getBalance = async () => { throw e429(); };
+  v.take(); await p.signals.get(TK).run; assert.equal(p.state, 'HALTED'); assert.match(p.haltReason, /3 Kalshi API errors in a row/); assert.equal(c.calls.filter((q) => Array.isArray(q)).length, 0);
+});
+
+test('shard 0 cash below one contract: the pilot just stops trading with a plain status (not an error, not a halt); it resumes when cash is back', async () => {
+  const v = fakes(), c = fakeClient(); const { p } = pilot({ v, client: c }); await p.arm('ARM LIVE');
+  c.balance = 50; v.take(); await p.signals.get(TK).run;
+  assert.equal(p.state, 'ARMED', 'not a halt'); assert.equal(p.haltReason, null); assert.equal(c.calls.filter((q) => Array.isArray(q)).length, 0, 'no order');
+  const m = p.snapshot().money.outOfMoney; assert.match(m, /stopped trading: shard 0 cash \$0\.50 can't buy one contract at 96c \(not an error/);
+  assert.match(require('../public/pilot.js').render(p.snapshot(), {}), /stopped trading: shard 0 cash/);
+  c.balance = 0; const tk2 = 'KXBTC15M-26NOV011030-B'; v.take(tk2); await p.signals.get(tk2).run; assert.equal(p.state, 'ARMED'); assert.match(p.snapshot().money.outOfMoney, /\$0\.00/);
+  c.balance = 10000; const tk3 = 'KXBTC15M-26NOV011045-C'; v.take(tk3); await p.signals.get(tk3).run; assert.equal(p.signals.get(tk3).filled, 7); assert.equal(p.snapshot().money.outOfMoney, null, 'resumes with cash');
+  // shadow too: a plain skip, not an error
+  const s = pilot({ client: fakeClient({ balance: 0 }) }); s.v.take(); await s.p.signals.get(TK).run; assert.match(s.p.shadow[0].skipped, /stopped trading/); assert.equal(s.p.state, 'DISARMED');
 });
 
 test('main account (no subaccount): unrelated balance moves never halt; only the pilot\'s own fills are checked; preflight needs one trade of cash', async () => {
   // between the pre-slice balance and the after-slice balance Bryan's other trading moves the account by -$37.12: no halt
   let v = fakes(), c = fakeClient({ balance: 40000 }), cg = c.getBalance, k = 0; c.getBalance = async () => { const b = await cg(); return k++ >= 2 ? { balance: b.balance - 3712 } : b; };
-  let x = pilot({ v, client: c }).p; assert.ok((await x.arm('ARM LIVE $150 LOSS LIMIT')).ok); v.take(); await x.signals.get(TK).run;
+  let x = pilot({ v, client: c }).p; assert.ok((await x.arm('ARM LIVE')).ok); v.take(); await x.signals.get(TK).run;
   assert.equal(x.state, 'ARMED', x.haltReason); assert.equal(x.signals.get(TK).filled, 29, '7% of the full $400'); assert.equal(x.snapshot().mainAccount, true);
   // a pilot fill above its own limit is still caught
   v = fakes(); c = fakeClient(); const co = c.createOrder; c.createOrder = async (o) => { const r = await co(o); c.fills[c.fills.length - 1].yes_price_dollars = '0.9900'; return r; };
-  x = pilot({ v, client: c }).p; await x.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /above the 96c limit/);
+  x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /above the 96c limit/);
   // settlement revenue that includes Bryan's own positions in the same market (more than the pilot's payout) is not a mismatch; less is
-  v = fakes(); c = fakeClient(); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await x.signals.get(TK).run;
+  v = fakes(); c = fakeClient(); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run;
   c.settled = 7 * 100 + 500; await x.onV1Row({ t: 'settle', tk: TK, win: true, result: 'yes' }); assert.equal(x.state, 'ARMED', x.haltReason); assert.ok(x.signals.get(TK).settle);
   // preflight: a zero balance cannot cover a trade
-  x = pilot({ client: fakeClient({ balance: 0 }) }).p; const r = await x.arm('ARM LIVE $150 LOSS LIMIT'); assert.equal(r.ok, false); assert.match(r.error, /balance/);
+  x = pilot({ client: fakeClient({ balance: 0 }) }).p; const r = await x.arm('ARM LIVE'); assert.equal(r.ok, false); assert.match(r.error, /shard 0 available cash is \$0\.00/);
   // other orders on the account are never cancelled
-  v = fakes(); c = fakeClient(); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await x.signals.get(TK).run;
+  v = fakes(); c = fakeClient(); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run;
   c.orders.push({ order_id: 'bryan-1', client_order_id: 'manual-xyz', status: 'resting' }, { order_id: 'bryan-2', status: 'resting' }); await x.halt('test');
   assert.ok(!c.calls.some((q) => q[0] === 'cancel' && /bryan/.test(q[1])));
 });
@@ -400,7 +482,7 @@ test('key: dedicated trade pair wins only when BOTH are set, else the desk key; 
 test('permission denied: a 401 or 403 (or insufficient scope) on the first armed order -> one attempt, HALTED "this key can\'t trade", nothing else sent', async () => {
   for (const [st, code] of [[401, 'unauthorized'], [403, 'forbidden'], [400, 'insufficient_scope']]) {
     const v = fakes(), c = fakeClient({ async createOrder(o) { c.calls.push(['create', o]); throw Object.assign(new R.KalshiHttpError(st, code, 'denied'), {}); } });
-    const { p, dir } = pilot({ v, client: c }); await p.arm('ARM LIVE $150 LOSS LIMIT'); const before = c.calls.length; v.take(); await p.signals.get(TK).run;
+    const { p, dir } = pilot({ v, client: c }); await p.arm('ARM LIVE'); const before = c.calls.length; v.take(); await p.signals.get(TK).run;
     const after = c.calls.slice(before); assert.deepEqual(after.filter((q) => Array.isArray(q)).map((q) => q[0]), ['create'], st + ': exactly one order attempt, no cancels');
     assert.equal(after[after.length - 1][0], 'create', st + ': no request after the refused order');
     assert.equal(p.state, 'HALTED'); assert.match(p.haltReason, /this key can't trade, make a read\+trade key/);
@@ -456,13 +538,13 @@ test('shadow sizing tracks the live balance: throttled read-only GET before each
     c.balance = bal; v.take(tk, t); await p.signals.get(tk).run; sized.push(p.shadow[p.shadow.length - 1]); t += 21000;
   }
   assert.deepEqual(sized.map((r) => r.sizing.bankrollCents), [8000, 15000, 40000]);
-  assert.deepEqual(sized.map((r) => r.sizing.targetCents), [560, 1050, 2800], '7% of $80, $150, $400 (full balance)');
+  assert.deepEqual(sized.map((r) => r.sizing.targetCents), [560, 1050, 2800], '7% of $80, $150, $400 (shard 0 cash)');
   assert.deepEqual(sized.map((r) => r.contracts), [5, 11, 29]); assert.ok(sized.every((r) => r.sizing.pct === 7 && r.noMoney));
   assert.deepEqual(sized.map((r) => r.sizing.sizeCents), [5 * 96, 11 * 96, 29 * 96], 'order dollars = contracts x limit');
-  assert.deepEqual(c.calls, ['balance', 'balance', 'balance'], 'read-only GETs only, no restart needed');
+  assert.deepEqual(c.calls.filter((q) => q === 'balance'), ['balance', 'balance', 'balance'], 'one shard 0 read per decision, no restart needed'); assert.ok(c.calls.every((q) => typeof q === 'string'), 'read-only GETs only');
   // throttle: a second decision within 20 s reuses the last read
   c.balance = 9000; v.take('KXETH15M-26NOV011045-D', t); await p.signals.get('KXETH15M-26NOV011045-D').run; t += 5000; v.take('KXSOL15M-26NOV011045-E', t); await p.signals.get('KXSOL15M-26NOV011045-E').run;
-  assert.equal(c.calls.length, 4, 'at most one balance read per 20 s');
+  assert.equal(c.calls.filter((q) => q === 'balance').length, 4, 'at most one balance read per 20 s');
   // a failed read in shadow: no halt, balance marked stale, last known value used
   t += 21000; c.getBalance = async () => { c.calls.push('balance'); throw new Error('HTTP 503'); };
   v.take('KXBTC15M-26NOV011100-F', t); await p.signals.get('KXBTC15M-26NOV011100-F').run; const r = p.shadow[p.shadow.length - 1];
@@ -481,7 +563,7 @@ test('sizing fields on every shadow / intent / compare row, persisted in the led
   v.take(); await x.signals.get(TK).run; const sh = x.shadow[0];
   assert.deepEqual({ ...sh.sizing }, { bankrollCents: 15000, pct: 7, targetCents: 1050, sizeCents: 6 * 96, contracts: 6, limitCents: 96, capBound: '10% volume', capped: true });
   // armed: the order intent carries the same fields (7% line binding here)
-  v = fakes(); x = pilot({ v, client: fakeClient({ balance: 15000 }), dir: tmp() }).p; await x.arm('ARM LIVE $150 LOSS LIMIT'); v.take(); await x.signals.get(TK).run;
+  v = fakes(); x = pilot({ v, client: fakeClient({ balance: 15000 }), dir: tmp() }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run;
   const it = [...x.signals.get(TK).intents.values()][0]; assert.equal(it.sizing.bankrollCents, 15000); assert.equal(it.sizing.capBound, '7% line'); assert.equal(it.sizing.capped, false); assert.equal(it.sizing.sizeCents, 11 * 96);
   const led = fs.readFileSync(path.join(x.dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse);
   assert.ok(led.filter((r) => r.t === 'order_intent').every((r) => r.sizing && r.sizing.pct === 7));

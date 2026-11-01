@@ -10,6 +10,7 @@ const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
 const rest = require('./kalshi-rest');
+const { PoolTransfer } = require('./kalshi-transfer');
 
 const PILOT_FILE = path.join(__dirname, '..', '..', 'config', 'frozen', 'kalshi-live-pilot.json');
 const PILOT_SHA256 = 'a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7';
@@ -102,7 +103,7 @@ class KalshiPilot {
     this.presence = rest.tradeEnvPresence(env);
     this.cfg = null; this.hash = null; this.error = null; this.state = 'DISABLED'; this.inert = []; this.haltReason = null;
     this.signals = new Map(); this.shadow = []; this.events = []; this.realizedMicros = 0; this.dayLoss = new Map();
-    this.shards = null; this.shardMismatch = null; this.balanceCents = null; this.balanceAt = null; this.balanceTryAt = null; this.balanceStale = false; this.balanceError = null; this.backoffMs = 0; this.backoffUntil = 0; this.info = { at: null, tryAt: null, backoffMs: 0, backoffUntil: 0 }; this.portfolioValueCents = null; this.otherShardCents = null; this.outOfMoney = null; this.apiErrors = 0; this.busy = new Set(); this.timers = []; this.preflight = null;
+    this.shards = null; this.shardsAt = null; this.shardMismatch = null; this.balanceCents = null; this.balanceAt = null; this.balanceTryAt = null; this.balanceStale = false; this.balanceError = null; this.backoffMs = 0; this.backoffUntil = 0; this.info = { at: null, tryAt: null, backoffMs: 0, backoffUntil: 0 }; this.portfolioValueCents = null; this.otherShardCents = null; this.outOfMoney = null; this.apiErrors = 0; this.busy = new Set(); this.timers = []; this.preflight = null;
     try { const f = loadPilotConfig(file, pin); this.cfg = f.cfg; this.hash = f.hash; } catch (e) { this.error = e.message; this.inert.push('config: ' + e.message); }
     if (!this.presence.enabledFlag) this.inert.push('LIVE_PILOT_ENABLED is not "true"');
     if (!this.presence.keySet) this.inert.push('Kalshi key not set');
@@ -110,6 +111,8 @@ class KalshiPilot {
     this.client = null;
     if (!this.inert.length) { try { this.client = client !== undefined ? client : rest.makeTradeClient({ env, fetchImpl, now }); } catch (e) { this.inert.push(e.message); } }
     if (!this.client && !this.inert.length) this.inert.push('trade client unavailable');
+    // "Move cash between pools" (desk PC only, Bryan's click + Confirm). Its rows never change pilot state; nothing here runs it automatically.
+    this.transfers = new PoolTransfer({ getClient: () => this.transferClient(), write: (r) => this.write(r), now, sleep });
     if (health) health.register('live.kalshi-pilot', { label: `Kalshi LIVE pilot (v3 7% of shard ${this.cfg ? this.cfg.balanceExchangeIndex : '?'} cash)`, group: 'live', note: 'real money; ships disabled and disarmed', staleMs: 600000 });
   }
   get enabled() { return !this.inert.length; }
@@ -243,6 +246,23 @@ class KalshiPilot {
     }
     return (this.keyTest = r);
   }
+  /** The signed client for a pool transfer: the pilot's own, else one built from the same key (like Test key). Never automatic. */
+  transferClient() {
+    if (this.client) return this.client;
+    try { return (this._xferClient = this._xferClient || rest.makeTradeClient({ env: this.env, fetchImpl: this.fetchImpl, now: this.now })); } catch { return null; }
+  }
+  /** Desk-PC routes only (server.js pilotLocal). A failed transfer never halts the pilot or changes its state. */
+  async transferPrepare(b) { if (!this.cfg) return { ok: false, error: 'pilot config not loaded' }; try { return await this.transfers.prepare(b || {}); } catch (e) { return { ok: false, error: String(e.message || e).slice(0, 160) }; } }
+  async transferConfirm(b) {
+    if (!this.cfg) return { ok: false, error: 'pilot config not loaded' };
+    let r; try { r = await this.transfers.confirm(b || {}); } catch (e) { return { ok: false, error: 'transfer failed: ' + String(e.message || e).slice(0, 160) }; }
+    // Display only: the pools re-read after the transfer replace the shown per-pool cash; the sizing read (shard-scoped) is simply
+    // allowed on its next normal turn (no extra request here). Pilot state is not touched.
+    const L = r && r.transfer && r.transfer.last;
+    if (L && Array.isArray(L.shards) && L.shards.length && L.shards.every((x) => Number.isInteger(x.cents))) { this.shards = L.shards; this.shardsAt = L.at; this.otherShardCents = L.shards.filter((x) => x.exchangeIndex !== this.cfg.balanceExchangeIndex).reduce((a, x) => a + x.cents, 0); this.balanceTryAt = null; }
+    return r;
+  }
+  transferCancel() { return this.transfers.cancel(); }
   reset(phrase) {
     if (this.state !== 'HALTED') return { ok: true, state: this.state };
     if (phrase !== this.cfg.resetPhrase) return { ok: false, error: 'type the exact reset phrase' };
@@ -260,7 +280,7 @@ class KalshiPilot {
   }
   /** Read the sizing shard only: GET /portfolio/balance?exchange_index=<cfg.balanceExchangeIndex>. */
   async readShard(client) { return parseBalance(await client.getBalance({ exchangeIndex: this.cfg.balanceExchangeIndex }), this.cfg.balanceExchangeIndex); }
-  noteBalance(b) { if (b.portfolioValueCents != null) this.portfolioValueCents = b.portfolioValueCents; if (b.otherShardCents != null) this.otherShardCents = b.otherShardCents; if (b.shards) this.shards = b.shards; }
+  noteBalance(b) { if (b.portfolioValueCents != null) this.portfolioValueCents = b.portfolioValueCents; if (b.otherShardCents != null) this.otherShardCents = b.otherShardCents; if (b.shards) { this.shards = b.shards; this.shardsAt = this.now(); } }
   /**
    * The market's own exchange shard, from the public market data the desk already has (the recorder's GET /markets discovery
    * carries exchange_index; no extra request). null = unknown. A KNOWN shard that differs from cfg.balanceExchangeIndex means the
@@ -301,7 +321,7 @@ class KalshiPilot {
     try {
       const a = parseBalance(await this.client.getBalance(), this.cfg.balanceExchangeIndex);
       if (a.portfolioValueCents != null) this.portfolioValueCents = a.portfolioValueCents;
-      this.otherShardCents = a.otherShardCents != null ? a.otherShardCents : null; if (a.shards) this.shards = a.shards;
+      this.otherShardCents = a.otherShardCents != null ? a.otherShardCents : null; if (a.shards) { this.shards = a.shards; this.shardsAt = this.now(); }
       o.at = t;
     } catch (e) { this.backoff(o, e); }
   }
@@ -516,6 +536,7 @@ class KalshiPilot {
         openPositionsCents: this.portfolioValueCents, otherShardCents: this.otherShardCents, shards: this.shards, otherShards: c && this.shards ? this.shards.filter((x) => x.exchangeIndex !== c.balanceExchangeIndex) : null, shardMismatch: this.shardMismatch ? this.shardMsg() : null, deposits: this.info.deposits || null, outOfMoney: this.outOfMoney ? this.fundsMsg() : null, realizedCents: this.realizedMicros / U, openRiskCents: this.openRiskCents(),
         dayLossCents: this.cfg ? this.dayLossCents(laDay(this.now(), c.dailyLossTimeZone)) : 0, fills: [...this.signals.values()].reduce((a, s) => a + s.fills.length, 0),
         settled: [...this.signals.values()].filter((s) => s.settle && s.filled).length, wins: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros > 0).length, losses: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros < 0).length },
+      transfer: this.transfers.view().transfer,
       trades, compare, shadow: this.shadow.slice(-15).reverse(), events: this.events.slice(-12).reverse().map((e) => ({ at: e.at, t: e.t, tk: e.tk, reason: e.reason, coid: e.coid })) };
     function i0Unfilled(s) { const a = [...s.intents.values()]; return a.length ? Math.max(0, a[0].contracts - s.filled) : null; }
   }

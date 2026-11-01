@@ -43,7 +43,8 @@ const POST_ROUTES = { // name -> exact path matcher (the only mutating routes th
   arm: (p) => /^\/api\/strategy\/[\w-]+\/arm$/.test(p),
   'pilot-halt': (p) => p === '/api/live/kalshi-pilot/halt', // Stage Z: the live pilot's HALT (safe to forward: it only stops and cancels)
 };
-// Never forwarded, whatever HAWSE_PROXY_ALLOW_POST says: arming, disarming or resetting the real-money pilot happens on the desk machine only.
+// Never forwarded, whatever HAWSE_PROXY_ALLOW_POST says: arming, disarming, resetting the real-money pilot, Test key and
+// "Move cash between pools" (transfer-prepare/confirm/cancel) happen on the desk machine only.
 const PILOT_LOCAL_ONLY = (p) => p.startsWith('/api/live/') && p !== '/api/live/kalshi-pilot/halt';
 
 function parseAllow(v) {

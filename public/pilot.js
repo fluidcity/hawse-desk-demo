@@ -2,6 +2,8 @@
 //   HALT (always visible, works from anywhere): POST /api/live/kalshi-pilot/halt
 //   Test key (this machine only): POST /api/live/kalshi-pilot/test-key, signed GETs only, no orders
 //   ARM (only shown on this machine; the server refuses it from anywhere else): POST /api/live/kalshi-pilot/arm {phrase}
+//   Move cash between pools (this machine only; hidden on the phone, refused by the server and the proxy from anywhere else):
+//     transfer-prepare {amount, from, to} -> confirm text + one-time token; transfer-confirm {confirm:true, token, amountCents, from, to}; transfer-cancel
 // No keys, no exchange calls: the browser only talks to the desk.
 (function (root) {
   'use strict';
@@ -21,6 +23,22 @@
     return `<span class="pl-sz">${esc(z.pct)}% × ${$c(z.bankrollCents)} = ${$c(z.targetCents)} → ${order}${z.capBound ? ` · <span class="${z.capped ? 'pl-cap' : 'dim'}">${z.capped ? 'capped by ' : 'bound: '}${esc(z.capBound)}</span>` : ''}</span>`;
   }
   const bs0 = (m) => (m && m.balanceSource) || {};
+  const POOLS = { 0: 'Default', 1: 'Combos', 2: 'Crypto & Commodities', 3: 'Sports' };
+  const pool = (i) => `${POOLS[i] || '?'} (shard ${i})`;
+  /** "Move cash between pools" block: desk PC only. f = the typed form, x = the confirm step handed back by the server (with its token). */
+  function xferBlock(P, o) {
+    const T = P.transfer; if (!o.local || !T) return '';
+    const f = o.xferForm || {}, x = o.xferConfirm, L = T.last, from = f.from != null ? +f.from : 0, to = f.to != null ? +f.to : 2;
+    const opts = (sel) => Object.keys(POOLS).map((k) => `<option value="${k}"${+k === sel ? ' selected' : ''}>${esc(pool(+k))}</option>`).join('');
+    const form = `<div class="pl-xrow"><label>amount $ <input type="text" inputmode="decimal" autocomplete="off" spellcheck="false" data-pilot="xfer-amount" aria-label="amount in dollars" placeholder="70.00" value="${esc(f.amount || '')}"></label>` +
+      `<label>from <select data-pilot="xfer-from" aria-label="source pool">${opts(from)}</select></label><label>to <select data-pilot="xfer-to" aria-label="destination pool">${opts(to)}</select></label>` +
+      `<button type="button" class="pl-btn" data-pilot="xfer-prepare"${T.busy || x ? ' disabled' : ''}>Move cash between pools</button></div>`;
+    const conf = x ? `<div class="pl-xconfirm"><b>${esc(x.text)}</b> <span class="dim">(${esc(pool(x.from))} has ${$c(x.availableCents)} available)</span> <button type="button" class="pl-btn pl-xok" data-pilot="xfer-confirm"${T.busy ? ' disabled' : ''}>Confirm</button> <button type="button" class="pl-btn" data-pilot="xfer-cancel"${T.busy ? ' disabled' : ''}>Cancel</button></div>` : '';
+    const busy = T.busy ? '<div class="pl-xstat"><b>transfer in progress…</b> (one at a time; checking status every 1.5 s)</div>' : '';
+    const last = L ? `<div class="pl-xstat"><span class="dim">last transfer ${esc(t(L.at, o.tz))}</span> <b class="${L.outcome === 'accepted' ? 'pos' : 'neg'}">${esc(L.text)}</b>${L.retry && o.xferRetry ? ' <button type="button" class="pl-btn" data-pilot="xfer-retry">Retry (same transfer id)</button>' : ''}` +
+      (Array.isArray(L.shards) && L.shards.length ? `<div class="mono sm">pools now: ${L.shards.map((s) => `${esc(pool(s.exchangeIndex))} ${$c(s.cents)}`).join(' · ')}</div>` : '') + '</div>' : '';
+    return `<div class="pl-xfer"><div class="pl-xhead"><b>Move cash between pools</b> <span class="dim">(this computer only · your own pools in your main account · whole cents · asks to confirm · never automatic)</span></div>${form}${conf}${busy}${last}</div>`;
+  }
   function render(P, o = {}) {
     if (!P) return '<div class="dim mono sm">live pilot not loaded</div>';
     const c = P.config || {}, m = P.money || {}, chip = P.statusChip || P.state;
@@ -54,20 +72,29 @@
     const trades = `<h3 class="pl-h3">Live trades <span class="dim">(real money)</span></h3><div class="pl-scroll"><table class="pl-t mono"><thead><tr><th>time</th><th>market</th><th>limit</th><th>fill</th><th>size</th><th>fee</th><th>result</th><th>P&amp;L</th><th>balance</th><th>sizing (bankroll × % → order $)</th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="dim">no live trades yet</td></tr>'}</tbody></table></div>`;
     const cmp = (P.compare || []).map((r) => `<tr${r.shadow && !r.live ? ' class="pl-shadowrow"' : ''}><td>${esc(r.tk)}<div class="pl-szm">${sz(r.sizing)}</div></td><td>${ct(r.decisionAsk)}</td><td>${r.paper ? `${r.paper.filled} @ ${ct(r.paper.vwapCents)}` : '—'}</td><td>${r.live ? `${r.live.filled} @ ${ct(r.live.vwapCents)}` : r.shadow ? `<span class="pl-nomoney">SHADOW · NO MONEY</span> ${r.shadow.skipped ? esc(r.shadow.skipped) : `${r.shadow.contracts} @ ≤${ct(r.shadow.limit)}`}` : '—'}</td><td>${ct(r.slippageCents)}</td><td>${r.unfilled == null ? '—' : r.unfilled}</td><td class="pl-szc">${sz(r.sizing)}</td></tr>`).join('');
     const compare = `<h3 class="pl-h3">Paper v3 7% vs live <span class="dim">(fill, slippage, unfilled)</span></h3><div class="pl-scroll"><table class="pl-t mono"><thead><tr><th>market</th><th>ask</th><th>paper fill</th><th>live fill</th><th>slip</th><th>unfilled</th><th>sizing (bankroll × % → order $)</th></tr></thead><tbody>${cmp || '<tr><td colspan="7" class="dim">no v3 takes yet</td></tr>'}</tbody></table></div>`;
-    return head + banner + why + oom + facts + env + ktest + arm + trades + compare;
+    return head + banner + why + oom + facts + env + ktest + arm + xferBlock(P, o) + trades + compare;
   }
-  const API = { render };
+  const API = { render, POOLS };
   if (typeof module === 'object' && module.exports) { module.exports = API; return; }
   const H = (root.HAWSE = root.HAWSE || { onState: [] }); H.onState = H.onState || [];
   const local = /^(localhost|127(\.\d+){3}|\[::1\])$/.test(location.hostname);
-  let last = '';
-  H.onState.push((S) => { const el = document.getElementById('pilotBody'); if (!el) return; const P = S && S.feeds && S.feeds.kalshiPilot;
-    if (document.activeElement && document.activeElement.dataset && document.activeElement.dataset.pilot === 'phrase') return; // do not repaint while typing the phrase
-    const h = render(P, { local }); if (h !== last) { last = h; el.innerHTML = h; } });
+  let last = '', lastP = null; const xf = { form: { amount: '', from: 0, to: 2 }, confirm: null, retry: null };
+  const paint = (force) => { const el = document.getElementById('pilotBody'); if (!el) return;
+    const a = document.activeElement; if (!force && a && a.dataset && /^(phrase|xfer-amount|xfer-from|xfer-to)$/.test(a.dataset.pilot || '')) return; // do not repaint while typing
+    const h = render(lastP, { local, xferForm: xf.form, xferConfirm: xf.confirm, xferRetry: xf.retry }); if (h !== last) { last = h; el.innerHTML = h; } };
+  H.onState.push((S) => { lastP = S && S.feeds && S.feeds.kalshiPilot; paint(false); });
+  document.addEventListener('input', (e) => { const d = e.target && e.target.dataset && e.target.dataset.pilot; if (d === 'xfer-amount') xf.form.amount = e.target.value; });
+  document.addEventListener('change', (e) => { const d = e.target && e.target.dataset && e.target.dataset.pilot; if (d === 'xfer-from') xf.form.from = +e.target.value; if (d === 'xfer-to') xf.form.to = +e.target.value; });
   const post = (what, body) => fetch('/api/live/kalshi-pilot/' + what, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then((r) => r.json()).catch((e) => ({ ok: false, error: e.message }));
   document.addEventListener('click', async (e) => { const b = e.target.closest && e.target.closest('[data-pilot]'); if (!b || !b.closest('#pilotBody')) return;
     if (b.dataset.pilot === 'halt') { b.disabled = true; const r = await post('halt'); b.disabled = false; if (!r.ok) alert('HALT: ' + (r.error || 'failed')); }
     if (b.dataset.pilot === 'test-key') { b.disabled = true; await post('test-key'); b.disabled = false; }
+    if (b.dataset.pilot === 'xfer-prepare') { xf.retry = null; b.disabled = true; const r = await post('transfer-prepare', { amount: xf.form.amount, from: xf.form.from, to: xf.form.to }); b.disabled = false;
+      if (r.ok) xf.confirm = r.confirm; else alert('Not moved: ' + (r.error || 'refused')); paint(true); }
+    if (b.dataset.pilot === 'xfer-cancel') { xf.confirm = null; await post('transfer-cancel'); paint(true); }
+    if (b.dataset.pilot === 'xfer-confirm' || b.dataset.pilot === 'xfer-retry') { const x = b.dataset.pilot === 'xfer-retry' ? xf.retry : xf.confirm; if (!x) return; b.disabled = true;
+      const r = await post('transfer-confirm', { confirm: true, token: x.token, amountCents: x.amountCents, from: x.from, to: x.to });
+      xf.confirm = null; xf.retry = r.retryToken ? { ...x, token: r.retryToken } : null; if (r.ok) xf.form.amount = ''; paint(true); }
     if (b.dataset.pilot === 'arm') { const i = b.parentNode.querySelector('[data-pilot="phrase"]'); const r = await post('arm', { phrase: i ? i.value : '' }); if (i) i.value = ''; alert(r.ok ? 'ARMED' : 'Not armed: ' + (r.error || 'refused')); }
   });
 })(typeof window !== 'undefined' ? window : globalThis);

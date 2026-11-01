@@ -943,8 +943,27 @@ gives the all-shard aggregate; collateral is checked **on the market's own shard
 Create-order is sent **without** `exchange_index`, so Kalshi routes it to the market's own shard. Public `GET /markets` showed the open
 KXBTC15M/KXETH15M/KXSOL15M markets with `exchange_index` 2 (Crypto & Commodities). The card shows **cash on other shards** with amounts ("shard 0
 $72.51, shard 1 $7.03, not used for sizing; Kalshi's app/web move cash between shards, API orders don't"). To fund the pilot, cash must be on shard 2.
-p5 contains no transfer code. Changing the sizing shard needs a new config file and hash.
+The p5 config has no transfer settings (the separate desk-PC transfer button is below). Changing the sizing shard needs a new config file and hash.
 Screenshot (EXAMPLE / mock data, $0 on shard 2): `docs/screenshots/kalshi-pilot-p5-desktop.png`.
+
+**Move cash between pools (desk PC only, Bryan's own pools, asked for by Bryan).** The card has a **"Move cash between pools"** box on the desk PC
+only (hidden on the phone link; the server refuses it from anywhere but loopback with no forwarding headers, and the auth proxy hard-blocks every
+`/api/live/*` except halt). Fields: **amount $** (whole cents), **from** and **to** pool: Default (shard 0), Combos (shard 1), Crypto & Commodities
+(shard 2), Sports (shard 3); defaults from Default to Crypto & Commodities. Press **Move cash between pools**: the desk re-reads the source pool
+(signed `GET /portfolio/balance?exchange_index=<from>`) and refuses the same pool, $0, sub-cent amounts or more than the pool's available cash. It then
+asks **"Move $70.00 from Default (shard 0) to Crypto & Commodities (shard 2)?"** with **Confirm** and **Cancel** (one-time token, 2 minutes; the
+server needs `confirm:true`, the token and the echoed amount/pools). Confirm re-reads the source pool and sends one signed
+`POST /portfolio/intra_exchange_instance_transfer` `{client_transfer_id (fresh UUID per click), source:'event_contract', destination:'event_contract',
+amount (centicents: $1 = 10,000), source_exchange_shard, destination_exchange_shard}`. No subaccount, no withdrawal, no external destination;
+`/portfolio/target_balance_allocation` is never called (a repo-wide test checks). Transfers are asynchronous: the desk polls
+`GET /portfolio/intra_exchange_instance_transfers/{id}` up to 5 times ≥ 1.5 s apart (429 backs off), shows **pending** or **complete**, then re-reads
+all four pools (one aggregate read, else per-pool reads 1.5 s apart) and shows "pools now: …". One transfer at a time. A network error, 5xx or 429
+shows **Retry (same transfer id)**: the retry reuses the same `client_transfer_id`, so Kalshi cannot move the money twice (409 = already taken).
+Each attempt writes a `transfer` ledger row (amount, from, to, client_transfer_id, outcome) and then `transfer_status`; these rows never change
+the pilot's state and a failed transfer never halts it. If the key isn't allowed to transfer (401/403) the card says "Kalshi refused this key for
+transfers; nothing moved" and the pilot keeps running. Nothing transfers on startup, on arm, or automatically. The frozen config (p5) is unchanged.
+Screenshots (EXAMPLE / mock data, no real transfer): `docs/screenshots/kalshi-pilot-transfer-confirm-desktop.png` (confirm step),
+`docs/screenshots/kalshi-pilot-transfer-done-desktop.png` (after a mock transfer).
 
 **Sizing follows the current balance (no restart).** Every decision, shadow or live, is 7% of the bankroll *at that moment*. ARMED re-reads the
 shard 2 balance before every slice; DISARMED/shadow does a read-only signed `GET /portfolio/balance?exchange_index=2` before each decision (only when the key and
@@ -989,7 +1008,7 @@ If the desk key is read-only, the first armed order gets a 401/403 and the pilot
 `*.pem`, `kalshi_trade_key*` and `hawse.env` are git-ignored.
 
 **Routes:** `POST /api/live/kalshi-pilot/halt` (works from the phone through the proxy when `pilot-halt` is in `HAWSE_PROXY_ALLOW_POST`; the desk
-HALT also halts an ARMED pilot). `POST /api/live/kalshi-pilot/arm|disarm|reset|test-key`: loopback socket only, refused if any forwarding header is
+HALT also halts an ARMED pilot). `POST /api/live/kalshi-pilot/arm|disarm|reset|test-key|transfer-prepare|transfer-confirm|transfer-cancel`: loopback socket only, refused if any forwarding header is
 present, JSON + same-origin; the proxy hard-blocks them whatever the allowlist says. **Test key (read-only balance check)** (`test-key`, card button
 on the desk machine) makes signed GETs only (balance, plus the key list to read scopes), places no orders, writes no ledger rows and works while
 DISABLED: it shows the shard 2 balance, the all-shard total and the per-shard breakdown and, if Kalshi reveals scopes, whether trade scope is present; otherwise "trade scope can't be verified until the

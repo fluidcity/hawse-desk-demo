@@ -562,10 +562,10 @@ test('Test key (read-only balance check): signed GETs only, works while DISABLED
 });
 
 test('order path is REST only: no websocket in the pilot or its client; orders go out as HTTPS POST via fetch', async () => {
-  for (const f of ['server/live/kalshi-pilot.js', 'server/live/kalshi-rest.js']) {
+  for (const f of ['server/live/kalshi-pilot.js', 'server/live/kalshi-rest.js', 'server/live/kalshi-transfer.js']) {
     const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
     const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''); assert.ok(!/WebSocket|wss?:\/\/|\bws-sign\b|recorder\/kalshi-ws/.test(code), f + ' must not use a websocket');
-    assert.deepEqual([...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]).filter((m) => !['fs', 'path', 'crypto', './kalshi-rest'].includes(m)), [], f + ' requires only fs/path/crypto/the REST client');
+    assert.deepEqual([...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]).filter((m) => !['fs', 'path', 'crypto', './kalshi-rest', './kalshi-transfer'].includes(m)), [], f + ' requires only fs/path/crypto/the REST client');
   }
   assert.match(R.HOST, /^https:\/\//);
   const f = mockFetch(), c = R.makeTradeClient({ env: ENV_ON, fetchImpl: f });
@@ -628,3 +628,147 @@ test('sizing fields on every shadow / intent / compare row, persisted in the led
   for (const [b, lab] of [['asset', 'asset cap'], ['openRisk', 'open-risk'], ['cash', 'balance'], ['pct', '7% line']]) assert.equal(P.sizingOf(CFG, 15000, 1050, 1, 96, [b]).capBound, lab);
 });
 
+
+// ---- "Move cash between pools" (desk PC only). Mocked HTTP only: nothing here reaches Kalshi. ----
+const X = require('../server/live/kalshi-transfer');
+const UUID1 = '11111111-2222-4333-8444-555555555555';
+/** The REAL signed client over a mock fetch that answers balances per pool and the transfer endpoints. */
+function xferFetch({ pools = { 0: 7251, 1: 703, 2: 0, 3: 0 }, post = 200, gets = ['pending', 'complete'] } = {}) {
+  const reqs = []; let g = 0;
+  const f = async (url, o) => { const u = new URL(url); reqs.push({ method: o.method, path: u.pathname, q: u.searchParams, body: o.body ? JSON.parse(o.body) : null, headers: o.headers });
+    let st = 200, j = {};
+    if (u.pathname.endsWith('/portfolio/balance')) { const xi = u.searchParams.get('exchange_index');
+      j = xi == null ? { balance: Object.values(pools).reduce((a, b) => a + b, 0), balance_breakdown: Object.entries(pools).map(([k, v]) => ({ exchange_index: +k, balance: (v / 100).toFixed(4) })) } : { balance: pools[xi] }; }
+    else if (o.method === 'POST' && u.pathname.endsWith('/portfolio/intra_exchange_instance_transfer')) { st = post; j = st === 200 ? { transfer_id: 'tr-1' } : { error: { code: 'x', message: 'no' } };
+      if (st === 200) { const b = JSON.parse(o.body); pools[b.source_exchange_shard] -= b.amount / 100; pools[b.destination_exchange_shard] += b.amount / 100; } }
+    else if (u.pathname.includes('/portfolio/intra_exchange_instance_transfers/')) j = { transfer: { transfer_id: 'tr-1', status: gets[Math.min(g++, gets.length - 1)] } };
+    else if (u.pathname.endsWith('/portfolio/intra_exchange_instance_transfers')) j = { transfers: [{ transfer_id: 'tr-old', client_transfer_id: UUID1, status: 'complete' }] };
+    return { ok: st === 200, status: st, headers: { get: () => null }, json: async () => j }; };
+  f.reqs = reqs; f.pools = pools; return f;
+}
+function xpilot(fx, over = {}) {
+  const dir = tmp(), slept = [];
+  const p = new P.KalshiPilot({ v1: fakes().v1, v3: fakes().v3, dir, killFile: path.join(dir, 'KILL'), env: ENV_ON, fetchImpl: fx, sleep: async (ms) => { slept.push(ms); }, ...over });
+  return { p, dir, slept, rows: () => fs.readFileSync(path.join(dir, 'ledger.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l)) };
+}
+const xposts = (fx) => fx.reqs.filter((r) => r.method === 'POST');
+
+test('transfer: centicents ($1 = 10,000) and strict whole-cent dollar parsing', () => {
+  assert.equal(R.centsToCenticents(7000), 700000); assert.equal(R.centsToCenticents(1), 100); assert.throws(() => R.centsToCenticents(70.5));
+  assert.equal(X.parseDollars('70'), 7000); assert.equal(X.parseDollars('70.5'), 7050); assert.equal(X.parseDollars('$1,070.25'), 107025);
+  for (const bad of ['70.001', '-1', '1e3', '', 'abc', '0x10']) assert.equal(X.parseDollars(bad), null, bad);
+});
+
+test('transfer: happy path prepare -> confirm sends one signed POST (event_contract, centicents, shards, UUID), polls >= 1.5 s, re-reads pools, logs rows, pilot state untouched', async () => {
+  const fx = xferFetch(); const { p, slept, rows } = xpilot(fx);
+  const before = p.state;
+  const a = await p.transferPrepare({ amount: '70.00', from: 0, to: 2 });
+  assert.equal(a.ok, true); assert.equal(a.confirm.text, 'Move $70.00 from Default (shard 0) to Crypto & Commodities (shard 2)?');
+  assert.equal(xposts(fx).length, 0, 'prepare sends nothing that moves money');
+  const b = await p.transferConfirm({ confirm: true, token: a.confirm.token, amountCents: 7000, from: 0, to: 2 });
+  assert.equal(b.ok, true, b.error); assert.equal(b.transfer.last.status, 'complete'); assert.match(b.transfer.last.text, /Moved \$70\.00 from Default \(shard 0\) to Crypto & Commodities \(shard 2\): complete/);
+  const ps = xposts(fx); assert.equal(ps.length, 1); assert.equal(ps[0].path, '/trade-api/v2/portfolio/intra_exchange_instance_transfer');
+  assert.deepEqual(Object.keys(ps[0].body).sort(), ['amount', 'client_transfer_id', 'destination', 'destination_exchange_shard', 'source', 'source_exchange_shard']);
+  assert.equal(ps[0].body.amount, 700000); assert.equal(ps[0].body.source, 'event_contract'); assert.equal(ps[0].body.destination, 'event_contract');
+  assert.equal(ps[0].body.source_exchange_shard, 0); assert.equal(ps[0].body.destination_exchange_shard, 2); assert.match(ps[0].body.client_transfer_id, /^[0-9a-f]{8}-[0-9a-f]{4}-4/);
+  assert.ok(ps[0].headers['KALSHI-ACCESS-SIGNATURE'] && ps[0].headers['KALSHI-ACCESS-KEY'] === 'trade-kid');
+  assert.ok(slept.length >= 2 && slept.every((ms) => ms >= 1500), 'status polls and pool re-read spaced >= 1.5 s');
+  assert.deepEqual(b.transfer.last.shards.map((s) => s.cents), [251, 703, 7000, 0]);
+  assert.ok(!fx.reqs.some((r) => /target_balance_allocation|withdraw|subaccount/.test(r.path + r.q.toString())));
+  const x = rows().filter((r) => /^transfer/.test(r.t)); assert.deepEqual(x.map((r) => r.t), ['transfer', 'transfer_status']);
+  assert.equal(x[0].outcome, 'accepted'); assert.equal(x[0].amountCents, 7000); assert.equal(x[0].clientTransferId, ps[0].body.client_transfer_id);
+  assert.equal(p.state, before); assert.equal(p.snapshot().transfer.busy, false); assert.ok(!JSON.stringify(p.snapshot()).includes(a.confirm.token), 'snapshot never carries the confirm token');
+});
+
+test('transfer: same pool, over the fresh balance, bad amount, missing/mismatched confirm all refused with no POST', async () => {
+  const fx = xferFetch(); const { p } = xpilot(fx);
+  assert.match((await p.transferPrepare({ amount: '5', from: 2, to: 2 })).error, /same pool/);
+  assert.match((await p.transferPrepare({ amount: '72.52', from: 0, to: 2 })).error, /more than the \$72\.51 available in Default \(shard 0\)/);
+  assert.match((await p.transferPrepare({ amount: '0', from: 0, to: 2 })).error, /more than \$0\.00/);
+  assert.match((await p.transferPrepare({ amount: '1.005', from: 0, to: 2 })).error, /whole cents/);
+  assert.match((await p.transferPrepare({ amount: '1', from: 0, to: 7 })).error, /pick a source/);
+  const a = await p.transferPrepare({ amount: '10', from: 0, to: 2 }); assert.equal(a.ok, true);
+  assert.match((await p.transferConfirm({ token: a.confirm.token, amountCents: 1000, from: 0, to: 2 })).error, /not confirmed/);
+  assert.match((await p.transferConfirm({ confirm: true, token: 'nope', amountCents: 1000, from: 0, to: 2 })).error, /no matching transfer/);
+  assert.match((await p.transferConfirm({ confirm: true, token: a.confirm.token, amountCents: 100000, from: 0, to: 2 })).error, /do not match/);
+  assert.match((await p.transferConfirm({ confirm: true, token: a.confirm.token, amountCents: 1000, from: 0, to: 3 })).error, /do not match/);
+  fx.pools[0] = 500; // cash left the pool between prepare and confirm
+  assert.match((await p.transferConfirm({ confirm: true, token: a.confirm.token, amountCents: 1000, from: 0, to: 2 })).error, /more than the \$5\.00 now in Default/);
+  assert.equal(xposts(fx).length, 0);
+});
+
+test('transfer: an uncertain send keeps the same client_transfer_id for Retry; 409 = already taken; 403 never halts the pilot', async () => {
+  const fx = xferFetch({ post: 500 }); const { p, rows } = xpilot(fx);
+  const a = await p.transferPrepare({ amount: '1', from: 0, to: 2 });
+  const b = await p.transferConfirm({ confirm: true, token: a.confirm.token, amountCents: 100, from: 0, to: 2 });
+  assert.equal(b.ok, false); assert.ok(b.retryToken); assert.match(b.error, /Retry/);
+  fx.reqs.length = 0; // the retry of the same click
+  const c = await p.transferConfirm({ confirm: true, token: b.retryToken, amountCents: 100, from: 0, to: 2 }); assert.equal(c.ok, false);
+  const ids = rows().filter((r) => r.t === 'transfer').map((r) => r.clientTransferId); assert.equal(ids.length, 2); assert.equal(ids[0], ids[1], 'same id on retry');
+  // a fresh click gets a fresh id
+  await p.transferCancel(); const d = await p.transferPrepare({ amount: '1', from: 0, to: 2 }); await p.transferConfirm({ confirm: true, token: d.confirm.token, amountCents: 100, from: 0, to: 2 });
+  assert.notEqual(rows().filter((r) => r.t === 'transfer').pop().clientTransferId, ids[0]);
+  // 409: Kalshi already accepted this client_transfer_id -> look it up, no new transfer
+  const f9 = xferFetch({ post: 409 }); const q = xpilot(f9, { }); q.p.transfers.uuid = () => UUID1;
+  const e = await q.p.transferPrepare({ amount: '1', from: 0, to: 2 }); const r9 = await q.p.transferConfirm({ confirm: true, token: e.confirm.token, amountCents: 100, from: 0, to: 2 });
+  assert.equal(r9.ok, true); assert.equal(r9.transfer.last.transferId, 'tr-old');
+  // 403: this key cannot move cash; the pilot is not halted
+  const f3 = xferFetch({ post: 403 }); const z = xpilot(f3); const st = z.p.state;
+  const g = await z.p.transferPrepare({ amount: '1', from: 0, to: 2 }); const r3 = await z.p.transferConfirm({ confirm: true, token: g.confirm.token, amountCents: 100, from: 0, to: 2 });
+  assert.equal(r3.ok, false); assert.match(r3.error, /refused this key for transfers/); assert.equal(z.p.state, st); assert.notEqual(z.p.state, 'HALTED');
+  assert.ok(!JSON.stringify(rows()).includes('PRIVATE KEY') && !JSON.stringify(r3).includes('PRIVATE KEY'));
+});
+
+test('transfer: one at a time (in-flight lock), 429 on status backs off, subaccount refused', async () => {
+  const fx = xferFetch({ gets: ['pending'] }); let release; const gate = new Promise((r) => { release = r; }); const slept = [];
+  const { p } = xpilot(fx, { sleep: async (ms) => { slept.push(ms); if (slept.length === 1) await gate; } });
+  const a = await p.transferPrepare({ amount: '1', from: 0, to: 2 });
+  const run = p.transferConfirm({ confirm: true, token: a.confirm.token, amountCents: 100, from: 0, to: 2 });
+  await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+  assert.equal(p.snapshot().transfer.busy, true); assert.match((await p.transferPrepare({ amount: '1', from: 0, to: 2 })).error, /already in progress/);
+  release(); const r = await run; assert.equal(r.transfer.last.status, 'pending'); assert.equal(xposts(fx).length, 1);
+  // 429 while polling: wait grows
+  const t = new X.PoolTransfer({ getClient: () => c, write: () => {}, sleep: async (ms) => { w.push(ms); } }), w = [];
+  let n = 0; const c = { getTransfer: async () => { if (n++ < 2) { const e = new Error('429'); e.status = 429; throw e; } return { transfer: { status: 'complete' } }; } };
+  assert.equal(await t.poll(c, 'tr'), 'complete'); assert.ok(w[1] > 1500 && w[2] > w[1], 'backs off on 429: ' + w);
+  const s = xpilot(xferFetch(), { env: { ...ENV_ON, KALSHI_TRADE_SUBACCOUNT: '3' } });
+  assert.match((await s.p.transferPrepare({ amount: '1', from: 0, to: 2 })).error, /main-account only/);
+  await assert.rejects(() => R.makeTradeClient({ env: { ...ENV_ON, KALSHI_TRADE_SUBACCOUNT: '3' }, fetchImpl: xferFetch() }).createTransfer({ amountCents: 100, from: 0, to: 2, clientTransferId: UUID1 }), /main-account only/);
+});
+
+test('transfer: start, arm and Test key never move cash', async () => {
+  const fx = xferFetch(); const on = cfgFile(() => {}); const { p } = xpilot(fx);
+  p.start(); await p.testKey(); p.stop();
+  assert.ok(!fx.reqs.some((r) => /intra_exchange|target_balance/.test(r.path)), 'no transfer call on start / Test key');
+  const c = fakeClient(); let moved = 0; c.createTransfer = async () => { moved++; }; const q = pilot({ client: c, file: on.file, pin: on.pin }); await q.p.arm('ARM LIVE');
+  assert.equal(moved, 0, 'arming never transfers');
+});
+
+test('transfer: desk-PC routes only; the phone link and the proxy refuse them; the card hides the control off this machine', async () => {
+  const fx = xferFetch(); const { p } = xpilot(fx);
+  const srv = createServer({ kalshiPilot: p, routes: [] }, {}); await new Promise((r) => srv.listen(0, '127.0.0.1', r)); const port = srv.address().port;
+  const post = (pth, body, headers = {}) => new Promise((res) => { const q = http.request({ host: '127.0.0.1', port, path: pth, method: 'POST', headers: { 'content-type': 'application/json', ...headers } }, (r) => { let d = ''; r.on('data', (x) => { d += x; }); r.on('end', () => res([r.statusCode, JSON.parse(d)])); }); q.end(JSON.stringify(body)); });
+  try {
+    for (const w of ['transfer-prepare', 'transfer-confirm', 'transfer-cancel']) assert.equal((await post('/api/live/kalshi-pilot/' + w, { amount: '1', from: 0, to: 2, confirm: true }, { 'x-forwarded-for': '100.64.1.2' }))[0], 403, w);
+    const [c1, r1] = await post('/api/live/kalshi-pilot/transfer-prepare', { amount: '1', from: 0, to: 2 }); assert.equal(c1, 200); assert.ok(r1.confirm.token);
+    const [c2] = await post('/api/live/kalshi-pilot/transfer-confirm', { token: r1.confirm.token, amountCents: 100, from: 0, to: 2 }); assert.equal(c2, 422, 'missing confirm:true');
+    const [c3, r3] = await post('/api/live/kalshi-pilot/transfer-confirm', { confirm: true, token: r1.confirm.token, amountCents: 100, from: 0, to: 2 }); assert.equal(c3, 200, JSON.stringify(r3));
+  } finally { srv.close(); }
+  const all = Object.keys(proxy.POST_ROUTES);
+  for (const w of ['transfer-prepare', 'transfer-confirm', 'transfer-cancel']) assert.equal(proxy.policy('POST', '/api/live/kalshi-pilot/' + w, all)[0], 403, w);
+  const UI = require('../public/pilot.js'); const snap = p.snapshot();
+  assert.match(UI.render(snap, { local: true }), /Move cash between pools/); assert.match(UI.render(snap, { local: true }), /Crypto &amp; Commodities \(shard 2\)/);
+  assert.doesNotMatch(UI.render(snap, { local: false }), /Move cash between pools|xfer-/, 'hidden on the phone link');
+  const conf = UI.render(snap, { local: true, xferConfirm: { text: 'Move $70.00 from Default (shard 0) to Crypto & Commodities (shard 2)?', from: 0, to: 2, amountCents: 7000, availableCents: 7251, token: 't' } });
+  assert.match(conf, /data-pilot="xfer-confirm"/); assert.match(conf, /data-pilot="xfer-cancel"/);
+});
+
+test('repo-wide: transfer endpoints only in kalshi-rest.js; target_balance_allocation is never called anywhere', () => {
+  const walk = (d) => fs.readdirSync(d, { withFileTypes: true }).flatMap((e) => (e.name === 'node_modules' ? [] : e.isDirectory() ? walk(path.join(d, e.name)) : e.name.endsWith('.js') ? [path.join(d, e.name)] : []));
+  const files = ['server', 'scripts', 'public', 'cloudflare'].filter((d) => fs.existsSync(path.join(ROOT, d))).flatMap((d) => walk(path.join(ROOT, d)));
+  const rel = (f) => path.relative(ROOT, f);
+  assert.deepEqual(files.filter((f) => /['"`]\/portfolio\/intra_exchange/.test(fs.readFileSync(f, 'utf8'))).map(rel), [path.join('server', 'live', 'kalshi-rest.js')]);
+  assert.deepEqual(files.filter((f) => /['"`][^'"`\n]*target_balance_allocation/.test(fs.readFileSync(f, 'utf8'))).map(rel), [], 'no code string names target_balance_allocation');
+  assert.deepEqual(files.filter((f) => /createTransfer\(/.test(fs.readFileSync(f, 'utf8'))).map(rel).sort(), [path.join('server', 'live', 'kalshi-rest.js'), path.join('server', 'live', 'kalshi-transfer.js')].sort());
+  const t = fs.readFileSync(path.join(ROOT, 'server', 'live', 'kalshi-transfer.js'), 'utf8'); assert.doesNotMatch(t, /KALSHI_TRADE_PRIVATE|KALSHI_TRADE_KEY|require\(['"]\.\/kalshi-rest/);
+});

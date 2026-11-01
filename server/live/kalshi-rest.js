@@ -17,6 +17,15 @@
 // - Cancel Order V2: DELETE /portfolio/events/orders/{order_id}?market_ticker=..  (Cancel-all exists but is NOT used: it would also cancel orders the pilot did not place.)
 // - GET /portfolio/balance (balance in cents), /portfolio/fills (fee_cost dollars string, count_fp, yes_price_dollars),
 //   /portfolio/orders?ticker= (client_order_id in each order), /portfolio/settlements?ticker= (revenue cents, fee_cost), /api_keys (scopes).
+// - Move cash between Bryan's own pools (exchange shards), ONLY when he presses Confirm on the desk PC (server/live/kalshi-transfer.js):
+//   POST /portfolio/intra_exchange_instance_transfer, body { client_transfer_id (UUID, reuse only for an identical retry: a repeat
+//   returns 409 and creates no new transfer), source: 'event_contract', destination: 'event_contract', amount (integer CENTICENTS:
+//   cents x 100, e.g. price_centicents 4500 = 45 cents, so $1 = 10,000), source_exchange_shard, destination_exchange_shard }.
+//   200 -> { transfer_id }, processed asynchronously. GET /portfolio/intra_exchange_instance_transfers/{transfer_id} -> { transfer:
+//   { transfer_id, client_transfer_id?, source, destination, source_exchange_shard, destination_exchange_shard, amount (dollars string),
+//   status: 'pending' | 'complete', created_ts } }; GET /portfolio/intra_exchange_instance_transfers?limit= lists history.
+//   No subaccount fields are ever sent (main account only), never 'margined', and there is no withdrawal or external destination here.
+//   /portfolio/target_balance_allocation is never called.
 // - Signing: base64(sign(timestampMs + METHOD + '/trade-api/v2' + path-without-query)). Ed25519 signs the bytes directly;
 //   RSA keys use RSA-PSS SHA-256, MGF1-SHA256, salt length = digest length. Key type is taken from the parsed key.
 const crypto = require('crypto');
@@ -29,7 +38,22 @@ const EP = Object.freeze({
   balance: '/portfolio/balance', deposits: '/portfolio/deposits', fills: '/portfolio/fills', orders: '/portfolio/orders', settlements: '/portfolio/settlements',
   createOrder: '/portfolio/events/orders', cancelOrder: (id) => '/portfolio/events/orders/' + encodeURIComponent(id),
   apiKeys: '/api_keys',
+  transfer: '/portfolio/intra_exchange_instance_transfer', transfers: '/portfolio/intra_exchange_instance_transfers',
+  transferById: (id) => '/portfolio/intra_exchange_instance_transfers/' + encodeURIComponent(id),
 });
+/** Bryan's four pools (exchange shards). Transfers only move cash between these, inside his own main account. */
+const POOLS = Object.freeze({ 0: 'Default', 1: 'Combos', 2: 'Crypto & Commodities', 3: 'Sports' });
+const CENTICENTS_PER_CENT = 100; // Kalshi centicents = 1/100 of a cent: $1 = 100 cents = 10,000 centicents
+const centsToCenticents = (c) => { if (!Number.isInteger(c)) throw new Error('refused: amount must be whole cents'); return c * CENTICENTS_PER_CENT; };
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-8][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
+/** Validate a pool transfer before it can be signed: two different known pools, whole positive cents, a UUID client id. */
+function validateTransfer(t) {
+  if (!t || !Object.prototype.hasOwnProperty.call(POOLS, t.from) || !Object.prototype.hasOwnProperty.call(POOLS, t.to) || !Number.isInteger(t.from) || !Number.isInteger(t.to)) throw new Error('refused: source and destination must be pools 0..3');
+  if (t.from === t.to) throw new Error('refused: source and destination are the same pool');
+  if (!Number.isInteger(t.amountCents) || t.amountCents < 1 || t.amountCents > 100000000) throw new Error('refused: amount must be whole cents above $0');
+  if (typeof t.clientTransferId !== 'string' || !UUID_RE.test(t.clientTransferId)) throw new Error('refused: client_transfer_id must be a UUID');
+  return true;
+}
 
 class KalshiHttpError extends Error { constructor(status, code, msg) { super(`kalshi ${status}${code ? ' ' + code : ''}: ${msg || 'request failed'}`); this.status = status; this.code = code || null; } }
 
@@ -117,6 +141,17 @@ function makeTradeClient({ env = process.env, fetchImpl = globalThis.fetch, now 
      * (cfg.balanceExchangeIndex, p5): the doc lists Crypto under shard 2 and the public GET /markets shows KXBTC15M/KXETH15M/KXSOL15M with
      * exchange_index 2, and Kalshi checks cash on the market's own shard. The pilot refuses a market whose known exchange_index differs;
      * any insufficient_balance reject still halts the pilot after one attempt. */
+    /** Move cash between two of Bryan's own pools (main account). Called ONLY by server/live/kalshi-transfer.js after a confirmed click on the desk PC.
+     * Validated again here. No subaccount fields, event_contract on both sides, amount in centicents. */
+    async createTransfer(t) {
+      validateTransfer(t);
+      if (subaccount != null) throw new Error('refused: pool transfers are main-account only (KALSHI_TRADE_SUBACCOUNT is set)');
+      const body = { client_transfer_id: t.clientTransferId, source: 'event_contract', destination: 'event_contract', amount: centsToCenticents(t.amountCents),
+        source_exchange_shard: t.from, destination_exchange_shard: t.to };
+      return call('POST', EP.transfer, { body });
+    },
+    getTransfer: (id) => { if (typeof id !== 'string' || !id) throw new Error('refused: transfer id missing'); return call('GET', EP.transferById(id)); },
+    listTransfers: ({ limit = 20 } = {}) => call('GET', EP.transfers, { query: { limit } }),
     async createOrder(o) {
       validateOrder(o);
       const body = { ticker: o.ticker, side: 'bid', count: o.count.toFixed(2), price: centsToPrice(o.priceCents), time_in_force: 'immediate_or_cancel',
@@ -128,4 +163,4 @@ function makeTradeClient({ env = process.env, fetchImpl = globalThis.fetch, now 
   return c;
 }
 
-module.exports = { makeTradeClient, tradeEnvPresence, resolveTradeKey, validateOrder, dollarsToMicros, countToInt, centsToPrice, KalshiHttpError, SERIES, MAX_PRICE_CENTS, PREFIX, HOST };
+module.exports = { makeTradeClient, tradeEnvPresence, resolveTradeKey, validateOrder, validateTransfer, centsToCenticents, CENTICENTS_PER_CENT, POOLS, dollarsToMicros, countToInt, centsToPrice, KalshiHttpError, SERIES, MAX_PRICE_CENTS, PREFIX, HOST };

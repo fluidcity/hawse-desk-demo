@@ -61,15 +61,19 @@ function createServer(engine, flags) {
         const b = await body(req); const r = engine.storage.setRecorderCap(b.capGb, { by: 'ui' }); return send(res, r.ok ? 200 : 422, r);
       }
       if (p === '/schema/strategy.schema.json') { res.writeHead(200, { 'content-type': 'application/json' }); return fs.createReadStream(path.join(__dirname, '..', 'schema', 'strategy.schema.json')).pipe(res); }
-      if (p.startsWith('/api/live/kalshi-pilot/')) { // Stage Z. halt: forwardable. arm/disarm/reset/test-key: this machine only, never through the proxy.
+      if (p.startsWith('/api/live/kalshi-pilot/')) { // Stage Z. halt: forwardable. arm/disarm/reset/test-key/transfer-*: this machine only, never through the proxy.
         const pl = engine.kalshiPilot; if (!pl) return send(res, 404, { ok: false, error: 'pilot not loaded' });
         if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'POST only' });
         const what = p.slice('/api/live/kalshi-pilot/'.length);
         if (what === 'halt') { const r = await pl.halt('HALT button'); return send(res, 200, r); }
-        if (!['arm', 'disarm', 'reset', 'test-key'].includes(what)) return send(res, 404, { ok: false, error: 'not found' });
+        if (!['arm', 'disarm', 'reset', 'test-key', 'transfer-prepare', 'transfer-confirm', 'transfer-cancel'].includes(what)) return send(res, 404, { ok: false, error: 'not found' });
         const g = pilotLocal(req); if (!g.ok) return send(res, 403, { ok: false, error: 'refused: ' + g.why });
         const b = await body(req);
         if (what === 'test-key') { const r = await pl.testKey(); return send(res, 200, { ok: r.ok, keyTest: pl.snapshot().keyTest }); } // signed GETs only, no orders
+        if (what.startsWith('transfer-')) { // Move cash between Bryan's own pools: desk PC only, two steps, never automatic
+          const r = what === 'transfer-prepare' ? await pl.transferPrepare(b) : what === 'transfer-confirm' ? await pl.transferConfirm(b) : pl.transferCancel();
+          return send(res, r.ok ? 200 : 422, r);
+        }
         const r = what === 'arm' ? await pl.arm(b.phrase) : what === 'disarm' ? pl.disarm() : pl.reset(b.phrase);
         return send(res, r.ok ? 200 : 403, r);
       }

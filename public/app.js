@@ -188,7 +188,7 @@ window.HAWSE.explain = (() => {
     const rows = B.strategies, traded = (side) => rows.filter((r) => r[side].events).length;
     const real = { ...B.desk.real, d7Covered: B.d7Covered, spark: null, trades: rows.reduce((a, r) => a + r.real.trades, 0) };
     const sim = { ...B.desk.sim, d7Covered: B.d7Covered, spark: null, trades: rows.reduce((a, r) => a + r.sim.trades, 0) };
-    const realH = bookHead(real, { sim: false, alloc: t.start, label: 'Desk P&L · real-data book' }); realH.pctLabel = 'of start equity'; realH.sparkLabel = '';
+    const realH = bookHead(real, { sim: false, alloc: t.start, label: 'Paper desk P&L · real-data book · not real money' }); realH.pctLabel = 'of start equity'; realH.sparkLabel = '';
     const simH = bookHead(sim, { sim: true, alloc: t.start, label: 'SIM book · mock/simulated inputs', small: true }); simH.pctLabel = 'of start equity';
     const h2 = h2State();
     const h2Html = h2.length ? `<div class="dp-h2"><div class="ph-label">Kalshi H2 arms <span class="dim">· own paper ledgers, not added to the desk total</span></div><div class="dp-chips">` +

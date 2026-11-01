@@ -964,6 +964,15 @@ in the order path, the kill file `data/live/KILL`, an unreadable balance before 
 Safety: intent written to `data/live/kalshi-pilot/ledger.jsonl` before every send; deterministic `client_order_id` per slice; reconcile after every
 slice and on startup (by listing orders, matched on `client_order_id`); a market is never traded twice; integer cents / micro-dollars; fees from fills.
 
+**Page layout: the live pilot is the top panel.** On desktop and phone the LIVE Kalshi pilot card (status chip and its HALT button first,
+then shard 0 balance, 7% sizing, shadow/live orders, realized P&L info only, positions, ARM on the desk PC only) is the first panel under the
+top bar. It replaced the paper bankroll panel at the top. Below it, a **"Paper desk (simulated)"** divider (PAPER · SIM · NOT REAL MONEY) starts
+the paper desk: the paper desk P&L and paper equity chart (the $10,000 default paper bankroll), the H2 v1/v2/v3 arms, the scoreboard and every
+other card, unchanged and with the same data and ledgers. `public/layout.js` pins `kalshi-live-pilot` and `paper-desk-head` to the top in that
+order: no drag handle, no hide button, and an old saved or imported layout cannot push them down or hide them (tested). The top-bar button is now
+labeled **HALT paper** (it halts the paper desk); the live pilot's HALT is on its panel. Screenshots (EXAMPLE / mock data):
+`docs/screenshots/live-top-desktop.png`, `docs/screenshots/live-top-mobile.png` (390 px wide: status + HALT visible without scrolling).
+
 **Key (process env only; values never printed, logged, returned or sent to the browser; the card shows only the source and set / not set):**
 if **both** `KALSHI_TRADE_KEY_ID` and `KALSHI_TRADE_PRIVATE_KEY_PEM` are set the pilot uses that **dedicated trade key**; otherwise it reuses the
 **existing desk key** (`KALSHI_API_KEY_ID` + `KALSHI_PRIVATE_KEY_PEM`, or `KALSHI_PRIVATE_KEY_PATH`, exactly as the desk already loads it). Only the

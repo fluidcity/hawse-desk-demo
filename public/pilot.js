@@ -24,6 +24,7 @@
     if (!P) return '<div class="dim mono sm">live pilot not loaded</div>';
     const c = P.config || {}, m = P.money || {}, chip = P.statusChip || P.state;
     const banner = `<div class="pl-banner"><b>REAL MONEY</b> · this card places real Kalshi orders when ARMED. Paper v1/v2/v3 are unaffected and never mixed in.</div>`;
+    // status chip + HALT come first in the panel: on a phone they are visible at the very top without scrolling
     const head = `<div class="pl-top"><span class="pl-chip ${CHIP[chip] || ''}">${esc(chip)}</span><button type="button" class="pl-halt" data-pilot="halt" title="Stop the pilot now and cancel its resting orders">HALT</button></div>`;
     const why = chip === 'DISABLED' ? `<div class="pl-why">Inert: ${esc((P.inert || []).join('; ') || 'disabled')}. Nothing is sent and nothing is logged.</div>`
       : chip === 'HALTED' ? `<div class="pl-why neg">HALTED: ${esc(P.haltReason || '')}</div>`
@@ -47,7 +48,7 @@
     const trades = `<h3 class="pl-h3">Live trades <span class="dim">(real money)</span></h3><div class="pl-scroll"><table class="pl-t mono"><thead><tr><th>time</th><th>market</th><th>limit</th><th>fill</th><th>size</th><th>fee</th><th>result</th><th>P&amp;L</th><th>balance</th><th>sizing (bankroll × % → order $)</th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="dim">no live trades yet</td></tr>'}</tbody></table></div>`;
     const cmp = (P.compare || []).map((r) => `<tr${r.shadow && !r.live ? ' class="pl-shadowrow"' : ''}><td>${esc(r.tk)}<div class="pl-szm">${sz(r.sizing)}</div></td><td>${ct(r.decisionAsk)}</td><td>${r.paper ? `${r.paper.filled} @ ${ct(r.paper.vwapCents)}` : '—'}</td><td>${r.live ? `${r.live.filled} @ ${ct(r.live.vwapCents)}` : r.shadow ? `<span class="pl-nomoney">SHADOW · NO MONEY</span> ${r.shadow.skipped ? esc(r.shadow.skipped) : `${r.shadow.contracts} @ ≤${ct(r.shadow.limit)}`}` : '—'}</td><td>${ct(r.slippageCents)}</td><td>${r.unfilled == null ? '—' : r.unfilled}</td><td class="pl-szc">${sz(r.sizing)}</td></tr>`).join('');
     const compare = `<h3 class="pl-h3">Paper v3 7% vs live <span class="dim">(fill, slippage, unfilled)</span></h3><div class="pl-scroll"><table class="pl-t mono"><thead><tr><th>market</th><th>ask</th><th>paper fill</th><th>live fill</th><th>slip</th><th>unfilled</th><th>sizing (bankroll × % → order $)</th></tr></thead><tbody>${cmp || '<tr><td colspan="7" class="dim">no v3 takes yet</td></tr>'}</tbody></table></div>`;
-    return banner + head + why + oom + facts + env + ktest + arm + trades + compare;
+    return head + banner + why + oom + facts + env + ktest + arm + trades + compare;
   }
   const API = { render };
   if (typeof module === 'object' && module.exports) { module.exports = API; return; }

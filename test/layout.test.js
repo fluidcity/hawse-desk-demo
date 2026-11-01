@@ -60,3 +60,34 @@ test('layout.js: moves existing nodes (never re-creates them), keeps data-hidden
   assert.match(css, /\.layout-edit \.ctools \.c-drag\{display:inline-flex\}/, 'handles only in edit mode');
   assert.doesNotMatch(js, /fetch\(|XMLHttpRequest|WebSocket|\/api\//);
 });
+
+test('Stage Z: the live Kalshi pilot is the top panel, then the "Paper desk (simulated)" divider; old layouts cannot move or hide them', () => {
+  const D2 = ['kalshi-live-pilot', 'paper-desk-head', ...D];
+  assert.deepEqual(L.TOP, ['kalshi-live-pilot', 'paper-desk-head']);
+  assert.deepEqual(L.normalize(null, D2).order.slice(0, 2), L.TOP);
+  // a layout saved before this change (pilot third, no divider) and one that tries to hide/bury both
+  const old = L.normalize({ order: ['desk-pnl', 'equity', 'kalshi-live-pilot', 'h2-v1', 'strategies', 'risk', 'tape'], hidden: [] }, D2);
+  assert.deepEqual(old.order, ['kalshi-live-pilot', 'paper-desk-head', 'desk-pnl', 'equity', 'h2-v1', 'strategies', 'risk', 'tape']);
+  const hostile = L.normalize(L.parse(JSON.stringify({ hawseLayout: 1, order: ['tape', 'risk', 'paper-desk-head', 'kalshi-live-pilot'], hidden: ['kalshi-live-pilot', 'paper-desk-head', 'equity'] })), D2);
+  assert.deepEqual(hostile.order.slice(0, 2), L.TOP); assert.deepEqual(hostile.hidden, ['equity']);
+  assert.equal(L.move(hostile, 'kalshi-live-pilot', 1), hostile); assert.equal(L.move(hostile, 'paper-desk-head', -1), hostile);
+  assert.equal(L.move(hostile, hostile.order[2], -1), hostile, 'nothing moves above the pinned panels');
+  assert.deepEqual(L.move(hostile, hostile.order[3], -1).order.slice(0, 3), [...L.TOP, hostile.order[3]]);
+  assert.deepEqual(L.normalize(L.setHidden(hostile, 'kalshi-live-pilot', true), D2).hidden, ['equity']);
+  // the page: pilot is the first card in #board, divider second, then the paper bankroll panels (data intact, same ids)
+  const board = html.slice(html.indexOf('id="board"'));
+  const ids = [...board.matchAll(/data-card-id="([^"]+)"/g)].map((m) => m[1]);
+  assert.deepEqual(ids.slice(0, 4), ['kalshi-live-pilot', 'paper-desk-head', 'desk-pnl', 'equity']);
+  assert.match(html, /Paper desk <span class="dim">\(simulated\)<\/span> <span class="badge sim">PAPER · SIM · NOT REAL MONEY<\/span>/);
+  assert.match(html, /Paper equity · real-data book <span class="badge sim">PAPER · NOT REAL MONEY<\/span>/);
+  assert.match(html, /id="haltBtn"[^>]*>HALT paper</, 'the top-bar HALT is the paper desk one; the live HALT is on the pilot panel');
+  assert.doesNotMatch(html, />PAPER ONLY</, 'the page is no longer paper only');
+  assert.match(js, /if \(PINNED\.has\(c\.dataset\.cardId\)\) return;/, 'no drag handle or hide button on the pinned panels');
+});
+
+test('Stage Z: the pilot panel renders status + HALT before anything else (phone: visible without scrolling)', () => {
+  const UI = require(path.join(ROOT, 'public', 'pilot.js'));
+  const h = UI.render({ state: 'DISARMED-SHADOW', statusChip: 'DISARMED-SHADOW', config: { armPhrase: 'ARM LIVE' }, money: {}, env: {} }, {});
+  assert.ok(h.startsWith('<div class="pl-top">'), 'chip + HALT first'); assert.ok(h.indexOf('data-pilot="halt"') < h.indexOf('pl-banner'));
+  assert.match(css, /@media \(max-width:640px\)\{\.a-pilot \.pl-halt\{width:100%\}/);
+});

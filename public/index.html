@@ -4,7 +4,7 @@
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
   <meta name="theme-color" content="#06080a" />
-  <title>HAWSE · Paper Desk</title>
+  <title>HAWSE · Live pilot + Paper Desk</title>
   <link rel="preconnect" href="https://fonts.googleapis.com" />
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
   <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Outfit:wght@500;600;700&display=swap" rel="stylesheet" />
@@ -16,7 +16,7 @@
   <header class="topbar">
     <div class="brand">
       <span class="logo">HAWSE</span>
-      <span class="pill pill-paper" title="No live orders are possible in this build">PAPER ONLY</span>
+      <span class="pill pill-paper" title="Paper strategies are simulated. Only the LIVE Kalshi pilot panel at the top can place real orders, and only after you arm it on this PC.">PAPER DESK + LIVE PILOT</span>
     </div>
     <div class="modeswitch" role="tablist" aria-label="Mode">
       <button type="button" role="tab" class="mode on" data-mode="live" aria-selected="true">Live Data</button>
@@ -34,7 +34,7 @@
       <span class="clock mono" id="clock">--:--:--</span>
       <button type="button" class="btn sm" id="layoutBtn" aria-haspopup="dialog" aria-expanded="false" title="Show, hide and reorder cards">▦ Cards</button>
       <button type="button" class="btn sm" id="settingsBtn" title="Settings · Data sources">⚙ Sources</button>
-      <button type="button" class="btn hot sm" id="haltBtn">HALT</button>
+      <button type="button" class="btn hot sm" id="haltBtn" title="Halts the paper desk strategies. The live Kalshi pilot has its own HALT button on its panel.">HALT paper</button>
     </div>
   </header>
 
@@ -61,10 +61,18 @@
 
   <main id="liveView" class="shell">
     <div class="grid board" id="board">
-    <section class="deskpnl card" id="deskPnl" aria-label="Desk P&amp;L" data-card-id="desk-pnl" data-card-name="Desk P&amp;L"><div class="dim mono sm">waiting for desk state…</div></section>
-    <section class="hero card" data-card-id="equity" data-card-name="Paper equity (hero chart)">
+    <section class="card a-pilot" id="pilotCard" aria-label="LIVE real money Kalshi pilot" data-card-id="kalshi-live-pilot" data-card-name="LIVE · REAL MONEY · Kalshi pilot (v3 7% of shard 0 cash)">
+        <div class="card-h"><h2 class="pl-title">LIVE · REAL MONEY · Kalshi pilot <span class="dim">(v3 7% of shard 0 cash)</span></h2><span class="dim mono sm pl-pin">top panel · always shown</span></div>
+        <div id="pilotBody"><div class="dim mono sm">waiting for the first desk update…</div></div>
+      </section>
+    <section class="card paperhead" id="paperDeskHead" aria-label="Paper desk (simulated) starts here" data-card-id="paper-desk-head" data-card-name="Paper desk (simulated) · section divider">
+      <h2>Paper desk <span class="dim">(simulated)</span> <span class="badge sim">PAPER · SIM · NOT REAL MONEY</span></h2>
+      <p class="dim sm">Everything below is paper trading: the <b>paper bankroll</b> ($10,000 start by default, fake money), the H2 v1/v2/v3 arms, the scoreboard and every other strategy. Fills are simulated on real public market data (MOCK/SIM inputs are labeled). None of it is real money, and none of it is ever added to the live pilot above.</p>
+    </section>
+    <section class="deskpnl card" id="deskPnl" aria-label="Desk P&amp;L" data-card-id="desk-pnl" data-card-name="Paper desk P&amp;L (paper bankroll)"><div class="dim mono sm">waiting for desk state…</div></section>
+    <section class="hero card" data-card-id="equity" data-card-name="Paper equity chart (paper bankroll)">
       <div class="hero-left">
-        <div class="label">Paper equity · real-data book</div>
+        <div class="label">Paper equity · real-data book <span class="badge sim">PAPER · NOT REAL MONEY</span></div>
         <div class="equity mono" id="equity">$—</div>
         <div class="hero-sub mono">
           <span id="pnlTotal">—</span><span class="dim">total</span>
@@ -80,10 +88,6 @@
       </div>
     </section>
 
-      <section class="card a-pilot" id="pilotCard" aria-label="LIVE real money Kalshi pilot" data-card-id="kalshi-live-pilot" data-card-name="LIVE · REAL MONEY · Kalshi pilot (v3 7% of shard 0 cash)">
-        <div class="card-h"><h2 class="pl-title">LIVE · REAL MONEY · Kalshi pilot <span class="dim">(v3 7% of shard 0 cash)</span></h2></div>
-        <div id="pilotBody"><div class="dim mono sm">waiting for the first desk update…</div></div>
-      </section>
       <section class="card h2-charts" id="h2cV1Card" aria-label="Kalshi H2 v1 chart" data-card-id="h2-chart-v1" data-card-name="H2 v1 chart" hidden><div id="h2cV1" class="h2c"></div></section>
       <section class="card h2-charts" id="h2cV2Card" aria-label="Kalshi H2 v2 chart" data-card-id="h2-chart-v2" data-card-name="H2 v2 chart" hidden><div id="h2cV2" class="h2c"></div></section>
       <section class="card h2-charts" id="h2cV3Card" aria-label="Kalshi H2 v3 chart" data-card-id="h2-chart-v3" data-card-name="H2 v3 chart" hidden><div id="h2cV3" class="h2c"></div></section>
@@ -276,7 +280,7 @@
         <div class="tape mono" id="tape" aria-live="polite"></div>
       </section>
     </div>
-    <p class="foot mono">HAWSE paper desk · real public market data where marked LIVE · MOCK/SIM inputs are labeled and booked separately · live order path is a disabled stub</p>
+    <p class="foot mono">HAWSE · top panel: Kalshi live pilot (real money only when ARMED on this PC) · paper desk below: real public market data where marked LIVE · MOCK/SIM inputs are labeled and booked separately · every other live order path is a disabled stub</p>
   </main>
 
   <main id="demoView" class="shell" hidden>

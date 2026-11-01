@@ -311,10 +311,11 @@ test('a settlement credit from an earlier market landing between slices is not a
   assert.equal(p.state, 'ARMED', p.haltReason); assert.equal(c.calls.filter((x) => x[0] === 'create').length, 3);
 });
 
-test('layout: the live pilot card (HALT) can be moved but never hidden, even by a saved/imported layout', () => {
+test('layout: the live pilot card (HALT) is pinned first and never hidden, even by a saved/imported layout', () => {
   const L = require('../public/layout.js'); const D = ['kalshi-live-pilot', 'scoreboard', 'tape'];
   const s = L.normalize({ order: ['tape', 'kalshi-live-pilot', 'scoreboard'], hidden: ['kalshi-live-pilot', 'tape'] }, D);
-  assert.deepEqual(s.hidden, ['tape']); assert.equal(s.order.indexOf('kalshi-live-pilot'), 1);
+  assert.deepEqual(s.hidden, ['tape']); assert.equal(s.order.indexOf('kalshi-live-pilot'), 0, 'an old saved layout cannot push it down');
+  assert.equal(L.move(s, 'kalshi-live-pilot', 1), s, 'cannot be moved down'); assert.equal(L.move(s, 'tape', -1), s, 'nothing moves above it');
   const html = fs.readFileSync(path.join(ROOT, 'public', 'index.html'), 'utf8'); assert.match(html, /data-card-id="kalshi-live-pilot"/); assert.match(html, /<script src="pilot.js"><\/script>/);
 });
 

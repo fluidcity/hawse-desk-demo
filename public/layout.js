@@ -5,7 +5,10 @@
 // separate .u-hidden class, so "shown" in the menu never forces an empty card onto the page.
 (function (root) {
   'use strict';
-  const PINNED = new Set(['kalshi-live-pilot']); // Stage Z: real-money card with the HALT button: movable, never hideable
+  // Stage Z: the real-money Kalshi pilot (its HALT button) is the page's top panel, then the "Paper desk (simulated)"
+  // divider. TOP ids are always first, in this order, whatever a saved/imported layout says: never hidden, never moved.
+  const TOP = ['kalshi-live-pilot', 'paper-desk-head'];
+  const PINNED = new Set(TOP);
   const KEY = 'hawse.layout.v1', VIEWS = 'hawse.layout.views.v1';
   const isId = (x) => typeof x === 'string' && x.length > 0 && x.length < 80;
 
@@ -21,13 +24,16 @@
       for (let j = i - 1; j >= 0; j--) { const k = order.indexOf(defaults[j]); if (k >= 0) { at = k + 1; break; } }
       order.splice(at, 0, id); seen.add(id);
     });
+    const top = TOP.filter((id) => known.has(id)); // pin to the top, in TOP order (old saved layouts cannot push them down)
+    const rest = order.filter((id) => !PINNED.has(id)); order.length = 0; order.push(...top, ...rest);
     const hs = saved && Array.isArray(saved.hidden) ? saved.hidden : [];
     const hidden = hs.filter((id, i) => isId(id) && known.has(id) && hs.indexOf(id) === i && !PINNED.has(id)); // the live pilot (its HALT button) can never be hidden
     return { v: 1, order, hidden };
   }
   function move(state, id, delta) {
     const order = state.order.slice(), i = order.indexOf(id), j = i + delta;
-    if (i < 0 || j < 0 || j >= order.length) return state;
+    const pins = order.filter((x) => PINNED.has(x)).length;
+    if (i < 0 || j < 0 || j >= order.length || PINNED.has(id) || j < pins) return state; // pinned cards stay on top
     order.splice(i, 1); order.splice(j, 0, id); return { ...state, order };
   }
   function setHidden(state, id, hide) {
@@ -45,7 +51,7 @@
     }
     return { order: Array.isArray(o.order) ? o.order : [], hidden: Array.isArray(o.hidden) ? o.hidden : [], views };
   }
-  const L = { KEY, VIEWS, normalize, move, setHidden, parse };
+  const L = { KEY, VIEWS, TOP, normalize, move, setHidden, parse };
   if (typeof module === 'object' && module.exports) { module.exports = L; return; }
   root.HAWSE = root.HAWSE || {}; root.HAWSE.layoutState = L;
 
@@ -84,7 +90,7 @@
     const nm = c.dataset.cardName || 'card';
     t.innerHTML = '<button type="button" class="c-drag" title="Drag to move (arrow keys work too)">✥</button><button type="button" class="c-hide" title="Hide this card (the Cards menu brings it back)">×</button>';
     t.children[0].setAttribute('aria-label', 'Move ' + nm); t.children[1].setAttribute('aria-label', 'Hide ' + nm);
-    if (PINNED.has(c.dataset.cardId)) t.children[1].remove();
+    if (PINNED.has(c.dataset.cardId)) return; // pinned top cards: no drag handle, no hide button
     const h = c.querySelector(':scope > .card-h');
     if (h) h.appendChild(t); else { t.classList.add('abs'); c.appendChild(t); }
   }
@@ -172,17 +178,19 @@
 
   function renderList() {
     if (!panel || panel.hidden) return;
-    const hid = new Set(state.hidden);
+    const hid = new Set(state.hidden), pins = state.order.filter((x) => PINNED.has(x)).length; // the first movable card cannot go above the pinned ones
     $('lpCount').textContent = `${state.order.length - hid.size} shown · ${hid.size} hidden`;
     list.textContent = '';
     state.order.forEach((id, i) => {
       const li = document.createElement('li'); li.className = 'lp-item' + (hid.has(id) ? ' off' : '');
       const lab = document.createElement('label'); const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = !hid.has(id);
+      const pin = PINNED.has(id); if (pin) { cb.disabled = true; cb.title = 'Pinned to the top: always shown'; li.classList.add('pinned'); }
       cb.onchange = () => set(setHidden(state, id, !cb.checked));
       const sp = document.createElement('span'); sp.textContent = name(id); lab.append(cb, sp);
+      if (pin) { const t = document.createElement('small'); t.className = 'lp-nd'; t.textContent = 'pinned top'; lab.append(t); }
       if (byId.get(id).hidden) { const t = document.createElement('small'); t.className = 'lp-nd'; t.textContent = 'no data'; t.title = 'This card hides itself until it has data'; lab.append(t); }
-      const up = document.createElement('button'); up.type = 'button'; up.className = 'lp-mv'; up.textContent = '↑'; up.disabled = i === 0; up.setAttribute('aria-label', 'Move ' + name(id) + ' up');
-      const dn = document.createElement('button'); dn.type = 'button'; dn.className = 'lp-mv'; dn.textContent = '↓'; dn.disabled = i === state.order.length - 1; dn.setAttribute('aria-label', 'Move ' + name(id) + ' down');
+      const up = document.createElement('button'); up.type = 'button'; up.className = 'lp-mv'; up.textContent = '↑'; up.disabled = pin || i <= pins; up.setAttribute('aria-label', 'Move ' + name(id) + ' up');
+      const dn = document.createElement('button'); dn.type = 'button'; dn.className = 'lp-mv'; dn.textContent = '↓'; dn.disabled = pin || i === state.order.length - 1; dn.setAttribute('aria-label', 'Move ' + name(id) + ' down');
       up.onclick = () => set(move(state, id, -1)); dn.onclick = () => set(move(state, id, 1));
       li.append(lab, up, dn); list.append(li);
     });

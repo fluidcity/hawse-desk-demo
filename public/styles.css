@@ -370,3 +370,10 @@ canvas.orb-mid{width:100%;height:110px}
 .a-pilot .pl-szc{white-space:normal;min-width:190px;max-width:320px}.a-pilot .pl-sz{font-size:11px;line-height:1.35}.a-pilot .pl-cap{color:#ffb020;font-weight:700}.a-pilot .pl-szm{display:none}.a-pilot .pl-nolimit{border-left:3px solid #ffb020;padding:4px 8px;margin:6px 0;font-size:12px;line-height:1.35;white-space:normal}.a-pilot .pl-info{grid-column:1/-1;white-space:normal}.a-pilot .pl-oom{color:#ffb020;white-space:normal}
 .a-score .sb-livebox{border-left:3px solid #e5484d;padding-left:6px}.badge.real-money{background:#e5484d;color:#fff}
 @media (max-width:640px){.a-pilot .pl-halt{width:100%}.a-pilot .pl-szc{display:none}.a-pilot .pl-szm{display:block;white-space:normal;max-width:70vw;margin-top:2px}.a-pilot .pl-facts{grid-template-columns:1fr}}
+/* Stage Z: live Kalshi pilot is the page's top panel; the paper desk starts at the divider below it */
+.a-pilot .pl-pin{white-space:nowrap}
+.board>.paperhead{grid-column:1/-1!important;border:1px dashed var(--line2);background:rgba(184,255,46,.03);padding:10px 14px;margin-top:6px}
+.paperhead h2{margin:0 0 4px;font-size:15px;display:flex;flex-wrap:wrap;gap:8px;align-items:center}
+.paperhead p{margin:0;line-height:1.4}
+.lp-item.pinned{opacity:.8}.lp-item.pinned input{cursor:not-allowed}
+@media (max-width:640px){.a-pilot .card-h{flex-wrap:wrap;gap:2px}.a-pilot .pl-title{font-size:15px}.a-pilot .pl-pin{display:none}.a-pilot .pl-banner{font-size:12px;padding:6px 8px}}

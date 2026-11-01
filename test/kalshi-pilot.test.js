@@ -562,10 +562,10 @@ test('Test key (read-only balance check): signed GETs only, works while DISABLED
 });
 
 test('order path is REST only: no websocket in the pilot or its client; orders go out as HTTPS POST via fetch', async () => {
-  for (const f of ['server/live/kalshi-pilot.js', 'server/live/kalshi-rest.js', 'server/live/kalshi-transfer.js']) {
+  for (const f of ['server/live/kalshi-pilot.js', 'server/live/kalshi-rest.js', 'server/live/kalshi-transfer.js', 'server/live/kalshi-live-history.js']) {
     const src = fs.readFileSync(path.join(ROOT, f), 'utf8');
     const code = src.replace(/\/\*[\s\S]*?\*\/|\/\/.*$/gm, ''); assert.ok(!/WebSocket|wss?:\/\/|\bws-sign\b|recorder\/kalshi-ws/.test(code), f + ' must not use a websocket');
-    assert.deepEqual([...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]).filter((m) => !['fs', 'path', 'crypto', './kalshi-rest', './kalshi-transfer'].includes(m)), [], f + ' requires only fs/path/crypto/the REST client');
+    assert.deepEqual([...src.matchAll(/require\(['"]([^'"]+)['"]\)/g)].map((m) => m[1]).filter((m) => !['fs', 'path', 'crypto', './kalshi-rest', './kalshi-transfer', './kalshi-live-history'].includes(m)), [], f + ' requires only fs/path/crypto/the REST client');
   }
   assert.match(R.HOST, /^https:\/\//);
   const f = mockFetch(), c = R.makeTradeClient({ env: ENV_ON, fetchImpl: f });
@@ -771,4 +771,80 @@ test('repo-wide: transfer endpoints only in kalshi-rest.js; target_balance_alloc
   assert.deepEqual(files.filter((f) => /['"`][^'"`\n]*target_balance_allocation/.test(fs.readFileSync(f, 'utf8'))).map(rel), [], 'no code string names target_balance_allocation');
   assert.deepEqual(files.filter((f) => /createTransfer\(/.test(fs.readFileSync(f, 'utf8'))).map(rel).sort(), [path.join('server', 'live', 'kalshi-rest.js'), path.join('server', 'live', 'kalshi-transfer.js')].sort());
   const t = fs.readFileSync(path.join(ROOT, 'server', 'live', 'kalshi-transfer.js'), 'utf8'); assert.doesNotMatch(t, /KALSHI_TRADE_PRIVATE|KALSHI_TRADE_KEY|require\(['"]\.\/kalshi-rest/);
+});
+
+// ---- live chart: real balance reads + ledger history -------------------------------------------------------------------------------------
+const UI = require('../public/pilot.js');
+const balRows = (dir) => { const f = path.join(dir, 'balances.jsonl'); return fs.existsSync(f) ? fs.readFileSync(f, 'utf8').trim().split('\n').filter(Boolean).map((l) => JSON.parse(l)) : []; };
+
+test('live chart: balance points come only from reads the pilot already makes (no extra calls), hold the real numbers, no secrets', async () => {
+  let t = Date.parse('2026-11-01T18:00:00Z'); const now = () => t;
+  const v = fakes(), c = fakeClient({ balance: 5000, aggregate: 12954, pv: 5650, breakdown: BD.map((x) => (x.exchange_index === 2 ? { ...x, balance: '50.0000' } : x)) });
+  const { p, dir } = pilot({ v, client: c, now });
+  assert.deepEqual(balRows(dir), [], 'nothing recorded before the pilot reads anything');
+  v.take(TK, t); await p.signals.get(TK).run;
+  const reads = c.calls.filter((x) => x === 'balance' || x === 'balance_all').length, rows = balRows(dir);
+  assert.ok(rows.length >= 1 && rows.length <= reads, `${rows.length} points from ${reads} reads: never more points than real reads`);
+  const sh = rows.find((r) => r.kind === 'shard'), all = rows.find((r) => r.kind === 'all');
+  assert.equal(sh.exchangeIndex, 2); assert.equal(sh.cashCents, 5000); assert.equal(sh.pvCents, 5650);
+  assert.deepEqual(all.shards.map((s) => s.cents), [7251, 703, 5000, 0]); assert.equal(all.cashCents, 12954); assert.equal(all.pvCents, 5650);
+  // chart code adds no request of its own: snapshot + render make zero calls
+  const before = c.calls.length; const S = p.snapshot(); UI.render(S, { cme: false }); UI.render(S, { cme: true }); UI.liveSpec(S); assert.equal(c.calls.length, before);
+  const txt = fs.readFileSync(path.join(dir, 'balances.jsonl'), 'utf8'); assert.ok(!txt.includes('PRIVATE') && !txt.includes('trade-kid') && !txt.includes(PEM.slice(40, 80)), 'no key material in the file');
+  assert.ok(!JSON.stringify(S.live).includes('trade-kid'));
+});
+
+test('live chart: same numbers within 15 min are not re-written; a change or 15 min later is; file reloads on restart', () => {
+  let t = 1_000_000; const dir = tmp(); const { LiveHistory, SAME_ROW_GAP_MS } = require('../server/live/kalshi-live-history');
+  const h = new LiveHistory({ dir, now: () => t });
+  assert.ok(h.record('shard read', 'shard', { cents: 5000, portfolioValueCents: 0 }, 2));
+  t += 20000; assert.equal(h.record('shard read', 'shard', { cents: 5000, portfolioValueCents: 0 }, 2), null, 'duplicate skipped');
+  t += 20000; assert.ok(h.record('shard read', 'shard', { cents: 4650, portfolioValueCents: 350 }, 2), 'a change is written');
+  t += SAME_ROW_GAP_MS; assert.ok(h.record('shard read', 'shard', { cents: 4650, portfolioValueCents: 350 }, 2), 'same numbers after 15 min are written');
+  assert.equal(h.record('x', 'shard', { cents: null }, 2), null, 'no number, no point'); assert.equal(h.record('x', 'all', { shards: null }), null);
+  const h2 = new LiveHistory({ dir, now: () => t }); h2.load(); assert.equal(h2.view().count, 3); assert.equal(h2.view().points[1].cashCents, 4650);
+});
+
+test('live chart: honest empty state "collecting live data" until there are 2 real reads; DISABLED shows no chart and writes no file', async () => {
+  const { p, dir } = pilot({ client: fakeClient() });
+  let h = UI.render(p.snapshot(), { cme: true }); assert.match(h, /collecting live data: 0 balance reads so far/); assert.ok(!/data-pilot-chart|<svg class="pl-livechart/.test(h));
+  p.history.record('shard read', 'shard', { cents: 5000, portfolioValueCents: 0 }, 2);
+  h = UI.render(p.snapshot(), { cme: true }); assert.match(h, /collecting live data: 1 balance read so far/);
+  assert.match(h, /no mock data is ever shown/);
+  const d = tmp(); const q = new P.KalshiPilot({ v1: fakes().v1, v3: fakes().v3, dir: d, killFile: path.join(d, 'KILL'), env: {}, client: fakeClient() }); q.start(); q.stop();
+  assert.equal(q.state, 'DISABLED'); assert.ok(!fs.existsSync(path.join(d, 'balances.jsonl'))); assert.ok(!/Live money|collecting live data/.test(UI.render(q.snapshot(), {})));
+  assert.ok(dir);
+});
+
+test('live chart: CME canvas or Classic SVG per the chart toggle; series = account value, pilot pool, other pools; fill/transfer/halt markers from the ledger', () => {
+  let t = Date.parse('2026-11-01T18:00:00Z'); const { p, dir } = pilot({ client: fakeClient(), now: () => t });
+  p.history.record('all pools', 'all', { shards: [{ exchangeIndex: 0, cents: 7251 }, { exchangeIndex: 1, cents: 703 }, { exchangeIndex: 2, cents: 0 }, { exchangeIndex: 3, cents: 0 }], portfolioValueCents: 0 });
+  t += 60000; p.write({ t: 'transfer', amountCents: 7000, from: 0, to: 2, outcome: 'accepted' }); p.write({ t: 'transfer_status', status: 'complete' });
+  p.history.record('after transfer', 'all', { shards: [{ exchangeIndex: 0, cents: 251 }, { exchangeIndex: 1, cents: 703 }, { exchangeIndex: 2, cents: 7000 }, { exchangeIndex: 3, cents: 0 }] });
+  t += 60000; p.write({ t: 'order_sent', tk: TK, coid: 'c1' }); p.write({ t: 'fill', tk: TK, coid: 'c1', count: 5, priceMicros: 950000, costMicros: 4750000, feeMicros: 30000 });
+  p.history.record('after order', 'shard', { cents: 6522, portfolioValueCents: 500 }, 2);
+  t += 60000; p.write({ t: 'not_sent', tk: TK, coid: 'c2', error: 'HTTP 400 insufficient_balance' }); p.write({ t: 'stop', kind: 'reject', reason: 'Kalshi rejected the order (400)' });
+  const S = p.snapshot(), L = S.live;
+  assert.equal(L.count, 3); assert.deepEqual(L.tx.map((e) => e.kind), ['stop', 'not_sent', 'fill', 'order_sent', 'transfer_status', 'transfer'].concat(L.tx.slice(6).map((e) => e.kind)), 'newest first');
+  const fill = L.tx.find((e) => e.kind === 'fill'); assert.equal(fill.amountCents, -478); assert.match(fill.text, /fill 5 @ 95\.00¢ · fee \$0\.03/);
+  assert.match(L.tx.find((e) => e.kind === 'transfer').text, /transfer \$70\.00 Default \(shard 0\) → Crypto & Commodities \(shard 2\) · accepted/);
+  const d = UI.liveData(S); assert.equal(d.ok, true);
+  assert.deepEqual(d.series.map((x) => x.name), ['account value (all pools + open positions)', 'pilot pool cash · Crypto & Commodities (shard 2)', 'Default (shard 0) cash', 'Combos (shard 1) cash'], 'Sports at $0 throughout is left out');
+  assert.deepEqual(d.series[1].pts.map((q) => q[1]), [0, 70, 65.22]);
+  assert.deepEqual(d.marks.map((m) => [m.kind, m.loss]), [['transfer', false], ['fill', false], ['not_sent', true], ['stop', true]]);
+  const cme = UI.render(S, { cme: true }); assert.match(cme, /<canvas class="orb orb-big pl-livechart" data-pilot-chart="1"/); assert.match(cme, /Live money/);
+  const sp = UI.liveSpec(S); assert.equal(sp.series.length, 4); assert.ok(sp.series.every((x) => x.step)); assert.equal(sp.marks.length, 4);
+  const cl = UI.render(S, { cme: false }); assert.match(cl, /<svg class="pl-livechart"/); assert.equal((cl.match(/<path /g) || []).length, 4); assert.ok(!cl.includes('data-pilot-chart'));
+  assert.match(cl, /Transaction history/); assert.match(cl, /HALTED: Kalshi rejected the order/); assert.match(cl, /rejected \/ not sent: HTTP 400 insufficient_balance/);
+  // restart: ledger replay rebuilds the list, the balances file rebuilds the chart
+  const p2 = new P.KalshiPilot({ v1: fakes().v1, v3: fakes().v3, dir, killFile: path.join(dir, 'KILL'), env: ENV_ON, client: fakeClient() }); p2.start(); p2.stop();
+  assert.equal(p2.snapshot().live.count, 3); assert.ok(p2.snapshot().live.tx.some((e) => e.kind === 'fill'));
+});
+
+test('live chart: a pool transfer records the pools re-read it already made (no extra call)', async () => {
+  const fx = xferFetch(); const { p, dir } = xpilot(fx);
+  const a = await p.transferPrepare({ amount: '70.00', from: 0, to: 2 }); const n0 = fx.reqs.length;
+  await p.transferConfirm({ confirm: true, token: a.confirm.token, amountCents: 7000, from: 0, to: 2 });
+  const rows = balRows(dir).filter((r) => r.src === 'after transfer'); assert.equal(rows.length, 1); assert.deepEqual(rows[0].shards.map((s) => s.cents), [251, 703, 7000, 0]);
+  assert.ok(fx.reqs.length > n0); assert.ok(p.snapshot().live.tx.some((e) => e.kind === 'transfer'));
 });

@@ -11,6 +11,7 @@ const path = require('path');
 const crypto = require('crypto');
 const rest = require('./kalshi-rest');
 const { PoolTransfer } = require('./kalshi-transfer');
+const { LiveHistory } = require('./kalshi-live-history');
 
 const PILOT_FILE = path.join(__dirname, '..', '..', 'config', 'frozen', 'kalshi-live-pilot.json');
 const PILOT_SHA256 = 'a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7';
@@ -112,6 +113,8 @@ class KalshiPilot {
     if (!this.inert.length) { try { this.client = client !== undefined ? client : rest.makeTradeClient({ env, fetchImpl, now }); } catch (e) { this.inert.push(e.message); } }
     if (!this.client && !this.inert.length) this.inert.push('trade client unavailable');
     // "Move cash between pools" (desk PC only, Bryan's click + Confirm). Its rows never change pilot state; nothing here runs it automatically.
+    // Live chart: real balance reads already made by the pilot + its own ledger rows. Display only, never sizing, never state.
+    this.history = new LiveHistory({ dir: this.dir, now });
     this.transfers = new PoolTransfer({ getClient: () => this.transferClient(), write: (r) => this.write(r), now, sleep });
     if (health) health.register('live.kalshi-pilot', { label: `Kalshi LIVE pilot (v3 7% of shard ${this.cfg ? this.cfg.balanceExchangeIndex : '?'} cash)`, group: 'live', note: 'real money; ships disabled and disarmed', staleMs: 600000 });
   }
@@ -121,6 +124,7 @@ class KalshiPilot {
   sig(tk) { let s = this.signals.get(tk); if (!s) { s = { tk, slices: [], fills: [], filled: 0, costMicros: 0, feeMicros: 0, settle: null, intents: new Map() }; this.signals.set(tk, s); } return s; }
   apply(r) {
     this.events.push(r); if (this.events.length > 60) this.events.shift();
+    if (this.history) this.history.noteRow(r);
     if (r.t === 'signal') Object.assign(this.sig(r.tk), { decisionAsk: r.decisionAsk, limit: r.limit, close: r.close, bookRx: r.bookRx, asset: r.asset, at: r.at });
     if (r.t === 'order_intent') { const s = this.sig(r.tk); s.intents.set(r.coid, { ...r, status: 'intent' }); s.slices.push(r.coid); }
     if (r.t === 'order_sent') { const i = this.sig(r.tk).intents.get(r.coid); if (i) i.status = 'sent'; }
@@ -144,6 +148,7 @@ class KalshiPilot {
     const halted = this.state === 'HALTED';
     this.state = halted ? 'HALTED' : this.enabled ? 'DISARMED' : 'DISABLED'; // ARMED is never restored
     if (this.state === 'DISABLED') return; // inert: no listeners, no timers, no files, no network
+    this.history.load();
     this.write({ t: 'session', state: this.state, hash: this.hash, pid: process.pid });
     if (this.v1 && this.v1.rowListeners) this.v1.rowListeners.push((r) => { try { this.onV1Row(r); } catch (e) { this.log('[kalshi-pilot] ' + e.message); } });
     this.asks = new Map();
@@ -209,7 +214,7 @@ class KalshiPilot {
       pf.keySource = this.client.keySource || this.presence.keySource;
       pf.subaccount = this.client.subaccount;
       if (pf.subaccount != null && (pf.subaccount < 0 || pf.subaccount > 63)) throw new Error('bad subaccount');
-      this.write({ t: 'balance', balanceCents: pf.balanceCents, src: 'preflight', exchangeIndex: pf.exchangeIndex }); this.noteBalance(b); this.markBalance();
+      this.write({ t: 'balance', balanceCents: pf.balanceCents, src: 'preflight', exchangeIndex: pf.exchangeIndex }); this.noteBalance(b); this.recordBalance('preflight', b); this.markBalance();
       pf.ok = true; this.apiErrors = 0;
     } catch (e) { pf.error = e.message; if (e.status) this.apiError(e); }
     this.preflight = pf; return pf;
@@ -259,7 +264,7 @@ class KalshiPilot {
     // Display only: the pools re-read after the transfer replace the shown per-pool cash; the sizing read (shard-scoped) is simply
     // allowed on its next normal turn (no extra request here). Pilot state is not touched.
     const L = r && r.transfer && r.transfer.last;
-    if (L && Array.isArray(L.shards) && L.shards.length && L.shards.every((x) => Number.isInteger(x.cents))) { this.shards = L.shards; this.shardsAt = L.at; this.otherShardCents = L.shards.filter((x) => x.exchangeIndex !== this.cfg.balanceExchangeIndex).reduce((a, x) => a + x.cents, 0); this.balanceTryAt = null; }
+    if (L && Array.isArray(L.shards) && L.shards.length && L.shards.every((x) => Number.isInteger(x.cents))) { this.shards = L.shards; this.shardsAt = L.at; this.otherShardCents = L.shards.filter((x) => x.exchangeIndex !== this.cfg.balanceExchangeIndex).reduce((a, x) => a + x.cents, 0); this.balanceTryAt = null; this.history.record('after transfer', 'all', { shards: L.shards }); }
     return r;
   }
   transferCancel() { return this.transfers.cancel(); }
@@ -279,6 +284,8 @@ class KalshiPilot {
     return Math.max(0, this.balanceCents + this.openRiskCents());
   }
   /** Read the sizing shard only: GET /portfolio/balance?exchange_index=<cfg.balanceExchangeIndex>. */
+  /** Chart only: append a shard-scoped read the pilot just made (never an extra request). */
+  recordBalance(src, b) { try { this.history.record(src, 'shard', b, this.cfg.balanceExchangeIndex); } catch { /* display only */ } }
   async readShard(client) { return parseBalance(await client.getBalance({ exchangeIndex: this.cfg.balanceExchangeIndex }), this.cfg.balanceExchangeIndex); }
   noteBalance(b) { if (b.portfolioValueCents != null) this.portfolioValueCents = b.portfolioValueCents; if (b.otherShardCents != null) this.otherShardCents = b.otherShardCents; if (b.shards) { this.shards = b.shards; this.shardsAt = this.now(); } }
   /**
@@ -320,7 +327,7 @@ class KalshiPilot {
     } catch (e) { this.backoff(o, e); o.deposits = { unknown: true, at: t, error: String(e && e.message || e).slice(0, 80) }; }
     try {
       const a = parseBalance(await this.client.getBalance(), this.cfg.balanceExchangeIndex);
-      if (a.portfolioValueCents != null) this.portfolioValueCents = a.portfolioValueCents;
+      if (a.portfolioValueCents != null) this.portfolioValueCents = a.portfolioValueCents; this.history.record('all pools', 'all', a);
       this.otherShardCents = a.otherShardCents != null ? a.otherShardCents : null; if (a.shards) { this.shards = a.shards; this.shardsAt = this.now(); }
       o.at = t;
     } catch (e) { this.backoff(o, e); }
@@ -371,7 +378,7 @@ class KalshiPilot {
     try {
       const b = await Promise.race([this.readShard(this.client), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('balance read timed out')), timeoutMs); if (timer.unref) timer.unref(); })]);
       if (!Number.isFinite(b.cents)) throw new Error('balance unreadable');
-      this.balanceCents = b.cents; this.noteBalance(b); this.balanceAt = t; this.balanceStale = false; this.balanceError = null; this.backoffMs = 0;
+      this.balanceCents = b.cents; this.noteBalance(b); this.recordBalance('shard read', b); this.balanceAt = t; this.balanceStale = false; this.balanceError = null; this.backoffMs = 0;
     } catch (e) { if (this.backoff(this, e)) this.write({ t: 'backoff', what: 'balance read', status: 429, waitMs: this.backoffMs }); this.balanceStale = true; this.balanceError = String(e && e.message || e).slice(0, 120); }
     finally { clearTimeout(timer); }
   }
@@ -399,7 +406,7 @@ class KalshiPilot {
         const cur = this.asks && this.asks.get(tk); if (cur && toCents(cur.ask) > s.limit) { this.write({ t: 'slice_skip', tk, slice: i, reason: `ask ${toCents(cur.ask)}c above limit ${s.limit}c` }); continue; }
         // fresh balance right before every slice: sizing uses it, and the after-slice check compares against it (so a settlement credit
         // from an earlier market landing between slices is not mistaken for a mismatch)
-        try { const b = await this.readArmedBalance(); this.balanceCents = b.cents; this.noteBalance(b); this.apiErrors = 0; this.markBalance(); }
+        try { const b = await this.readArmedBalance(); this.balanceCents = b.cents; this.noteBalance(b); this.recordBalance('pre-slice', b); this.apiErrors = 0; this.markBalance(); }
         catch (e) { this.apiError(e); this.write({ t: 'slice_skip', tk, slice: i, reason: 'balance read failed before the slice: ' + e.message }); await this.halt('balance unreadable before an armed slice (' + e.message + '); sizing needs the live balance', 'balance'); return; }
         if (!Number.isFinite(this.balanceCents)) { this.balanceCents = null; await this.halt('balance unreadable before an armed slice; sizing needs the live balance', 'balance'); return; }
         if (!this.checkFunds(s.limit)) { this.write({ t: 'slice_skip', tk, slice: i, reason: this.fundsMsg() }); return; }
@@ -461,6 +468,7 @@ class KalshiPilot {
   async checkBalance(before, s, coid) {
     try {
       const b = await this.readShard(this.client); const now = Number.isFinite(b.cents) ? b.cents : 0;
+      this.recordBalance('after order', b);
       const spent = s.fills.filter((f) => f.coid === coid).reduce((a, f) => a + f.costMicros + f.feeMicros, 0);
       const mine = s.fills.filter((f) => f.coid === coid);
       this.write({ t: 'balance', balanceCents: now, src: 'after ' + coid, beforeCents: before, pilotSpentCents: Math.round(spent / U), shared: this.client.subaccount == null });
@@ -537,6 +545,7 @@ class KalshiPilot {
         dayLossCents: this.cfg ? this.dayLossCents(laDay(this.now(), c.dailyLossTimeZone)) : 0, fills: [...this.signals.values()].reduce((a, s) => a + s.fills.length, 0),
         settled: [...this.signals.values()].filter((s) => s.settle && s.filled).length, wins: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros > 0).length, losses: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros < 0).length },
       transfer: this.transfers.view().transfer,
+      live: this.history.view(),
       trades, compare, shadow: this.shadow.slice(-15).reverse(), events: this.events.slice(-12).reverse().map((e) => ({ at: e.at, t: e.t, tk: e.tk, reason: e.reason, coid: e.coid })) };
     function i0Unfilled(s) { const a = [...s.intents.values()]; return a.length ? Math.max(0, a[0].contracts - s.filled) : null; }
   }

@@ -965,6 +965,21 @@ transfers; nothing moved" and the pilot keeps running. Nothing transfers on star
 Screenshots (EXAMPLE / mock data, no real transfer): `docs/screenshots/kalshi-pilot-transfer-confirm-desktop.png` (confirm step),
 `docs/screenshots/kalshi-pilot-transfer-done-desktop.png` (after a mock transfer).
 
+**Live money chart and transaction history (real data only; asked for by Bryan).** Below the transfer box the pilot card shows **Live money**,
+in the same CME / Classic look and chart toggle as the paper cards (CME draws with the shared `HAWSE.charts` canvas code, Classic is an inline
+SVG step chart). Lines: **account value** (all pools' cash + open positions, from the all-pools balance read), **pilot pool cash** (Crypto &
+Commodities, shard 2) and the cash in any other pool that is not $0 (dashed). Markers: fills, transfers and settlements (red for a loss, a
+rejected order or a halt). The points are the balances the pilot **already** reads from Kalshi (the shard-2 read before each decision, preflight,
+before/after each order slice, the once-a-minute all-pools read, the pools re-read after a transfer); the chart never makes a request of its own.
+Each read is appended to `data/live/kalshi-pilot/balances.jsonl` (gitignored, append-only: time, source, pool, cash, positions value; no key, no
+header, no token). The same numbers are not written again within 15 minutes, the last 5,000 points are kept in memory and the snapshot sends at
+most 600. Until there are 2 real reads the card says **"collecting live data"**; no mock or example data is ever shown in the app. **Transaction
+history** lists the pilot ledger's orders sent, acks, fills (cost + fee), rejects / not sent, settlements (P&L), transfers and their status, and
+arm / disarm / halt / reset, newest first (last 40; rebuilt from `ledger.jsonl` on restart). Display only: nothing here changes sizing or state.
+DISABLED shows neither and writes no file. Screenshots (EXAMPLE / mock exchange, labeled in the picture):
+`docs/screenshots/kalshi-pilot-live-chart-cme-desktop.png`, `docs/screenshots/kalshi-pilot-live-chart-classic-desktop.png`,
+`docs/screenshots/kalshi-pilot-live-chart-mobile.png`, and the empty state `docs/screenshots/kalshi-pilot-live-chart-empty-desktop.png`.
+
 **Sizing follows the current balance (no restart).** Every decision, shadow or live, is 7% of the bankroll *at that moment*. ARMED re-reads the
 shard 2 balance before every slice; DISARMED/shadow does a read-only signed `GET /portfolio/balance?exchange_index=2` before each decision (only when the key and
 `LIVE_PILOT_ENABLED` are present), throttled to once per 20 s with a 4 s timeout. A failed read never halts: the balance is marked **stale** and the

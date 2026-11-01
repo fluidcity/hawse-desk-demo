@@ -363,6 +363,7 @@ canvas.orb-mid{width:100%;height:110px}
 .a-pilot .pl-arm{margin:6px 0;border:1px dashed #e5484d;border-radius:6px;padding:6px 8px}.a-pilot .pl-arm input{font:14px ui-monospace,monospace;padding:6px;margin-right:6px;max-width:100%}
 .a-pilot .pl-keytest{margin:6px 0}.a-pilot .pl-btn{font:inherit;padding:5px 10px;border-radius:6px;border:1px solid #6b7280;background:#1f2937;color:inherit;cursor:pointer;min-height:32px}
 .a-pilot .pl-h3{font-size:14px;margin:10px 0 4px}
+.a-pilot .pl-empty{border:1px dashed #2a2f37;border-radius:6px;padding:14px 10px;color:#8b98a5;margin:4px 0 8px}.a-pilot .pl-legend{margin:2px 0 4px}.a-pilot .pl-legend span{margin-right:8px}.a-pilot .pl-livechart{display:block;margin:2px 0 8px}
 .a-pilot .pl-scroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
 .a-pilot .pl-t{border-collapse:collapse;font-size:12px;width:100%;min-width:560px}.a-pilot .pl-t th,.a-pilot .pl-t td{padding:3px 6px;border-bottom:1px solid #2a2f37;text-align:left;white-space:nowrap}
 .a-pilot .pl-shadowrow{opacity:.85;background:repeating-linear-gradient(45deg,transparent 0 8px,rgba(255,216,102,.06) 8px 16px)}

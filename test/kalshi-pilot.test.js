@@ -989,3 +989,68 @@ test('recovery never clears a halt, never arms, never halts; errors (429) just s
   const d = pilot({ client: fakeClient() }).p; assert.notEqual(d.state, 'ARMED'); const st = d.state; const r2 = await d.recoverTrades('idle'); assert.ok(r2.ok); assert.equal(r2.checked, 0); assert.equal(d.state, st);
   assert.ok(!c.calls.some((k) => Array.isArray(k) && k[0] === 'create' && k.recovery));
 });
+
+// ---- live chart: fills neutral, settles win/loss with P&L, a balance read after each settle / recovery (all mocked) ----
+const { txOf } = require('../server/live/kalshi-live-history');
+/** The real first trade (hp1-KXETH15M-26NOV011545-45-s1) as the live ledger has it: 2 recovered fills 4+1 @ 94c, then a WIN settle, pnl 280200 u$. */
+function recoveredTrade() {
+  let t = Date.parse('2026-11-01T23:45:10Z'); const { p, dir } = pilot({ client: fakeClient(), now: () => t }); const tk = 'KXETH15M-26NOV011545-45', coid = 'hp1-KXETH15M-26NOV011545-45-s1';
+  const sh = (c2) => ({ shards: [{ exchangeIndex: 0, cents: 0 }, { exchangeIndex: 1, cents: 0 }, { exchangeIndex: 2, cents: c2 }, { exchangeIndex: 3, cents: 0 }], portfolioValueCents: 0 });
+  p.history.record('all pools', 'all', sh(7250)); t += 5000;
+  p.write({ t: 'fill', tk, coid, orderId: 'o1', fillId: 'f1', count: 4, priceMicros: 940000, costMicros: 3760000, feeMicros: 16000, source: 'recovered' });
+  p.write({ t: 'fill', tk, coid, orderId: 'o1', fillId: 'f2', count: 1, priceMicros: 940000, costMicros: 940000, feeMicros: 3800, source: 'recovered' });
+  t += 2000; p.history.record('after order', 'all', { ...sh(6780), portfolioValueCents: 470 }); t += 600000;
+  p.write({ t: 'settle', tk, win: true, result: 'yes', contracts: 5, costMicros: 4700000, feeMicros: 19800, pnlMicros: 280200, kalshiRevenueCents: 500, source: 'recovered' });
+  t += 2000; p.history.record('after recovery', 'all', sh(7278));
+  return { p, dir, tk };
+}
+
+test('chart tones: a fill (buy) is neutral, never red; win settle green "WIN +$0.28"; loss settle red; flat gray; reject / halt red; transfer neutral', () => {
+  const f = txOf({ t: 'fill', at: 1, tk: 'X', count: 5, priceMicros: 940000, costMicros: 4700000, feeMicros: 20000 }); assert.equal(f.tone, 'neutral'); assert.notEqual(f.tone, 'neg'); assert.equal(f.label, 'buy 5 @94c');
+  const w = txOf({ t: 'settle', at: 2, tk: 'X', win: true, pnlMicros: 280200 }); assert.equal(w.tone, 'pos'); assert.equal(w.label, 'WIN +$0.28');
+  const l = txOf({ t: 'settle', at: 3, tk: 'X', win: false, pnlMicros: -4719800 }); assert.equal(l.tone, 'neg'); assert.equal(l.label, 'LOSS −$4.72');
+  assert.equal(txOf({ t: 'settle', at: 4, pnlMicros: 0 }).tone, 'zero');
+  assert.equal(txOf({ t: 'not_sent', at: 5, error: 'HTTP 400' }).tone, 'neg'); assert.equal(txOf({ t: 'stop', at: 6, reason: 'x' }).tone, 'neg');
+  assert.equal(txOf({ t: 'transfer', at: 7, amountCents: 100, from: 0, to: 2, outcome: 'accepted' }).tone, 'neutral');
+});
+
+test('chart renders the recovered first trade: buys neutral, the settle a green "WIN +$0.28" label, realized P&L in the legend, balance lines move after the settle', () => {
+  const { p } = recoveredTrade(), S = p.snapshot(), d = UI.liveData(S);
+  const fills = d.marks.filter((m) => m.kind === 'fill'), st = d.marks.find((m) => m.kind === 'settle');
+  assert.equal(fills.length, 2); for (const m of fills) { assert.equal(m.loss, false); assert.equal(m.tone, 'neutral'); assert.notEqual(m.col, '#ff3d5a'); assert.equal(m.y, 67.8, 'y = the first balance read after the buy'); }
+  assert.equal(st.label, 'WIN +$0.28'); assert.equal(st.col, '#3dffb0'); assert.equal(st.loss, false); assert.equal(st.y, 72.78, 'y = the balance read after the settle');
+  assert.equal(d.realized.cents, 28); assert.equal(d.realized.wins, 1);
+  const pilotLine = d.series.find((x) => /pilot pool/.test(x.name)).pts; assert.equal(pilotLine[pilotLine.length - 1][1], 72.78);
+  const svg = UI.render(S, { cme: false });
+  assert.match(svg, /<text [^>]*fill="#3dffb0"[^>]*>WIN \+\$0\.28<\/text>/); assert.match(svg, /<title>settle KXETH15M-26NOV011545-45: WIN \+\$0\.28<\/title>/); assert.match(svg, /<title>fill KXETH15M-26NOV011545-45: buy 4 @94c · −\$3\.78<\/title>/);
+  assert.ok(!/data-tone="neg"/.test(svg), 'nothing red on a winning trade'); assert.match(svg, /realized P&amp;L \+\$0\.28 \(1W \/ 0L\)/); assert.match(svg, /buys &amp; transfers \(neutral\)/);
+  assert.match(svg, /<td class="pos">\+\$0\.28<\/td>/, 'tx list: settle amount green and signed'); assert.match(svg, /<td class="">−\$3\.78<\/td>/, 'tx list: buy amount neutral');
+  const cme = UI.render(S, { cme: true }); assert.match(cme, /<canvas [^>]*title="[^"]*WIN \+\$0\.28/);
+  const sp = UI.liveSpec(S); assert.ok(sp.marks.some((m) => m.showLabel && m.label === 'WIN +$0.28' && m.col === '#3dffb0'));
+});
+
+test('chart: a losing settle is red and labeled with its loss', () => {
+  const { p, tk } = recoveredTrade(); p.write({ t: 'settle', tk: tk + 'B', win: false, contracts: 5, pnlMicros: -4719800 });
+  p.history.record('after settle', 'all', { shards: [{ exchangeIndex: 2, cents: 7278 }] });
+  const m = UI.liveData(p.snapshot()).marks.find((x) => x.kind === 'settle' && x.loss); assert.equal(m.label, 'LOSS −$4.72'); assert.equal(m.col, '#ff3d5a');
+  assert.match(UI.render(p.snapshot(), { cme: false }), /realized P&amp;L −\$4\.44 \(1W \/ 1L\)/);
+});
+
+test('a settle and a recovery each trigger ONE real balance read (shard + all pools) into balances.jsonl, even while HALTED; 429 backoff skips it', async () => {
+  const c = fakeClient(); c.breakdown = BD.map((x) => (x.exchange_index === 2 ? { ...x, balance: '72.5000' } : x)); c.aggregate = 7250 + 7251 + 703;
+  const { x, s, dir } = await oneTrade(c); await x.postRead; const n0 = balRows(dir).length;
+  c.settled = s.filled * 100; c.balance += s.filled * 100; c.breakdown = BD.map((b) => (b.exchange_index === 2 ? { ...b, balance: (c.balance / 100).toFixed(4) } : b));
+  const k0 = c.calls.filter((k) => k === 'balance' || k === 'balance_all').length;
+  for (const f of x.v1.rowListeners || []) f({ t: 'settle', tk: TK, win: true, result: 'yes' }); await new Promise((r) => setImmediate(r)); await new Promise((r) => setImmediate(r));
+  assert.ok(s.settle, 'settled'); await x.postRead; await x.afterEventBalance('noop');
+  const after = balRows(dir).slice(n0); assert.ok(after.some((r) => r.kind === 'shard' && r.src === 'after settle ' + TK && r.cashCents === c.balance));
+  assert.ok(after.some((r) => r.kind === 'all' && r.src === 'after settle ' + TK && r.shards.find((q) => q.exchangeIndex === 2).cents === c.balance));
+  assert.ok(c.calls.filter((k) => k === 'balance' || k === 'balance_all').length - k0 <= 4, 'one read each, no polling loop');
+  // recovery while HALTED: one read after it books
+  const inc = await incident({ settled: true }); assert.equal(inc.x.state, 'HALTED'); inc.c.breakdown = BD; inc.c.balance = 4242;
+  const r = await inc.x.recoverTrades('test'); assert.ok(r.balanceRead && r.balanceRead.shardCents === 4242, JSON.stringify(r.balanceRead));
+  assert.ok(balRows(inc.dir).some((q) => q.src === 'after recovery' && q.kind === 'shard' && q.cashCents === 4242)); assert.equal(inc.x.state, 'HALTED');
+  assert.ok(balRows(inc.dir).some((q) => q.src === 'after recovery' && q.kind === 'all'));
+  // during a 429 backoff the post-event read is skipped (never a halt)
+  inc.x.postBo = { backoffUntil: inc.x.now() + 60000 }; const b = await inc.x.afterEventBalance('settle'); assert.equal(b.skipped, '429 backoff'); assert.equal(inc.x.state, 'HALTED');
+});

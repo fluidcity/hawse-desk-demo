@@ -598,7 +598,9 @@ class KalshiPilot {
       out.ok = false; if (e && e.status === 429) { this.backoff(this.recoverBackoff || (this.recoverBackoff = {}), e); out.error = '429 from Kalshi: stopped this run; run it again later'; } else out.error = String(e && e.message || e).slice(0, 120);
     }
     out.stateAfter = this.state; if (out.fillsBooked || out.settled) this.write({ t: 'recovery', why, fillsBooked: out.fillsBooked, settled: out.settled, unsettled: out.unsettled });
-    this.lastRecovery = out; return out;
+    this.lastRecovery = out;
+    if (out.fillsBooked || out.settled) { const b = await this.afterEventBalance('recovery'); out.balanceRead = b ? { shardCents: b.shardCents, allCents: b.allCents, skipped: b.skipped || null } : null; }
+    return out;
   }
   async checkBalance(before, s, coid) {
     try {
@@ -643,6 +645,33 @@ class KalshiPilot {
     this.write({ t: 'settle', tk, win: s.official.win, result: s.official.result, contracts: s.filled, costMicros: s.costMicros, feeMicros: s.feeMicros, pnlMicros: pnl,
       source: k ? 'kalshi settlement' : 'kalshi official result (via v1)', kalshiRevenueCents: k ? k.revenue : undefined, bankrollBeforeCents: before, bankrollAfterCents: before == null ? null : before + Math.floor(pnl / U) });
     this.checkStops();
+    this.afterEventBalance('settle ' + tk); // one real balance read so the chart shows the payout (not awaited; never a halt)
+  }
+  /**
+   * ONE read-only balance snapshot after a settlement or a recovery, so the live chart's shard and account-value lines move right away, even
+   * while HALTED (a halted pilot does not poll; this is a single read, not a loop). Reuses the pilot's own reads: the sizing-shard read, then
+   * the all-pools read, each after the 1.5 s gap, skipped while a 429 backoff is running. Calls that land while one is in flight share it.
+   * Display + the pilot's last-known balance only: no order, no transfer, no state change, never a halt.
+   */
+  afterEventBalance(why) {
+    if (!this.client || !this.cfg || this.state === 'DISABLED') return Promise.resolve(null);
+    if (!this.postRead) this.postRead = this.postEventRead(why).finally(() => { this.postRead = null; });
+    return this.postRead;
+  }
+  async postEventRead(why) {
+    const o = this.postBo || (this.postBo = {}), out = { why, at: this.now(), shardCents: null, allCents: null };
+    const busy = () => this.now() < (o.backoffUntil || 0) || this.now() < (this.backoffUntil || 0) || this.now() < (this.info && this.info.backoffUntil || 0);
+    if (busy()) { out.skipped = '429 backoff'; return (this.lastPostRead = out); }
+    try {
+      await this.sleep(READ_GAP_MS); const b = await this.readShard(this.client);
+      this.balanceCents = b.cents; this.balanceAt = this.now(); this.balanceStale = false; this.noteBalance(b); this.recordBalance('after ' + why, b); out.shardCents = b.cents; o.backoffMs = 0;
+      if (busy()) return (this.lastPostRead = out);
+      await this.sleep(READ_GAP_MS); const a = parseBalance(await this.client.getBalance(), this.cfg.balanceExchangeIndex);
+      if (a.portfolioValueCents != null) { this.portfolioValueCents = a.portfolioValueCents; this.pvAt = this.now(); }
+      if (a.shards) { this.shards = a.shards; this.shardsAt = this.now(); } this.otherShardCents = a.otherShardCents != null ? a.otherShardCents : null;
+      this.history.record('after ' + why, 'all', a); out.allCents = a.cents;
+    } catch (e) { if (this.backoff(o, e)) out.skipped = '429 backoff'; out.error = String(e && e.message || e).slice(0, 80); }
+    return (this.lastPostRead = out);
   }
   /** No loss limit (p4, p5): realized P&L is information only. Only the optional daily stop (OFF in p5) lives here. */
   checkStops() {

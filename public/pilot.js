@@ -41,6 +41,9 @@
   }
   // ---- Live money chart + transaction history (REAL data only: the pilot's own Kalshi balance reads + its ledger) ----------------------
   const COL = { acct: '#3dffb0', pilot: '#5b8def', other: ['#c9a227', '#b07cff', '#ff9f43', '#6b7a89'] };
+  /** Chart marker colour by tx tone: buys/transfers neutral (white), settles green/red by their P&L (gray at $0), rejects/halts red. */
+  const MK = { neutral: '#e6edf3', pos: '#3dffb0', neg: '#ff3d5a', zero: '#8b98a5', '': '#8b98a5' };
+  const mkLabel = (e) => e.label || (e.kind === 'fill' ? 'buy' : e.kind);
   const hm = (ms, tz) => (ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: tz, timeZoneName: 'short' }) : '—');
   /**
    * Bankroll by pool, straight from Kalshi's balance reads (money.pools from the server: balance_breakdown + the pilot pool's own read).
@@ -82,23 +85,34 @@
     [...other.entries()].sort((a, b) => a[0] - b[0]).forEach(([k, v], i) => { if (v.some((x) => x[1] !== 0)) series.push({ name: `${pool(k)} cash`, col: COL.other[i % COL.other.length], pts: v, dash: 1 }); });
     const xs = series.flatMap((x) => x.pts.map((q) => q[0])), tx = Array.isArray(L.tx) ? L.tx : [];
     const x0 = xs.length ? Math.min(...xs) : null, x1 = xs.length ? Math.max(...xs, ...tx.map((e) => e.at).filter(fin)) : null;
-    const yAt = (at) => { let y = pilot.length ? pilot[0][1] : 0; for (const q of pilot) if (q[0] <= at) y = q[1]; return y; };
-    const marks = x0 == null ? [] : tx.filter((e) => fin(e.at) && e.at >= x0 && /^(fill|settle|transfer|not_sent|stop)$/.test(e.kind)).map((e, i) => ({ x: e.at, y: yAt(e.at), loss: e.tone === 'neg', key: 'live|' + i, kind: e.kind, i })).sort((a, b) => a.x - b.x || b.i - a.i);
-    return { series, marks, x0, x1, n: L.count || 0, ok: (L.count || 0) >= 2 && x1 > x0 && series.some((x) => x.pts.length >= 2) };
+    // y = the pilot pool's cash at the first real balance read AFTER the event (the read that shows its effect), else the last one before it
+    const ps = pilot.slice().sort((a, b) => a[0] - b[0]);
+    const yAt = (at) => { const nx = ps.find((q) => q[0] >= at); if (nx) return nx[1]; return ps.length ? ps[ps.length - 1][1] : 0; };
+    const marks = x0 == null ? [] : tx.filter((e) => fin(e.at) && e.at >= x0 && /^(fill|settle|transfer|not_sent|stop)$/.test(e.kind)).map((e, i) => {
+      const tn = e.kind === 'fill' ? 'neutral' : e.tone || '', label = mkLabel(e);
+      return { x: e.at, y: yAt(e.at), loss: tn === 'neg', tone: tn, col: MK[tn] || MK[''], label, showLabel: e.kind === 'settle' || e.kind === 'stop',
+        title: `${e.kind}${e.tk ? ' ' + e.tk : ''}: ${label}${fin(e.amountCents) && e.kind !== 'settle' ? ' · ' + $c(e.amountCents) : ''}`, key: 'live|' + i, kind: e.kind, i };
+    }).sort((a, b) => a.x - b.x || b.i - a.i);
+    const R = L.realized && fin(L.realized.cents) && L.realized.settled ? L.realized : null;
+    return { series, marks, realized: R, x0, x1, n: L.count || 0, ok: (L.count || 0) >= 2 && x1 > x0 && series.some((x) => x.pts.length >= 2) };
   }
   /** Same look as the paper cards: CME (canvas, drawn by HAWSE.charts after paint) or Classic (inline SVG step lines), per the chart-style toggle. */
   function liveChart(P, o) {
     const L = (P && P.live) || {}, d = liveData(P);
     const head = `<h3 class="pl-h3">Live money <span class="dim">(real Kalshi balance reads${L.count ? ` · ${esc(L.count)} read${L.count === 1 ? '' : 's'} since ${esc(t(L.first, o.tz))}` : ''} · recorded from the pilot's own reads, no extra polling)</span></h3>`;
     if (!d.ok) return head + `<div class="pl-empty mono sm">collecting live data: ${esc(L.count || 0)} balance read${L.count === 1 ? '' : 's'} so far. The chart starts after the pilot's next reads of your Kalshi balance (no mock data is ever shown).</div>`;
-    const legend = `<div class="dim sm mono pl-legend">${d.series.map((x) => `<span style="color:${x.col}">■ ${esc(x.name)} ${esc($c(Math.round(x.pts[x.pts.length - 1][1] * 100)))}</span>`).join(' ')}${d.marks.length ? ' · ● fills/transfers/settles (red = loss, reject or halt)' : ''}</div>`;
-    if (o.cme) return head + legend + `<canvas class="orb orb-big pl-livechart" data-pilot-chart="1" role="img" aria-label="live Kalshi account value and pool cash over time"></canvas>`;
+    const legend = `<div class="dim sm mono pl-legend">${d.series.map((x) => `<span style="color:${x.col}">■ ${esc(x.name)} ${esc($c(Math.round(x.pts[x.pts.length - 1][1] * 100)))}</span>`).join(' ')}${d.realized ? ` <span class="${tone(d.realized.cents)}">realized P&amp;L ${esc($s(d.realized.cents))} (${esc(d.realized.wins)}W / ${esc(d.realized.losses)}L)</span>` : ''}${d.marks.length ? ' · <span style="color:#e6edf3">●</span> buys &amp; transfers (neutral) · <span class="pos">●</span>/<span class="neg">●</span> settles, green win / red loss, labeled with P&amp;L · <span class="neg">◉</span> rejects &amp; halts' : ''}</div>`;
+    const tip = d.marks.map((m) => m.title).join(' · ');
+    if (o.cme) return head + legend + `<canvas class="orb orb-big pl-livechart" data-pilot-chart="1" role="img" title="${esc(tip)}" aria-label="live Kalshi account value and pool cash over time${tip ? '; ' + esc(tip) : ''}"></canvas>`;
     const W = 900, Hh = 260, pad = 22, ys = d.series.flatMap((x) => x.pts.map((q) => q[1])), y0 = Math.min(0, ...ys), y1 = Math.max(y0 + 1, ...ys);
     const X = (v) => pad + ((v - d.x0) / Math.max(1, d.x1 - d.x0)) * (W - 2 * pad), Y = (v) => Hh - pad - ((v - y0) / (y1 - y0)) * (Hh - 2 * pad);
     const paths = d.series.map((x) => { let p = `M${X(x.pts[0][0]).toFixed(1)},${Y(x.pts[0][1]).toFixed(1)}`; for (const q of x.pts.slice(1)) p += ` H${X(q[0]).toFixed(1)} V${Y(q[1]).toFixed(1)}`; p += ` H${X(d.x1).toFixed(1)}`;
       return `<path d="${p}" fill="none" stroke="${x.col}" stroke-width="1.6"${x.dash ? ' stroke-dasharray="4 3"' : ''}/>`; }).join('') +
       `<text x="${W - pad}" y="16" text-anchor="end" fill="#8b98a5" font-size="12" class="mono">${esc($c(Math.round(y1 * 100)))}</text><text x="${W - pad}" y="${Hh - 10}" text-anchor="end" fill="#8b98a5" font-size="12" class="mono">${esc($c(Math.round(y0 * 100)))}</text>`;
-    const mk = d.marks.map((m) => `<circle cx="${X(m.x).toFixed(1)}" cy="${Y(m.y).toFixed(1)}" r="${m.loss ? 5 : 3.5}" fill="${m.loss ? '#ff3d5a' : '#3dffb0'}"/>`).join('');
+    const mk = d.marks.map((m) => { const cx = X(m.x), cy = Y(m.y), up = cy > 40;
+      return `<g class="pl-mk pl-mk-${esc(m.kind)}" data-tone="${esc(m.tone)}"><title>${esc(m.title)}</title>${m.loss ? `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="8" fill="none" stroke="${m.col}" stroke-width="2"/>` : ''}` +
+        `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${m.kind === 'settle' ? 5 : m.loss ? 5 : 3.5}" fill="${m.col}"${m.kind === 'fill' ? ' stroke="#5b8def" stroke-width="1.2"' : ''}/>` +
+        (m.showLabel ? `<text x="${cx.toFixed(1)}" y="${(up ? cy - 10 : cy + 18).toFixed(1)}" text-anchor="${cx > W - 80 ? 'end' : 'middle'}" fill="${m.col}" font-size="12" font-weight="700" class="mono">${esc(m.label)}</text>` : '') + '</g>'; }).join('');
     return head + legend + `<svg class="pl-livechart" viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="live Kalshi account value and pool cash over time">` +
       `<line x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>${paths}${mk}</svg>`;
   }
@@ -110,7 +124,7 @@
   }
   function txList(P, o) {
     const L = (P && P.live) || {}, tx = Array.isArray(L.tx) ? L.tx : [];
-    const rows = tx.map((e) => `<tr><td>${esc(t(e.at, o.tz))}</td><td>${esc(e.kind)}</td><td>${esc(e.tk || '')}</td><td class="${tone(e.amountCents)}">${fin(e.amountCents) ? esc($c(e.amountCents)) : ''}</td><td class="${esc(e.tone || '')}">${esc(e.text)}</td></tr>`).join('');
+    const rows = tx.map((e) => `<tr><td>${esc(t(e.at, o.tz))}</td><td>${esc(e.kind)}</td><td>${esc(e.tk || '')}</td><td class="${e.kind === 'settle' ? tone(e.amountCents) : e.tone === 'neg' ? 'neg' : ''}">${fin(e.amountCents) ? esc(e.kind === 'settle' ? $s(e.amountCents) : $c(e.amountCents)) : ''}</td><td class="${e.tone === 'pos' || e.tone === 'neg' ? e.tone : ''}">${esc(e.text)}</td></tr>`).join('');
     return `<h3 class="pl-h3">Transaction history <span class="dim">(pilot ledger: orders, fills, rejects, settlements, transfers, arm/disarm/halt · newest first${L.txCount > tx.length ? ` · last ${tx.length} of ${esc(L.txCount)}` : ''})</span></h3>` +
       `<div class="pl-scroll"><table class="pl-t mono pl-tx"><thead><tr><th>time</th><th>what</th><th>market</th><th>amount</th><th>detail</th></tr></thead><tbody>${rows || '<tr><td colspan="5" class="dim">no live transactions yet</td></tr>'}</tbody></table></div>`;
   }

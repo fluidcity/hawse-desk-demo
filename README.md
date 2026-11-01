@@ -1016,6 +1016,15 @@ order_id) and `GET /portfolio/settlements` (ticker), 1.5 s apart, and appends th
 It is idempotent, never halts, never clears a halt, never arms and never sends an order or transfer; an unsettled market gets only the fill (a later
 run books the settlement). The settle row's cost + fee + payout vs balance-delta check is display only, never a trigger.
 
+**Live chart: buys are neutral, settles show the result.** A fill is a buy, not a loss: its marker and its
+transaction-list amount are neutral and labeled `buy 5 @94c`. A settle is green when P&L > 0, red when < 0 and
+gray at 0, with a visible label (`WIN +$0.28` / `LOSS −$4.72`) in both the CME canvas and the classic SVG; rejects,
+halts and stops are red; transfers are neutral. Each marker sits on the first real balance read after the event, and
+the legend shows realized P&L (`realized P&L +$0.28 (1W / 0L)`). After every settle and after a read-only recovery
+that books something, the pilot does ONE real balance read (shard 2, then all pools, 1.5 s apart, skipped during a
+429 backoff, never halts) into `balances.jsonl`, so the account-value and pilot-pool lines move even while HALTED,
+without polling. Mock screenshot: `docs/screenshots/kalshi-pilot-live-chart-win.png`.
+
 **Sizing follows the current balance (no restart).** Every decision, shadow or live, is 7% of the bankroll *at that moment*. ARMED re-reads the
 shard 2 balance before every slice; DISARMED/shadow does a read-only signed `GET /portfolio/balance?exchange_index=2` before each decision (only when the key and
 `LIVE_PILOT_ENABLED` are present), throttled to once per 20 s with a 4 s timeout. A failed read never halts: the balance is marked **stale** and the

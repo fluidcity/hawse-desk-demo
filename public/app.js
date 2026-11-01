@@ -73,7 +73,8 @@ window.HAWSE.explain = (() => {
     for (const k of [...orbSpecs.keys()]) if (!live.has(k)) orbSpecs.delete(k);
   }
   /** sp: { series: [{ pts: [[x, y]], col, dash, step, band, width, extendTo, name }], base, x0, x1, yFix, minSpan, fmt, title, legend, dots: [[x, y, col]], compact,
-   *  marks: [{ x, y, loss, key }] (trade markers: red ringed dot per loss, small mint dot per win; hit boxes returned as .hits for the Scoreboard link) } */
+   *  marks: [{ x, y, loss, key, col?, label?, showLabel? }] (trade markers: red ringed dot per loss, small mint dot per win; col overrides the dot colour and
+   *  label is drawn next to it when showLabel (live pilot: settles "WIN +$0.28"); hit boxes returned as .hits for the Scoreboard link) } */
   function orbDraw(ctx, w, h, sp) {
     ctx.clearRect(0, 0, w, h);
     const cp = !!sp.compact, L = cp ? 1 : 2, R = cp ? 1 : 50, T = cp ? 3 : sp.legend && sp.legend.length ? 34 : sp.title ? 22 : 8, B = cp ? 3 : 16;
@@ -96,7 +97,8 @@ window.HAWSE.explain = (() => {
     for (const m of [...(sp.marks || [])].sort((a, b) => (a.loss ? 1 : 0) - (b.loss ? 1 : 0))) {
       const x = X(m.x), y = Y(m.y), on = m.key === hk || m.key === sk, r = m.loss ? 5 : 2.8; hits.push({ x, y, key: m.key });
       if (m.loss) { arc(x, y, r + 4); ctx.strokeStyle = ORB.down; ctx.lineWidth = 2; ctx.stroke(); }
-      arc(x, y, r + (on ? 1.5 : 0)); ctx.fillStyle = m.loss ? ORB.down : ORB.up; ctx.fill();
+      arc(x, y, r + (on ? 1.5 : 0)); ctx.fillStyle = m.col || (m.loss ? ORB.down : ORB.up); ctx.fill();
+      if (m.label && m.showLabel && !cp) { ctx.font = 'bold ' + ORB.font; ctx.fillStyle = m.col || ORB.label; ctx.textAlign = x > w - R - 60 ? 'right' : 'center'; ctx.fillText(String(m.label), x, y > T + 18 ? y - 10 : y + 18); ctx.textAlign = 'left'; }
       if (on) { arc(x, y, r + 7); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke(); }
     }
     if (!cp) {

@@ -994,6 +994,16 @@ deposits, then all pools) are spaced 1.5 s apart and 1.5 s after the shard read,
 Screenshots (EXAMPLE / mock exchange, labeled): `docs/screenshots/kalshi-pilot-bankroll-by-pool-desktop.png`,
 `docs/screenshots/kalshi-pilot-bankroll-by-pool-mobile.png`.
 
+**RESET PILOT and ARM LIVE boxes on the card (asked for by Bryan).** On the desk PC (loopback), a **HALTED** pilot shows a red,
+always-open box titled **"Pilot is HALTED: <reason>"** with a text box (placeholder `type RESET PILOT`) and a **RESET** button. It posts
+`{phrase}` to `/api/live/kalshi-pilot/reset`, the same route and check as before. The pilot comes back **DISARMED-SHADOW** (no money).
+In DISARMED-SHADOW the **Arm (this computer only)** box is open by default, with placeholder `type ARM LIVE` and an **ARM** button.
+For both, Enter works, and the result ("Reset: the pilot is now DISARMED-SHADOW (no money).", "Not reset: type the exact reset phrase",
+"Not armed: …") is shown in the card, not in an alert. Both phrases come from the frozen config, which the state feed now shows read-only
+(`config.resetPhrase` next to `config.armPhrase`). Server checks are unchanged. On the phone link neither box is shown; the card
+says "Arm and reset only on the desk PC; this link can HALT only." ARMED shows neither box. Screenshot (EXAMPLE / mock exchange, labeled):
+`docs/screenshots/kalshi-pilot-halted-reset-desktop.png`.
+
 **Sizing follows the current balance (no restart).** Every decision, shadow or live, is 7% of the bankroll *at that moment*. ARMED re-reads the
 shard 2 balance before every slice; DISARMED/shadow does a read-only signed `GET /portfolio/balance?exchange_index=2` before each decision (only when the key and
 `LIVE_PILOT_ENABLED` are present), throttled to once per 20 s with a 4 s timeout. A failed read never halts: the balance is marked **stale** and the

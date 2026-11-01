@@ -891,3 +891,29 @@ test('bankroll by pool: display reads are spaced 1.5 s apart and from the shard 
   await p.refreshInfo(); assert.equal(c.calls.length, n + 1, 'nothing more while backing off'); assert.notEqual(p.state, 'HALTED');
   assert.equal(p.snapshot().money.pools.pendingUnknown, true); assert.match(UI.render(p.snapshot(), {}), /pending deposits<\/span> unknown \(read failed\)/);
 });
+
+test('card: HALTED on this computer shows a visible RESET PILOT box; phone link shows none; reset brings back DISARMED-SHADOW', async () => {
+  const UI = require('../public/pilot.js'); const { p } = pilot(); await p.halt('HALT button pressed');
+  const S = p.snapshot(); assert.equal(S.config.resetPhrase, 'RESET PILOT', 'phrase exposed read-only from the frozen config');
+  const h = UI.render(S, { local: true });
+  assert.match(h, /<div class="pl-reset">/); assert.ok(!/<details[^>]*>\s*<summary[^>]*>[^<]*reset/i.test(h), 'not collapsed');
+  assert.match(h, /Pilot is HALTED: HALT button pressed/); assert.match(h, /data-pilot="reset-phrase"[^>]*placeholder="type RESET PILOT"/); assert.match(h, /<button type="button" data-pilot="reset">RESET<\/button>/);
+  const ph = UI.render(S, { local: false });
+  assert.ok(!ph.includes('reset-phrase') && !ph.includes('data-pilot="reset"'), 'no reset box on the phone link'); assert.match(ph, /Arm and reset only on the desk PC/); assert.match(ph, /data-pilot="halt"/);
+  const bad = UI.render(S, { local: true, act: { what: 'reset', ok: false, text: 'Not reset: type the exact reset phrase' } });
+  assert.match(bad, /<div class="pl-reset">[\s\S]*class="pl-actres neg" role="status">Not reset: type the exact reset phrase/, 'error shown inline in the card');
+  assert.equal(p.reset('reset pilot').ok, false); const r = p.reset('RESET PILOT'); assert.equal(r.ok, true); assert.equal(r.state, 'DISARMED');
+  const S2 = p.snapshot(); assert.equal(S2.statusChip, 'DISARMED-SHADOW');
+  const after = UI.render(S2, { local: true, act: { what: 'reset', ok: true, text: 'Reset: the pilot is now DISARMED-SHADOW (no money).' } });
+  assert.ok(!after.includes('reset-phrase')); assert.match(after, /pl-actres pos" role="status">Reset: the pilot is now DISARMED-SHADOW/, 'success stays visible after the box goes away');
+});
+
+test('card: DISARMED-SHADOW ARM box is open with an "type ARM LIVE" input; ARMED has no reset or arm box', async () => {
+  const UI = require('../public/pilot.js'); const { p } = pilot();
+  const h = UI.render(p.snapshot(), { local: true });
+  assert.match(h, /<details class="pl-arm" open>/); assert.match(h, /data-pilot="phrase"[^>]*placeholder="type ARM LIVE"/); assert.ok(!h.includes('reset-phrase'));
+  assert.match(UI.render(p.snapshot(), { local: true, act: { what: 'arm', ok: false, text: 'Not armed: type the exact phrase to arm' } }), /<details class="pl-arm" open>[\s\S]*pl-actres neg" role="status">Not armed: type the exact phrase to arm[\s\S]*<\/details>/);
+  const ph = UI.render(p.snapshot(), { local: false }); assert.ok(!ph.includes('data-pilot="phrase"')); assert.match(ph, /Arm and reset only on the desk PC/);
+  assert.equal((await p.arm('ARM LIVE')).ok, true); const A = UI.render(p.snapshot(), { local: true });
+  assert.equal(p.snapshot().statusChip, 'ARMED'); assert.ok(!A.includes('reset-phrase') && !A.includes('data-pilot="reset"') && !A.includes('pl-arm"'), 'ARMED: no reset/arm box'); assert.ok(!A.includes('desk PC; this link'));
+});

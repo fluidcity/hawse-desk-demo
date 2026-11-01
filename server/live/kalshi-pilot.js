@@ -562,7 +562,7 @@ class KalshiPilot {
       mainAccount: this.client ? this.client.subaccount == null : !this.presence.subaccount,
       config: c ? { perTradePct: c.perTradePct, perAssetCapCents: c.perAssetCapCents, participationShare: c.participationShare,
         dailyLossStopCents: c.dailyLossStopCents, shrinkToDailyBudget: !!c.shrinkToDailyBudget, balanceExchangeIndex: c.balanceExchangeIndex, maxPriceCents: c.order.maxPriceCents, maxSlices: c.order.maxSlices, sliceGapMs: c.order.sliceGapMs,
-        series: c.series, follows: c.follows.line, armPhrase: c.armPhrase } : null,
+        series: c.series, follows: c.follows.line, armPhrase: c.armPhrase, resetPhrase: c.resetPhrase } : null, // phrases are read-only display (what to type), not secrets
       money: { real: true, bankrollCents: this.cfg ? this.bankrollCents() : null, perTradeCents: this.cfg && this.bankrollCents() != null ? Math.floor((this.bankrollCents() * Math.round(c.perTradePct * 10000)) / 10000) : null, balanceCents: this.balanceCents, balanceAt: this.balanceAt, balanceStale: this.balanceStale,
         balanceSource: c ? { exchangeIndex: c.balanceExchangeIndex, field: 'balance (available cash)', at: this.balanceAt } : null, backoffMs: this.backoffMs || 0,
         pools: this.poolsView(), shardsAt: this.shardsAt, openPositionsCents: this.portfolioValueCents, otherShardCents: this.otherShardCents, shards: this.shards, otherShards: c && this.shards ? this.shards.filter((x) => x.exchangeIndex !== c.balanceExchangeIndex) : null, shardMismatch: this.shardMismatch ? this.shardMsg() : null, deposits: this.info.deposits || null, outOfMoney: this.outOfMoney ? this.fundsMsg() : null, realizedCents: this.realizedMicros / U, openRiskCents: this.openRiskCents(),

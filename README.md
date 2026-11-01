@@ -941,8 +941,8 @@ status, not a halt; it clears when a market on shard 2 is seen. If a market's in
 **Exchange shards (read the docs 2026-11-01).** Kalshi's Exchange Sharding doc: `exchange_index` scopes balance and `portfolio_value`, omitting it
 gives the all-shard aggregate; collateral is checked **on the market's own shard**; Kalshi's app/web move cash between shards, API orders don't.
 Create-order is sent **without** `exchange_index`, so Kalshi routes it to the market's own shard. Public `GET /markets` showed the open
-KXBTC15M/KXETH15M/KXSOL15M markets with `exchange_index` 2 (Crypto & Commodities). The card shows **cash on other shards** with amounts ("shard 0
-$72.51, shard 1 $7.03, not used for sizing; Kalshi's app/web move cash between shards, API orders don't"). To fund the pilot, cash must be on shard 2.
+KXBTC15M/KXETH15M/KXSOL15M markets with `exchange_index` 2 (Crypto & Commodities). The card shows **every pool's cash** in the Bankroll by pool table (below), with only
+shard 2 marked as the pilot's pool; the others are not used for sizing (Kalshi's app/web move cash between shards, API orders don't). To fund the pilot, cash must be on shard 2.
 The p5 config has no transfer settings (the separate desk-PC transfer button is below). Changing the sizing shard needs a new config file and hash.
 Screenshot (EXAMPLE / mock data, $0 on shard 2): `docs/screenshots/kalshi-pilot-p5-desktop.png`.
 
@@ -980,6 +980,20 @@ DISABLED shows neither and writes no file. Screenshots (EXAMPLE / mock exchange,
 `docs/screenshots/kalshi-pilot-live-chart-cme-desktop.png`, `docs/screenshots/kalshi-pilot-live-chart-classic-desktop.png`,
 `docs/screenshots/kalshi-pilot-live-chart-mobile.png`, and the empty state `docs/screenshots/kalshi-pilot-live-chart-empty-desktop.png`.
 
+**Bankroll by pool (straight from Kalshi; asked for by Bryan).** The card's money section has a **Bankroll by pool** table headed
+**"Kalshi balance, read at HH:MM"** (Bryan's time zone). One row per pool, by name: Default (shard 0), Combos (shard 1), Crypto &
+Commodities (shard 2), Sports (shard 3), each with its available cash in dollars and its read time. The pilot's pool (shard 2) is highlighted
+and marked **"← pilot trades from here"**; the others say "not used by the pilot". Under the table: **available for pilot trades** (shard 2
+available cash from the pilot's own `exchange_index=2` read, with its read time and the 7% per-trade amount), **open positions**
+(`portfolio_value`), **pending deposits** (not in any pool yet) and **total** = pool cash + open positions (pending deposits not included).
+Every number comes from balance reads the pilot already makes: `balance_breakdown` from the once-a-minute all-pools read (or the pools re-read
+after a transfer) and the shard-2 read; for the pilot's row the newer of the two is shown. Nothing is hardcoded, cached from elsewhere or
+simulated: a value Kalshi hasn't reported yet says **"not read yet"**. No new request and no extra polling: the display reads (pending
+deposits, then all pools) are spaced 1.5 s apart and 1.5 s after the shard read, run in the background so they never delay a decision, and a
+429 backs off (the all-pools read is skipped until the backoff ends; never a halt). Display only: sizing is unchanged (shard 2 cash).
+Screenshots (EXAMPLE / mock exchange, labeled): `docs/screenshots/kalshi-pilot-bankroll-by-pool-desktop.png`,
+`docs/screenshots/kalshi-pilot-bankroll-by-pool-mobile.png`.
+
 **Sizing follows the current balance (no restart).** Every decision, shadow or live, is 7% of the bankroll *at that moment*. ARMED re-reads the
 shard 2 balance before every slice; DISARMED/shadow does a read-only signed `GET /portfolio/balance?exchange_index=2` before each decision (only when the key and
 `LIVE_PILOT_ENABLED` are present), throttled to once per 20 s with a 4 s timeout. A failed read never halts: the balance is marked **stale** and the
@@ -987,7 +1001,7 @@ last value is used; with no balance ever read, the decision is skipped (ARMED ha
 other trading there change the size of the next decision. A **429** (rate limit) is not a halt: reads back off (2 s, doubling to 60 s) and an armed
 pre-slice read is retried up to twice (the order itself is never retried); 3 API errors in a row is still the existing halt. Display only, never
 sizing: **pending deposits** (read-only `GET /portfolio/deposits`, status `pending`, at most once a minute; a failed read shows "unknown", not a halt),
-**open positions** (`portfolio_value`, "not used for sizing") and **cash on other shards** (per shard, from `balance_breakdown`, "not used for sizing"). Every shadow, compare and live row on the card, and
+**open positions** (`portfolio_value`, "not used for sizing") and **every pool's cash** (per pool, from `balance_breakdown`, in the Bankroll by pool table; only shard 2 sizes). Every shadow, compare and live row on the card, and
 every `order_intent`/`slice_skip`/`shadow` ledger row, carries `sizing` = bankroll used, 7%, target $, order $ (contracts × limit) and which cap
 bound (7% line / asset cap / 10% volume / open-risk / balance).
 

@@ -56,8 +56,8 @@ function fakes({ ya = 0.95, vol = 1000, close } = {}) {
   const take = (tk = TK, at = Date.now()) => { v3.rows.set(tk, { sig: { tk, asset: 'BTC', ya, bookRx: at, close: close != null ? close : at + 480000, decision: 'take' } }); for (const f of v1.rowListeners) f({ t: 'signal', tk }); };
   return { v1, v3, line, take };
 }
-function pilot({ env = ENV_ON, client = fakeClient(), dir = tmp(), v = fakes(), file, pin, now } = {}) {
-  const p = new P.KalshiPilot({ v1: v.v1, v3: v.v3, dir, killFile: path.join(dir, 'KILL'), env, client, file, pin, now, sleep: async () => {} });
+function pilot({ env = ENV_ON, client = fakeClient(), dir = tmp(), v = fakes(), file, pin, now, sleep = async () => {} } = {}) {
+  const p = new P.KalshiPilot({ v1: v.v1, v3: v.v3, dir, killFile: path.join(dir, 'KILL'), env, client, file, pin, now, sleep });
   p.start(); p.stop(); return { p, client, dir, v };
 }
 
@@ -130,7 +130,7 @@ test('sizing: 7% of the live bankroll ($10.50 at $150), price <= ask+1c and <= 9
 
 test('DISARMED = SHADOW: each v3 take logs a would-be order (no money) and sends nothing; non-take decisions are ignored', async () => {
   const v = fakes(); const { p, client } = pilot({ v });
-  assert.equal(p.state, 'DISARMED'); v.take(); await p.signals.get(TK).run;
+  assert.equal(p.state, 'DISARMED'); v.take(); await p.signals.get(TK).run; await p.infoRun;
   v.v3.rows.set('KXETH15M-B', { sig: { tk: 'KXETH15M-B', ya: 0.95, decision: 'skip' } }); for (const f of v.v1.rowListeners) f({ t: 'signal', tk: 'KXETH15M-B' });
   assert.equal(p.shadow.length, 1); assert.equal(p.shadow[0].noMoney, true); assert.equal(p.shadow[0].contracts, 7, '7% of the live $100 balance'); assert.equal(p.shadow[0].limit, 96);
   assert.deepEqual(client.calls, ['balance', 'deposits', 'balance_all'], 'shadow makes read-only GETs only: shard 2 balance (sizing), then display-only deposits and all-shard balance');
@@ -277,10 +277,10 @@ test('repo-wide: only the pilot client names order endpoints / builds orders; ev
 
 test('card: HALT always visible, ARM only on this machine, "Daily stop: OFF", SHADOW rows say NO MONEY; Scoreboard LIVE chip is separate from paper', async () => {
   const UI = require('../public/pilot.js'), SB = require('../public/scoreboard.js');
-  const v = fakes(); const { p } = pilot({ v }); v.take(); await p.signals.get(TK).run; const snap = p.snapshot();
+  const v = fakes(); const { p } = pilot({ v }); v.take(); await p.signals.get(TK).run; await p.infoRun; const snap = p.snapshot();
   assert.equal(snap.title, 'LIVE · REAL MONEY · Kalshi pilot (v3 7% of shard 2 cash)');
   const hc = UI.render(snap, {}); assert.match(hc, /No loss limit: the pilot trades until you press HALT or a safety stop trips; the balance can go to zero\./);
-  assert.match(hc, /shard 2 available cash \(the shard the 15-minute crypto markets trade on\), read at /); assert.match(hc, /open positions \$0\.00 \(not used for sizing\)/); assert.match(hc, /pending deposits/); assert.match(hc, /info only, not a limit/);
+  assert.match(hc, /shard 2 available cash \(the shard the 15-minute crypto markets trade on\), read at /); assert.match(hc, /open positions<\/span> (\$0\.00|<span class="dim">not read yet<\/span>) <span class="dim">\(not used for sizing\)/); assert.match(hc, /pending deposits/); assert.match(hc, /info only, not a limit/);
   assert.doesNotMatch(hc + UI.render(snap, { local: true }), /Loss limit|LOSS LIMIT|realized-loss|headroom|overshoot/); assert.equal((hc.match(/loss limit/gi) || []).length, 1, 'only the No loss limit statement');
   assert.match(UI.render(snap, { local: true }), /ARM LIVE/);
   const h = UI.render(snap, { local: false }); assert.match(h, /data-pilot="halt"/); assert.doesNotMatch(h, /data-pilot="arm"/); assert.match(h, /Daily stop: OFF \(paper arms have none\)/); assert.match(h, /SHADOW · NO MONEY/); assert.match(h, /DISARMED-SHADOW/);
@@ -367,26 +367,28 @@ test('arm phrase: exactly "ARM LIVE" (from the frozen config)', async () => {
 });
 
 const BD = [{ exchange_index: 0, balance: '72.5100' }, { exchange_index: 1, balance: '7.0300' }, { exchange_index: 2, balance: '0.0000' }, { exchange_index: 3, balance: '0.0000' }];
+const POOLROW = (name, i, d) => new RegExp(`${name.replace(/&/g, '&amp;')} <span class="dim">\\(shard ${i}\\)</span></td><td class="r"><b>\\$${d.replace('.', '\\.')}</b>`);
 test('p5 sizing uses shard 2 available cash only: shard 2 $50 with $72.51 on shard 0 and $7.03 on shard 1 -> bankroll $50; portfolio_value, other shards and pending deposits never size', async () => {
   let t = Date.parse('2026-11-01T18:00:00Z'); const now = () => t;
   const bd = BD.map((x) => (x.exchange_index === 2 ? { ...x, balance: '50.0000' } : x));
   const v = fakes(), c = fakeClient({ balance: 5000, aggregate: 12954, pv: 5650, breakdown: bd,
     deposits: [{ id: 'd1', status: 'pending', amount_cents: 5000 }, { id: 'd2', status: 'applied', amount_cents: 10000 }, { id: 'd3', status: 'failed', amount_cents: 700 }] });
-  const { p } = pilot({ v, client: c, now }); v.take(TK, t); await p.signals.get(TK).run; const r = p.shadow[p.shadow.length - 1];
+  const { p } = pilot({ v, client: c, now }); v.take(TK, t); await p.signals.get(TK).run; await p.infoRun; const r = p.shadow[p.shadow.length - 1];
   assert.equal(p.bankrollCents(), 5000); assert.equal(r.sizing.bankrollCents, 5000); assert.equal(r.sizing.targetCents, 350, '7% of shard 2 $50 (not the $129.54 total, not shard 0, not + positions or pending)');
   assert.deepEqual(c.balanceArgs[0], { exchangeIndex: 2 }, 'sizing read is GET /portfolio/balance?exchange_index=2');
   assert.ok(c.balanceArgs.filter((a) => a.exchangeIndex != null).every((a) => a.exchangeIndex === 2), 'no sizing read of any other shard');
   const m = p.snapshot().money; assert.equal(m.openPositionsCents, 5650, 'portfolio_value shown as open positions'); assert.equal(m.otherShardCents, 7954); assert.deepEqual(m.deposits, { pendingCents: 5000, pendingCount: 1, at: t });
   assert.deepEqual(m.otherShards, [{ exchangeIndex: 0, cents: 7251 }, { exchangeIndex: 1, cents: 703 }, { exchangeIndex: 3, cents: 0 }]);
   assert.deepEqual(m.balanceSource, { exchangeIndex: 2, field: 'balance (available cash)', at: t });
-  const h = require('../public/pilot.js').render(p.snapshot(), {}); assert.match(h, /open positions \$56\.50 \(not used for sizing\)/); assert.match(h, /pending deposits \$50\.00/);
-  assert.match(h, /cash on other shards<\/span> <b>shard 0 \$72\.51, shard 1 \$7\.03, shard 3 \$0\.00<\/b>, not used for sizing; Kalshi's app\/web move cash between shards, API orders don't/);
+  const h = require('../public/pilot.js').render(p.snapshot(), {}); assert.match(h, /open positions<\/span> \$56\.50 <span class="dim">\(not used for sizing\)/); assert.match(h, /pending deposits<\/span> \$50\.00 <span class="dim">\(not in any pool yet, not used for sizing\)/);
+  assert.match(h, POOLROW('Default', 0, '72.51')); assert.match(h, POOLROW('Combos', 1, '7.03')); assert.match(h, POOLROW('Crypto & Commodities', 2, '50.00')); assert.match(h, POOLROW('Sports', 3, '0.00'));
+  assert.match(h, /Only the pilot's pool is used for sizing\. Kalshi's app\/web \(or the Move cash box on the desk PC\) move cash between pools; API orders don't/);
   // a bigger pending deposit, more open positions and cash on another shard change nothing about the next size
-  c.deposits = [{ id: 'd4', status: 'pending', amount_cents: 100000 }]; c.pv = 900000; c.aggregate = 500000; t += 61000; v.take('KXBTC15M-26NOV011030-B', t); await p.signals.get('KXBTC15M-26NOV011030-B').run;
+  c.deposits = [{ id: 'd4', status: 'pending', amount_cents: 100000 }]; c.pv = 900000; c.aggregate = 500000; t += 61000; v.take('KXBTC15M-26NOV011030-B', t); await p.signals.get('KXBTC15M-26NOV011030-B').run; await p.infoRun;
   assert.equal(p.shadow[p.shadow.length - 1].sizing.bankrollCents, 5000); assert.equal(p.snapshot().money.deposits.pendingCents, 100000);
   // deposits read failing = "unknown", never a halt, never sizing
   c.depositsError = new Error('HTTP 500'); t += 61000; await p.refreshInfo(); assert.equal(p.snapshot().money.deposits.unknown, true); assert.equal(p.state, 'DISARMED');
-  assert.match(require('../public/pilot.js').render(p.snapshot(), {}), /pending deposits unknown/);
+  assert.match(require('../public/pilot.js').render(p.snapshot(), {}), /pending deposits<\/span> unknown \(read failed\)/);
   // the REAL client sends exchange_index=2 on the sizing read and nothing on the aggregate read; deposits is a GET
   const f = mockFetch(); const rc = R.makeTradeClient({ env: ENV_ON, fetchImpl: f }); await rc.getBalance({ exchangeIndex: 2 }); await rc.getBalance(); await rc.getDeposits({ limit: 20 });
   assert.deepEqual(f.reqs.map((q) => q.method + ' ' + q.path), ['GET /trade-api/v2/portfolio/balance', 'GET /trade-api/v2/portfolio/balance', 'GET /trade-api/v2/portfolio/deposits']);
@@ -404,7 +406,7 @@ test('p5: shard 2 at $0 -> stopped trading, no order attempt even when ARMED; sh
   const led = fs.readFileSync(path.join(dir, 'ledger.jsonl'), 'utf8'); assert.ok(!/order_intent|order_sent/.test(led));
   assert.match(p.snapshot().money.outOfMoney, /stopped trading: shard 2 cash \$0\.00 can't buy one contract/);
   t += 61000; await p.refreshInfo(); const h = require('../public/pilot.js').render(p.snapshot(), {});
-  assert.match(h, /stopped trading: shard 2 cash \$0\.00/); assert.match(h, /shard 0 \$72\.51, shard 1 \$7\.03, shard 3 \$0\.00<\/b>, not used for sizing/);
+  assert.match(h, /stopped trading: shard 2 cash \$0\.00/); assert.match(h, POOLROW('Default', 0, '72.51')); assert.match(h, POOLROW('Combos', 1, '7.03')); assert.match(h, POOLROW('Sports', 3, '0.00')); assert.match(h, /not used by the pilot/);
   assert.equal(p.bankrollCents(), 0, 'shard 0/1 cash is not the bankroll');
   // cash lands on shard 2 (e.g. moved in Kalshi's app): the next take trades without a restart
   c.balance = 10000; const tk2 = 'KXBTC15M-26NOV011100-B'; t += 1000; v.take(tk2, t); await p.signals.get(tk2).run;
@@ -782,7 +784,7 @@ test('live chart: balance points come only from reads the pilot already makes (n
   const v = fakes(), c = fakeClient({ balance: 5000, aggregate: 12954, pv: 5650, breakdown: BD.map((x) => (x.exchange_index === 2 ? { ...x, balance: '50.0000' } : x)) });
   const { p, dir } = pilot({ v, client: c, now });
   assert.deepEqual(balRows(dir), [], 'nothing recorded before the pilot reads anything');
-  v.take(TK, t); await p.signals.get(TK).run;
+  v.take(TK, t); await p.signals.get(TK).run; await p.infoRun;
   const reads = c.calls.filter((x) => x === 'balance' || x === 'balance_all').length, rows = balRows(dir);
   assert.ok(rows.length >= 1 && rows.length <= reads, `${rows.length} points from ${reads} reads: never more points than real reads`);
   const sh = rows.find((r) => r.kind === 'shard'), all = rows.find((r) => r.kind === 'all');
@@ -847,4 +849,45 @@ test('live chart: a pool transfer records the pools re-read it already made (no 
   await p.transferConfirm({ confirm: true, token: a.confirm.token, amountCents: 7000, from: 0, to: 2 });
   const rows = balRows(dir).filter((r) => r.src === 'after transfer'); assert.equal(rows.length, 1); assert.deepEqual(rows[0].shards.map((s) => s.cents), [251, 703, 7000, 0]);
   assert.ok(fx.reqs.length > n0); assert.ok(p.snapshot().live.tx.some((e) => e.kind === 'transfer'));
+});
+
+// ---- bankroll by pool (display only, from Kalshi's own balance reads) -------------------------------------------
+test('bankroll by pool: every pool by name with its real cash, the pilot pool marked, available for pilot trades, open positions, pending deposits, total; "Kalshi balance, read at HH:MM"', async () => {
+  let t = Date.parse('2026-11-01T18:07:00Z'); const now = () => t;
+  const v = fakes(), c = fakeClient({ balance: 5000, aggregate: 12954, pv: 5650, breakdown: BD.map((x) => (x.exchange_index === 2 ? { ...x, balance: '50.0000' } : x)),
+    deposits: [{ id: 'd1', status: 'pending', amount_cents: 5000 }, { id: 'd2', status: 'applied', amount_cents: 10000 }] });
+  const { p } = pilot({ v, client: c, now }); v.take(TK, t); await p.signals.get(TK).run; await p.infoRun;
+  const B = p.snapshot().money.pools;
+  assert.deepEqual(B.list.map((x) => [x.exchangeIndex, x.name, x.cents, x.pilot]), [[0, 'Default', 7251, false], [1, 'Combos', 703, false], [2, 'Crypto & Commodities', 5000, true], [3, 'Sports', 0, false]]);
+  assert.equal(B.pilotPool, 2); assert.equal(B.pilotPoolName, 'Crypto & Commodities'); assert.equal(B.availableForPilotCents, 5000); assert.equal(B.openPositionsCents, 5650);
+  assert.equal(B.pendingDepositsCents, 5000, 'pending only (applied deposits are already in a pool)'); assert.equal(B.cashCents, 12954); assert.equal(B.totalCents, 12954 + 5650); assert.equal(B.readAt, t); assert.equal(B.allRead, true);
+  const before = c.calls.length; const h = UI.render(p.snapshot(), { tz: 'America/Los_Angeles' }); assert.equal(c.calls.length, before, 'rendering makes no request');
+  assert.match(h, /Bankroll by pool<\/b> <span class="dim">Kalshi balance, read at 10:07\s?AM PST<\/span>/);
+  assert.match(h, POOLROW('Default', 0, '72.51')); assert.match(h, POOLROW('Combos', 1, '7.03')); assert.match(h, POOLROW('Crypto & Commodities', 2, '50.00')); assert.match(h, POOLROW('Sports', 3, '0.00'));
+  assert.equal((h.match(/← pilot trades from here/g) || []).length, 1); assert.match(h, /Crypto &amp; Commodities <span class="dim">\(shard 2\)<\/span>.*?← pilot trades from here/);
+  assert.match(h, /available for pilot trades<\/span> <b class="pl-poolavail">\$50\.00<\/b> <span class="dim">Crypto &amp; Commodities \(shard 2\) available cash, read at 10:07\s?AM PST · 7% per trade = \$3\.50/);
+  assert.match(h, /total<\/span> <b>\$186\.04<\/b> <span class="dim">= pool cash \$129\.54 \+ open positions \$56\.50; pending deposits not included/);
+  // money moved in Kalshi's app: the next once-a-minute read shows it, nothing cached or invented
+  c.breakdown = BD.map((x) => (x.exchange_index === 0 ? { ...x, balance: '2.5100' } : x.exchange_index === 2 ? { ...x, balance: '120.0000' } : x)); c.aggregate = 12954; t += 61000; await p.refreshInfo();
+  const B2 = p.snapshot().money.pools; assert.equal(B2.list[0].cents, 251); assert.equal(B2.list[2].cents, 12000, 'the newer all-pools read wins for the pilot pool row'); assert.equal(B2.availableForPilotCents, 5000, 'available for pilot trades is the pilot pool read (sizing), shown with its own time');
+});
+
+test('bankroll by pool: before any Kalshi read every value says "not read yet" (nothing hardcoded); DISABLED reads nothing', async () => {
+  const { p, client } = pilot(); const S = p.snapshot(), h = UI.render(S, {});
+  assert.ok(S.money.pools.list.every((x) => x.cents == null)); assert.equal(S.money.pools.totalCents, null); assert.equal(client.calls.length, 0);
+  const blk = h.slice(h.indexOf('pl-pools'), h.indexOf('Only the pilot'));
+  assert.match(blk, /Kalshi balance: not read yet/); assert.equal((blk.match(/not read yet/g) || []).length, 4 + 1 + 1 + 1 + 1 + 1, 'four pools, header, available, positions, pending, total');
+  assert.ok(!/\$\d/.test(blk), 'no dollar figure until Kalshi reports one');
+  const off = pilot({ env: { ...ENV_ON, LIVE_PILOT_ENABLED: 'false' } }); await off.p.refreshInfo(); await off.p.refreshBalance(); assert.equal(off.client.calls.length, 0);
+});
+
+test('bankroll by pool: display reads are spaced 1.5 s apart and from the shard read; a 429 backs off (no extra read, no halt) and shows "unknown"', async () => {
+  let t = Date.parse('2026-11-01T18:00:00Z'); const now = () => t; const naps = [];
+  const c = fakeClient({ balance: 5000, aggregate: 12954, pv: 5650, breakdown: BD }); const sleep = async (ms) => { naps.push([ms, c.calls.length]); t += ms; };
+  const v = fakes(); const { p } = pilot({ v, client: c, now, sleep }); v.take(TK, t); await p.signals.get(TK).run; await p.infoRun;
+  assert.deepEqual(c.calls, ['balance', 'deposits', 'balance_all']); assert.deepEqual(naps, [[1500, 1], [1500, 2]], '1.5 s before deposits (after the shard read) and 1.5 s before the all-pools read');
+  c.depositsError = Object.assign(new Error('Kalshi 429'), { status: 429 }); t += 61000; const n = c.calls.length; await p.refreshInfo();
+  assert.deepEqual(c.calls.slice(n), ['deposits'], 'a 429 skips the all-pools read'); assert.ok(p.info.backoffUntil > t);
+  await p.refreshInfo(); assert.equal(c.calls.length, n + 1, 'nothing more while backing off'); assert.notEqual(p.state, 'HALTED');
+  assert.equal(p.snapshot().money.pools.pendingUnknown, true); assert.match(UI.render(p.snapshot(), {}), /pending deposits<\/span> unknown \(read failed\)/);
 });

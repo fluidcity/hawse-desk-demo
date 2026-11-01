@@ -41,6 +41,27 @@
   }
   // ---- Live money chart + transaction history (REAL data only: the pilot's own Kalshi balance reads + its ledger) ----------------------
   const COL = { acct: '#3dffb0', pilot: '#5b8def', other: ['#c9a227', '#b07cff', '#ff9f43', '#6b7a89'] };
+  const hm = (ms, tz) => (ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', timeZone: tz, timeZoneName: 'short' }) : '—');
+  /**
+   * Bankroll by pool, straight from Kalshi's balance reads (money.pools from the server: balance_breakdown + the pilot pool's own read).
+   * Nothing hardcoded or simulated: a pool Kalshi hasn't reported shows "not read yet"; with no read at all the whole block says so.
+   */
+  function poolsBlock(m, c, o) {
+    const B = m.pools; if (!B || !Array.isArray(B.list)) return '';
+    const nr = '<span class="dim">not read yet</span>', pilotName = `${esc(B.pilotPoolName || 'pool')} (shard ${esc(B.pilotPool)})`;
+    const head = `<div class="pl-pools-h"><b>Bankroll by pool</b> <span class="dim">${B.readAt ? `Kalshi balance, read at ${esc(hm(B.readAt, o.tz))}` : 'Kalshi balance: not read yet'}</span></div>`;
+    const rows = B.list.map((x) => `<tr class="${x.pilot ? 'pl-poolpilot' : ''}"><td>${esc(x.name)} <span class="dim">(shard ${esc(x.exchangeIndex)})</span></td><td class="r"><b>${fin(x.cents) ? $c(x.cents) : nr}</b></td><td class="dim pl-poolread">${x.at ? esc(hm(x.at, o.tz)) : ''}</td><td>${x.pilot ? '<b class="pl-poolmark">← pilot trades from here</b>' : '<span class="dim">not used by the pilot</span>'}</td></tr>`).join('');
+    const pct = fin(c.perTradePct) ? Math.round(c.perTradePct * 100) : null, per = fin(m.perTradeCents) ? ` · ${pct}% per trade = ${$c(m.perTradeCents)}` : '';
+    const dep = B.pendingUnknown ? 'unknown (read failed)' : fin(B.pendingDepositsCents) ? $c(B.pendingDepositsCents) : nr;
+    const sum = [
+      `<div><span class="dim">available for pilot trades</span> <b class="pl-poolavail">${fin(B.availableForPilotCents) ? $c(B.availableForPilotCents) : nr}</b> <span class="dim">${pilotName} available cash${B.availableAt ? ', read at ' + esc(hm(B.availableAt, o.tz)) : ''}${B.availableStale ? ' <b class="neg">stale</b>' : ''}${esc(per)}</span></div>`,
+      `<div><span class="dim">open positions</span> ${fin(B.openPositionsCents) ? $c(B.openPositionsCents) : nr} <span class="dim">(not used for sizing)</span></div>`,
+      `<div><span class="dim">pending deposits</span> ${dep} <span class="dim">(not in any pool yet, not used for sizing)</span></div>`,
+      `<div><span class="dim">total</span> <b>${fin(B.totalCents) ? $c(B.totalCents) : fin(B.cashCents) ? $c(B.cashCents) + ' <span class="dim">(pool cash only; open positions not read yet)</span>' : nr}</b>${fin(B.totalCents) ? ` <span class="dim">= pool cash ${$c(B.cashCents)}${B.allRead ? '' : ' (pools read so far)'} + open positions ${$c(B.openPositionsCents)}; pending deposits not included</span>` : ''}</div>`,
+    ].join('');
+    return `<div class="pl-pools">${head}<div class="pl-scroll"><table class="pl-t mono pl-poolt"><thead><tr><th>pool</th><th class="r">available cash</th><th class="pl-poolread">read</th><th></th></tr></thead><tbody>${rows}</tbody></table></div>` +
+      `<div class="pl-facts mono pl-poolsum">${sum}</div><div class="dim sm">Only the pilot's pool is used for sizing. Kalshi's app/web (or the Move cash box on the desk PC) move cash between pools; API orders don't.</div></div>`;
+  }
   /** Series from P.live.points: account value (all pools cash + open positions, from the all-pools read), the pilot's pool cash, other pools' cash. */
   function liveData(P) {
     const L = (P && P.live) || {}, pts = Array.isArray(L.points) ? L.points : [], xi = P && P.config ? P.config.balanceExchangeIndex : 2;
@@ -103,19 +124,14 @@
     const oom = (m.outOfMoney && chip !== 'DISABLED' ? `<div class="pl-why pl-oom">${esc(m.outOfMoney)}</div>` : '') + (m.shardMismatch && chip !== 'DISABLED' ? `<div class="pl-why neg pl-oom">${esc(m.shardMismatch)}</div>` : '');
     const xi = fin(bs0(m).exchangeIndex) ? bs0(m).exchangeIndex : c.balanceExchangeIndex;
     const shardWhy = xi === 2 ? ' (the shard the 15-minute crypto markets trade on)' : '';
-    const others = Array.isArray(m.otherShards) && m.otherShards.length ? m.otherShards.map((x) => `shard ${esc(x.exchangeIndex)} ${$c(x.cents)}`).join(', ')
-      : fin(m.otherShardCents) ? `other shards ${$c(m.otherShardCents)}` : null;
-    const bs = bs0(m), dep = m.deposits || {};
-    const depTxt = dep.unknown ? 'pending deposits unknown' : fin(dep.pendingCents) ? `pending deposits ${$c(dep.pendingCents)}${dep.pendingCount ? ' (' + dep.pendingCount + ')' : ''}` : 'pending deposits —';
+    const bs = bs0(m);
     const daily = c.dailyLossStopCents == null ? 'Daily stop: OFF (paper arms have none)' : `Daily stop: ${$c(c.dailyLossStopCents)}${c.shrinkToDailyBudget ? ' · shrink-to-budget on' : ''}`;
     const facts = `<div class="pl-nolimit"><b>No loss limit: the pilot trades until you press HALT or a safety stop trips; the balance can go to zero.</b></div>` +
       `<div class="pl-facts mono"><div><span class="dim">bankroll (shard ${esc(xi)} cash)</span> <b>${$c(m.bankrollCents)}</b></div>` +
       `<div><span class="dim">source</span> shard ${esc(xi)} available cash${esc(shardWhy)}, read at ${esc(t(bs.at, o.tz))}${m.balanceStale ? ' <b class="neg">stale</b>' : ''}${m.backoffMs ? ` <span class="dim">(rate-limited, retry in ${Math.round(m.backoffMs / 1000)}s)</span>` : ''}</div>` +
       `<div><span class="dim">realized P&amp;L</span> <b class="${tone(m.realizedCents)}">${$s(m.realizedCents)}</b> <span class="dim">(info only, not a limit)</span></div><div><span class="dim">open risk</span> ${$c(m.openRiskCents)} / ${$c(m.bankrollCents)} <span class="dim">(≤ bankroll)</span></div>` +
       `<div><span class="dim">per trade</span> ${fin(c.perTradePct) ? Math.round(c.perTradePct * 100) + '%' : '—'} of shard cash${fin(m.perTradeCents) ? ' = <b>' + $c(m.perTradeCents) + '</b>' : ''} · ≤10% of volume · asset caps (compounds)</div>` +
-      (others ? `<div class="pl-shards"><span class="dim">cash on other shards</span> <b>${others}</b>, not used for sizing; Kalshi's app/web move cash between shards, API orders don't</div>` : '') +
-      `<div class="pl-info dim">${esc(depTxt)} · open positions ${$c(m.openPositionsCents || 0)} (not used for sizing)</div>` +
-      `<div>${esc(daily)}</div><div><span class="dim">limit</span> ≤ ask+1¢, ≤ ${esc(c.maxPriceCents)}¢, IOC, ${esc(c.maxSlices)} slices</div></div>`;
+      `<div>${esc(daily)}</div><div><span class="dim">limit</span> ≤ ask+1¢, ≤ ${esc(c.maxPriceCents)}¢, IOC, ${esc(c.maxSlices)} slices</div></div>` + poolsBlock(m, c, o);
     const e = P.env || {}, kt = P.keyTest;
     const env = `<div class="pl-env mono sm dim">Kalshi key: <b>${e.keySet ? 'set' : 'not set'}</b>${e.keySource ? ' (' + esc(e.keySource) + ')' : ''} · LIVE_PILOT_ENABLED ${e.enabledFlag ? '✓' : '✗'} · ${P.mainAccount ? 'main account (other positions and orders never touched)' : 'subaccount'} · config sha256 ${esc(String(P.hash || '').slice(0, 12))}…${P.killFile ? ' · <b class="neg">KILL file present</b>' : ''}</div>`;
     const ktest = o.local ? `<div class="pl-keytest sm"><button type="button" class="pl-btn" data-pilot="test-key" title="Signed GET of the balance only. Places no order.">Test key (read-only balance check)</button> ${kt ? (kt.ok ? `<b class="pos">OK</b> · shard ${esc(fin(kt.exchangeIndex) ? kt.exchangeIndex : xi)} ${$c(kt.balanceCents)} (sizing) · all shards ${$c(kt.aggregateCents)}${Array.isArray(kt.shards) && kt.shards.length ? ' (' + kt.shards.map((x) => `shard ${esc(x.exchangeIndex)} ${$c(x.cents)}`).join(', ') + ')' : ''} · ${esc(kt.scopeNote || '')}` : `<b class="neg">not OK</b> · ${esc(kt.error || '')}`) + (kt.warn ? ` · <span class="dim">${esc(kt.warn)}</span>` : '') : '<span class="dim">not run yet</span>'}</div>` : '';

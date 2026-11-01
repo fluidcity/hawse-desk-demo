@@ -18,6 +18,7 @@ const PILOT_SHA256 = 'a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc
 const U = 10000; // u$ per cent
 const BALANCE_REFRESH_MS = 20000, BALANCE_TIMEOUT_MS = 4000; // shadow balance refresh: at most once per 20 s, 4 s timeout
 const INFO_REFRESH_MS = 60000; // display-only reads (pending deposits, all-shard balance): at most once a minute
+const READ_GAP_MS = 1500; // display reads (deposits, all pools) are spaced at least 1.5 s from each other and from the shard read before them
 const BACKOFF_MAX_MS = 60000; // 429 too_many_requests: back off (doubling from 2 s) and retry the READ only; never a halt by itself
 const NO_SEND_KINDS = new Set(['permission', 'auth', 'insufficient', 'reject']);
 const STATES = ['DISABLED', 'DISARMED', 'ARMED', 'HALTED'];
@@ -104,7 +105,7 @@ class KalshiPilot {
     this.presence = rest.tradeEnvPresence(env);
     this.cfg = null; this.hash = null; this.error = null; this.state = 'DISABLED'; this.inert = []; this.haltReason = null;
     this.signals = new Map(); this.shadow = []; this.events = []; this.realizedMicros = 0; this.dayLoss = new Map();
-    this.shards = null; this.shardsAt = null; this.shardMismatch = null; this.balanceCents = null; this.balanceAt = null; this.balanceTryAt = null; this.balanceStale = false; this.balanceError = null; this.backoffMs = 0; this.backoffUntil = 0; this.info = { at: null, tryAt: null, backoffMs: 0, backoffUntil: 0 }; this.portfolioValueCents = null; this.otherShardCents = null; this.outOfMoney = null; this.apiErrors = 0; this.busy = new Set(); this.timers = []; this.preflight = null;
+    this.shards = null; this.shardsAt = null; this.pvAt = null; this.shardMismatch = null; this.balanceCents = null; this.balanceAt = null; this.balanceTryAt = null; this.balanceStale = false; this.balanceError = null; this.backoffMs = 0; this.backoffUntil = 0; this.info = { at: null, tryAt: null, backoffMs: 0, backoffUntil: 0 }; this.portfolioValueCents = null; this.otherShardCents = null; this.outOfMoney = null; this.apiErrors = 0; this.busy = new Set(); this.timers = []; this.preflight = null;
     try { const f = loadPilotConfig(file, pin); this.cfg = f.cfg; this.hash = f.hash; } catch (e) { this.error = e.message; this.inert.push('config: ' + e.message); }
     if (!this.presence.enabledFlag) this.inert.push('LIVE_PILOT_ENABLED is not "true"');
     if (!this.presence.keySet) this.inert.push('Kalshi key not set');
@@ -284,10 +285,31 @@ class KalshiPilot {
     return Math.max(0, this.balanceCents + this.openRiskCents());
   }
   /** Read the sizing shard only: GET /portfolio/balance?exchange_index=<cfg.balanceExchangeIndex>. */
+  /**
+   * DISPLAY ONLY: the bankroll by Kalshi pool, built purely from balance reads the pilot already made (balance_breakdown from the all-pools
+   * read or the pools re-read after a transfer, and the pilot pool's own exchange_index read). Never an extra request, never a made-up
+   * number: a pool Kalshi hasn't reported yet is null ("not read yet"). The pilot pool shows whichever of its two reads is newer.
+   */
+  poolsView() {
+    const xi = this.cfg ? this.cfg.balanceExchangeIndex : null, by = new Map((this.shards || []).map((x) => [x.exchangeIndex, x.cents]));
+    const list = Object.keys(rest.POOLS).map(Number).map((i) => {
+      let cents = by.has(i) ? by.get(i) : null, at = by.has(i) ? this.shardsAt : null, src = by.has(i) ? 'balance_breakdown' : null;
+      if (i === xi && this.balanceCents != null && (cents == null || (this.balanceAt || 0) >= (this.shardsAt || 0))) { cents = this.balanceCents; at = this.balanceAt; src = `balance?exchange_index=${i}`; }
+      return { exchangeIndex: i, name: rest.POOLS[i], cents, at, src, pilot: i === xi };
+    });
+    const known = list.filter((x) => Number.isInteger(x.cents)), cashCents = known.length ? known.reduce((a, x) => a + x.cents, 0) : null;
+    const pv = Number.isInteger(this.portfolioValueCents) ? this.portfolioValueCents : null, dep = this.info && this.info.deposits;
+    const ats = [...list.map((x) => x.at), pv != null ? this.pvAt : null].filter((x) => Number.isFinite(x));
+    return { pilotPool: xi, pilotPoolName: xi != null ? rest.POOLS[xi] : null, list, allRead: known.length === list.length,
+      availableForPilotCents: this.balanceCents, availableAt: this.balanceAt, availableStale: !!this.balanceStale,
+      openPositionsCents: pv, positionsAt: pv != null ? this.pvAt || null : null,
+      pendingDepositsCents: dep && !dep.unknown && Number.isInteger(dep.pendingCents) ? dep.pendingCents : null, pendingUnknown: !!(dep && dep.unknown), pendingAt: dep ? dep.at : null,
+      cashCents, totalCents: cashCents != null && pv != null ? cashCents + pv : null, readAt: ats.length ? Math.max(...ats) : null, firstReadAt: ats.length ? Math.min(...ats) : null };
+  }
   /** Chart only: append a shard-scoped read the pilot just made (never an extra request). */
   recordBalance(src, b) { try { this.history.record(src, 'shard', b, this.cfg.balanceExchangeIndex); } catch { /* display only */ } }
   async readShard(client) { return parseBalance(await client.getBalance({ exchangeIndex: this.cfg.balanceExchangeIndex }), this.cfg.balanceExchangeIndex); }
-  noteBalance(b) { if (b.portfolioValueCents != null) this.portfolioValueCents = b.portfolioValueCents; if (b.otherShardCents != null) this.otherShardCents = b.otherShardCents; if (b.shards) { this.shards = b.shards; this.shardsAt = this.now(); } }
+  noteBalance(b) { if (b.portfolioValueCents != null) { this.portfolioValueCents = b.portfolioValueCents; this.pvAt = this.now(); } if (b.otherShardCents != null) this.otherShardCents = b.otherShardCents; if (b.shards) { this.shards = b.shards; this.shardsAt = this.now(); } }
   /**
    * The market's own exchange shard, from the public market data the desk already has (the recorder's GET /markets discovery
    * carries exchange_index; no extra request). null = unknown. A KNOWN shard that differs from cfg.balanceExchangeIndex means the
@@ -321,13 +343,15 @@ class KalshiPilot {
     const t = this.now(); if ((o.tryAt != null && t - o.tryAt < minGapMs) || t < o.backoffUntil) return;
     o.tryAt = t;
     try {
+      await this.sleep(READ_GAP_MS);
       const r = await this.client.getDeposits({ limit: 20 }); const pend = (r.deposits || []).filter((d) => d.status === 'pending');
       o.deposits = { pendingCents: pend.reduce((a, d) => a + (Number.isInteger(d.amount_cents) ? d.amount_cents : 0), 0), pendingCount: pend.length, at: t };
       o.backoffMs = 0;
     } catch (e) { this.backoff(o, e); o.deposits = { unknown: true, at: t, error: String(e && e.message || e).slice(0, 80) }; }
     try {
+      if (this.now() < o.backoffUntil) return; await this.sleep(READ_GAP_MS); // a 429 on deposits skips this read (backoff)
       const a = parseBalance(await this.client.getBalance(), this.cfg.balanceExchangeIndex);
-      if (a.portfolioValueCents != null) this.portfolioValueCents = a.portfolioValueCents; this.history.record('all pools', 'all', a);
+      if (a.portfolioValueCents != null) { this.portfolioValueCents = a.portfolioValueCents; this.pvAt = this.now(); } this.history.record('all pools', 'all', a);
       this.otherShardCents = a.otherShardCents != null ? a.otherShardCents : null; if (a.shards) { this.shards = a.shards; this.shardsAt = this.now(); }
       o.at = t;
     } catch (e) { this.backoff(o, e); }
@@ -383,7 +407,7 @@ class KalshiPilot {
     finally { clearTimeout(timer); }
   }
   async shadowPlan(sig, askCents, limit) {
-    await this.refreshBalance(); await this.refreshInfo().catch(() => {});
+    await this.refreshBalance(); this.infoRun = this.refreshInfo().catch(() => {}); // display only: not awaited, so its 1.5 s spacing never delays a decision
     const s = this.sig(sig.tk);
     if (this.balanceCents == null) {
       const sizing = sizingOf(this.cfg, null, null, 0, limit, ['no_balance']);
@@ -541,7 +565,7 @@ class KalshiPilot {
         series: c.series, follows: c.follows.line, armPhrase: c.armPhrase } : null,
       money: { real: true, bankrollCents: this.cfg ? this.bankrollCents() : null, perTradeCents: this.cfg && this.bankrollCents() != null ? Math.floor((this.bankrollCents() * Math.round(c.perTradePct * 10000)) / 10000) : null, balanceCents: this.balanceCents, balanceAt: this.balanceAt, balanceStale: this.balanceStale,
         balanceSource: c ? { exchangeIndex: c.balanceExchangeIndex, field: 'balance (available cash)', at: this.balanceAt } : null, backoffMs: this.backoffMs || 0,
-        openPositionsCents: this.portfolioValueCents, otherShardCents: this.otherShardCents, shards: this.shards, otherShards: c && this.shards ? this.shards.filter((x) => x.exchangeIndex !== c.balanceExchangeIndex) : null, shardMismatch: this.shardMismatch ? this.shardMsg() : null, deposits: this.info.deposits || null, outOfMoney: this.outOfMoney ? this.fundsMsg() : null, realizedCents: this.realizedMicros / U, openRiskCents: this.openRiskCents(),
+        pools: this.poolsView(), shardsAt: this.shardsAt, openPositionsCents: this.portfolioValueCents, otherShardCents: this.otherShardCents, shards: this.shards, otherShards: c && this.shards ? this.shards.filter((x) => x.exchangeIndex !== c.balanceExchangeIndex) : null, shardMismatch: this.shardMismatch ? this.shardMsg() : null, deposits: this.info.deposits || null, outOfMoney: this.outOfMoney ? this.fundsMsg() : null, realizedCents: this.realizedMicros / U, openRiskCents: this.openRiskCents(),
         dayLossCents: this.cfg ? this.dayLossCents(laDay(this.now(), c.dailyLossTimeZone)) : 0, fills: [...this.signals.values()].reduce((a, s) => a + s.fills.length, 0),
         settled: [...this.signals.values()].filter((s) => s.settle && s.filled).length, wins: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros > 0).length, losses: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros < 0).length },
       transfer: this.transfers.view().transfer,

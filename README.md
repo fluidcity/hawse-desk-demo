@@ -915,27 +915,31 @@ v3 trades exactly v2's decisions and adds size caps. v1 and v2 are unchanged (`2
 
 `server/live/kalshi-pilot.js` + `server/live/kalshi-rest.js` (the only file in the repo that names Kalshi order endpoints or builds an order).
 Follows frozen paper v3's **7% line** (`decision: take`) with real money: frozen config `config/frozen/kalshi-live-pilot.json`
-(version p2, sha256 `7c3cec56c216a01bf0c840a356badc3cee16f1907afa664c2e69c37a69290989`, pinned in code; any edit refuses to load).
+(version p3, sha256 `0da14a1b0f909942cef51019fb83a3e233b6f36e1a4d6d14f176af91b20c8d31`, pinned in code; any edit refuses to load).
 v1/v2/v3 paper code and configs are untouched; the pilot only reads v3's rows after v3 wrote them. The order path is **REST over HTTPS only**
 (no websocket; the WS recorder stays read-only market data).
 
-**Rules (frozen):** **$150 hard cap**: bankroll = min(real Kalshi balance, $150 + the pilot's realized P&L), so a $400 account still counts
-$150 and a $90 account counts $90 · per trade 7% of that bankroll (≈ $10.50 at $150), also capped by the v3 asset caps
-(BTC $5,000 / ETH $400 / SOL $250) and 10% of known volume · total open risk ≤ $150 · **total-loss stop $150 = permanent HALT** until
-`data/live/kalshi-pilot/RESET_TOTAL_STOP` exists *and* `RESET PILOT` is typed on the desk machine · **Daily stop: OFF**, shrink OFF (paper arms have none;
+**Rules (frozen, p3):** **bankroll = the FULL live Kalshi balance** + the pilot's own open cost (already out of cash). There is no bankroll cap:
+a $400 account counts $400, a $90 account counts $90, and size **compounds** with wins and deposits · per trade 7% of that bankroll (7% of $400 = $28),
+also capped by the v3 asset caps (BTC $5,000 / ETH $400 / SOL $250) and 10% of known volume · **total open risk ≤ the live bankroll** · if the balance
+can't be read at all: shadow skips the decision, ARMED halts · **Loss limit: $150 realized since start (halts permanently)**: when cumulative realized
+pilot P&L (real fills and fees) reaches −$150, the pilot HALTs until `data/live/kalshi-pilot/RESET_TOTAL_STOP` exists *and* `RESET PILOT` is typed on
+the desk machine. It is the only fixed guardrail. **It can be overshot:** it is checked after each settlement, and one trade at 7% of a large balance
+can lose more than $150 by itself (7% of $3,000 = $210; the per-asset caps bound one trade at about $5,000 BTC / $400 ETH / $250 SOL plus fees). Open
+trades also don't count until they settle, so the realized loss at the halt can be well past $150 · **Daily stop: OFF**, shrink OFF (paper arms have none;
 `dailyLossStopCents`/`shrinkToDailyBudget` exist, are tested, and default to null/false) · KXBTC15M / KXETH15M / KXSOL15M only · YES BUY only ·
 limit ≤ ask+1¢ and ≤ 98¢ · IOC · up to 3 slices 10 s apart · only inside v3's window (360–600 s left) · hold to settlement.
 
 **Sizing follows the current balance (no restart).** Every decision, shadow or live, is 7% of the bankroll *at that moment*. ARMED re-reads the
 balance before every slice; DISARMED/shadow does a read-only signed `GET /portfolio/balance` before each decision (only when the key and
 `LIVE_PILOT_ENABLED` are present), throttled to once per 20 s with a 4 s timeout. A failed read never halts: the balance is marked **stale** and the
-last value is used; with no balance ever read, the decision is skipped. Money above $150 is never counted, and unrelated balance moves above $150
-do not change the bankroll (only the pilot's own fills/fees/settlements move the $150 book). Every shadow, compare and live row on the card, and
+last value is used; with no balance ever read, the decision is skipped (ARMED halts instead). Because the bankroll is the full balance, deposits,
+withdrawals and Bryan's other trading change the size of the next decision. Every shadow, compare and live row on the card, and
 every `order_intent`/`slice_skip`/`shadow` ledger row, carries `sizing` = bankroll used, 7%, target $, order $ (contracts × limit) and which cap
 bound (7% line / asset cap / 10% volume / open-risk / balance).
 
-**Main account (no subaccount).** The pilot trades in Bryan's main Kalshi account. **Other positions and orders in that account are not managed,
-not counted and never cancelled** (no cancel-all; HALT cancels only the pilot's own `hp1-…` orders). Because the balance moves with unrelated
+**Main account (no subaccount).** The pilot trades in Bryan's main Kalshi account. **Other positions and orders in that account are never managed
+or cancelled** (the cash balance is counted for sizing) (no cancel-all; HALT cancels only the pilot's own `hp1-…` orders). Because the balance moves with unrelated
 activity, the balance check compares only the pilot's **own** fills and fees (fill price ≤ its limit, fills = acks, settlement credit ≥ its own
 payout); an unrelated deposit, withdrawal or trade never halts it. Preflight requires the balance to cover the money about to be risked.
 (Optional `KALSHI_TRADE_SUBACCOUNT` 0–63 switches back to the strict whole-balance check.)
@@ -944,7 +948,7 @@ payout); an unrelated deposit, withdrawal or trade never halts it. Preflight req
 Every start is DISARMED (or HALTED if it was); ARMED is never restored. Auto-HALT on: **permission denied** (401 / 403 / insufficient scope on an
 order: halts at once, sends nothing else, not even a cancel; the card and ledger say **"this key can't trade, make a read+trade key"**), any other auth
 failure, 3 API errors in a row, a send without a clear answer, fills that do not match the ack or exceed the limit, clock skew > 5 s, an exception
-in the order path, the kill file `data/live/KILL`, the total-loss stop.
+in the order path, the kill file `data/live/KILL`, the $150 realized-loss limit, an unreadable balance before an armed slice.
 Safety: intent written to `data/live/kalshi-pilot/ledger.jsonl` before every send; deterministic `client_order_id` per slice; reconcile after every
 slice and on startup (by listing orders, matched on `client_order_id`); a market is never traded twice; integer cents / micro-dollars; fees from fills.
 
@@ -960,11 +964,11 @@ HALT also halts an ARMED pilot). `POST /api/live/kalshi-pilot/arm|disarm|reset|t
 present, JSON + same-origin; the proxy hard-blocks them whatever the allowlist says. **Test key (read-only balance check)** (`test-key`, card button
 on the desk machine) makes signed GETs only (balance, plus the key list to read scopes), places no orders, writes no ledger rows and works while
 DISABLED: it shows the balance and, if Kalshi reveals scopes, whether trade scope is present; otherwise "trade scope can't be verified until the
-first armed order". Arming also needs the flag, the key, a read-only preflight (balance, scope if visible, clock) and the typed phrase `ARM LIVE $150`.
+first armed order". Arming also needs the flag, the key, a read-only preflight (balance, scope if visible, clock) and the typed phrase `ARM LIVE $150 LOSS LIMIT` (derived in code from the frozen `lossLimitCents`, so it can't drift).
 
 **Setup on the desk PC (Bryan):**
 1. (a) Confirm the desk's existing Kalshi key is in `C:\HAWSE\hawse.env` (`KALSHI_API_KEY_ID` plus `KALSHI_PRIVATE_KEY_PEM` or `KALSHI_PRIVATE_KEY_PATH`;
    it is already there if the desk shows live Kalshi data). The card should read "Kalshi key: set (existing desk key)".
 2. (b) On the desk PC, press **Test key (read-only balance check)** on the LIVE pilot card. It should say OK with your balance. No order is placed.
 3. (c) Add `LIVE_PILOT_ENABLED=true` to `C:\HAWSE\hawse.env`, restart the desk, and watch the **SHADOW** rows (would-be orders, no money) for a while.
-4. Arming is a separate, deliberate step: type `ARM LIVE $150` on the desk machine. Every restart comes back DISARMED. HALT is always on the card.
+4. Arming is a separate, deliberate step: type `ARM LIVE $150 LOSS LIMIT` on the desk machine. Every restart comes back DISARMED. HALT is always on the card.

@@ -69,10 +69,11 @@ window.HAWSE.explain = (() => {
   function drawAllCharts() {
     orbQueued = false; const live = new Set();
     document.querySelectorAll('canvas.orb[data-k]').forEach((c) => { const sp = orbSpecs.get(c.dataset.k); if (!sp) return; live.add(c.dataset.k); if (!c.clientWidth) return;
-      try { const { ctx, w, h } = sizeCanvas(c); orbDraw(ctx, w, h, sp); } catch (e) { console.error(e); } });
+      try { const { ctx, w, h } = sizeCanvas(c); const g = orbDraw(ctx, w, h, sp); c._hits = (g && g.hits) || null; } catch (e) { console.error(e); } });
     for (const k of [...orbSpecs.keys()]) if (!live.has(k)) orbSpecs.delete(k);
   }
-  /** sp: { series: [{ pts: [[x, y]], col, dash, step, band, width, extendTo, name }], base, x0, x1, yFix, minSpan, fmt, title, legend, dots: [[x, y, col]], compact } */
+  /** sp: { series: [{ pts: [[x, y]], col, dash, step, band, width, extendTo, name }], base, x0, x1, yFix, minSpan, fmt, title, legend, dots: [[x, y, col]], compact,
+   *  marks: [{ x, y, loss, key }] (trade markers: red ringed dot per loss, small mint dot per win; hit boxes returned as .hits for the Scoreboard link) } */
   function orbDraw(ctx, w, h, sp) {
     ctx.clearRect(0, 0, w, h);
     const cp = !!sp.compact, L = cp ? 1 : 2, R = cp ? 1 : 50, T = cp ? 3 : sp.legend && sp.legend.length ? 34 : sp.title ? 22 : 8, B = cp ? 3 : 16;
@@ -91,12 +92,19 @@ window.HAWSE.explain = (() => {
     }
     for (const s of ser) { path(s); ctx.strokeStyle = s.col || ORB.up; ctx.lineWidth = s.width || (cp ? 1.4 : 1.5); ctx.setLineDash(s.dash ? [4, 3] : []); ctx.stroke(); ctx.setLineDash([]); }
     for (const d of sp.dots || []) { ctx.fillStyle = d[2] || ORB.up; ctx.fillRect(X(d[0]) - 1.5, Y(d[1]) - 1.5, 3, 3); }
+    const hits = [], hk = window.HAWSE.tradeHot, sk = window.HAWSE.tradeSel, arc = (x, y, r) => { ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); };
+    for (const m of [...(sp.marks || [])].sort((a, b) => (a.loss ? 1 : 0) - (b.loss ? 1 : 0))) {
+      const x = X(m.x), y = Y(m.y), on = m.key === hk || m.key === sk, r = m.loss ? 5 : 2.8; hits.push({ x, y, key: m.key });
+      if (m.loss) { arc(x, y, r + 4); ctx.strokeStyle = ORB.down; ctx.lineWidth = 2; ctx.stroke(); }
+      arc(x, y, r + (on ? 1.5 : 0)); ctx.fillStyle = m.loss ? ORB.down : ORB.up; ctx.fill();
+      if (on) { arc(x, y, r + 7); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke(); }
+    }
     if (!cp) {
       const f = sp.fmt || ((v) => v.toFixed(2)); ctx.font = ORB.font; ctx.fillStyle = ORB.label; ctx.textAlign = 'right'; ctx.fillText(f(hi), w - 3, 14); ctx.fillText(f(lo), w - 3, h - 12); ctx.textAlign = 'left';
       if (sp.title) { let t = String(sp.title); const max = w - R - 10; while (t.length > 4 && ctx.measureText(t).width > max) t = t.slice(0, -2); if (t !== String(sp.title)) t = t.slice(0, -1) + '…'; ctx.fillText(t, 4, 14); }
       let lx = 4; for (const g of sp.legend || []) { const t = '■ ' + g.name; if (lx + ctx.measureText(t).width > w - R) break; ctx.fillStyle = g.col; ctx.fillText(t, lx, 27); lx += ctx.measureText(t).width + 10; }
     }
-    return { X, Y, L, R, T, B, lo, hi };
+    return { X, Y, L, R, T, B, lo, hi, hits };
   }
   function setChartStyle(v) {
     chartStyle = v === 'classic' ? 'classic' : 'cme'; try { localStorage.setItem('hawse.chartStyle', chartStyle); } catch {}
@@ -105,7 +113,22 @@ window.HAWSE.explain = (() => {
     if (S) render(); try { dispatchEvent(new CustomEvent('hawse:chartstyle', { detail: chartStyle })); } catch {}
   }
   window.HAWSE.chartStyle = chartStyle;
-  window.HAWSE.charts = { isCme, draw: (c, sp) => { if (!c || !c.clientWidth) return; const { ctx, w, h } = sizeCanvas(c); orbDraw(ctx, w, h, sp); }, ORB };
+  window.HAWSE.charts = { isCme, draw: (c, sp) => { if (!c || !c.clientWidth) return; const { ctx, w, h } = sizeCanvas(c); orbDraw(ctx, w, h, sp); }, ORB, redraw: queueOrb };
+  window.HAWSE.sparkSvg = (pts, label) => sparkSvg(pts, label); // reused by the Scoreboard card (public/scoreboard.js), same chart style
+  // Trade markers for the v1/v2/v3 charts (display only). Keys match the Scoreboard card's Trades table rows (public/scoreboard.js),
+  // so hovering a marker shows that trade and clicking it scrolls to the row; hovering a row lights its marker.
+  function tradeMarks(arm) {
+    const sc = window.HAWSE.score; if (!sc || !S) return [];
+    const a = sc.h2Trades(S).arms.find((x) => x.id === arm);
+    return a ? a.rows.filter((r) => r.settleAt != null && r.after != null && r.status !== 'open').map((r) => ({ x: r.settleAt, y: r.after, loss: r.status === 'loss', key: r.key })) : [];
+  }
+  function svgMarks(ms, X, Y) {
+    const sel = window.HAWSE.tradeSel;
+    return [...ms].sort((a, b) => (a.loss ? 1 : 0) - (b.loss ? 1 : 0)).map((m) => { const x = X(m.x).toFixed(1), y = Y(m.y).toFixed(1);
+      return `<g class="tmk${m.loss ? ' loss' : ''}${m.key === sel ? ' tsel' : ''}" data-trade="${esc(m.key)}" aria-label="${m.loss ? 'losing trade' : 'winning trade'} ${esc(m.key.split('|')[1] || '')}">` +
+        `<circle class="hit" cx="${x}" cy="${y}" r="22" fill="transparent"/>${m.loss ? `<circle class="ring" cx="${x}" cy="${y}" r="14" fill="none" stroke="var(--hot,#ff3d5a)" stroke-width="3"/>` : ''}` +
+        `<circle class="dot" cx="${x}" cy="${y}" r="${m.loss ? 8 : 4}" fill="${m.loss ? 'var(--hot,#ff3d5a)' : 'var(--mint,#3dffb0)'}"/></g>`; }).join('');
+  }
   document.querySelectorAll('[data-cs]').forEach((b) => { b.onclick = () => setChartStyle(b.dataset.cs); const on = b.dataset.cs === chartStyle; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
   document.addEventListener('toggle', queueOrb, true); // a chart inside a just-opened <details> gets drawn
   // ---------- P&L headlines (display only) ----------
@@ -669,11 +692,11 @@ window.HAWSE.explain = (() => {
       const X = (t) => pad + ((t - x0) / Math.max(1, x1 - x0)) * (W - 2 * pad), Y = (q) => Hh - pad - ((q - y0) / (y1 - y0)) * (Hh - 2 * pad);
       let d = `M${X(x0).toFixed(1)},${Y(0).toFixed(1)}`; for (const p of cv) d += ` H${X(p.at).toFixed(1)} V${Y(p.cumCents).toFixed(1)}`; d += ` H${X(x1).toFixed(1)}`;
       const last = cv[cv.length - 1].cumCents;
-      if (isCme()) svg = orbCanvas({ title: `v2 kept · ${c(last)} · ${cv.length} settled`, aria: 'v2 cumulative net P&L after fees', base: 0, x0, x1, fmt: c, series: [{ pts: [[x0, 0], ...cv.map((p) => [p.at, p.cumCents])], step: 1, extendTo: x1, band: 1, col: last >= 0 ? ORB.up : ORB.down }], dots: cv.map((p) => [p.at, p.cumCents, p.pnlCents >= 0 ? ORB.up : ORB.down]) }, 'orb-big');
+      if (isCme()) svg = orbCanvas({ title: `v2 kept · ${c(last)} · ${cv.length} settled`, aria: 'v2 cumulative net P&L after fees', base: 0, x0, x1, fmt: c, series: [{ pts: [[x0, 0], ...cv.map((p) => [p.at, p.cumCents])], step: 1, extendTo: x1, band: 1, col: last >= 0 ? ORB.up : ORB.down }], marks: tradeMarks('v2') }, 'orb-big');
       else svg = `<svg id="h2v2Curve" viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:none;height:auto;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="v2 cumulative net P&L after fees">` +
         `<line x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>` +
         `<path d="${d}" fill="none" stroke="${last >= 0 ? 'var(--mint,#3dffb0)' : 'var(--hot,#ff3d5a)'}" stroke-width="1.6"/>` +
-        cv.map((p) => `<circle cx="${X(p.at).toFixed(1)}" cy="${Y(p.cumCents).toFixed(1)}" r="2.2" fill="${p.pnlCents >= 0 ? 'var(--mint,#3dffb0)' : 'var(--hot,#ff3d5a)'}"><title>${esc(p.tk)} ${c(p.pnlCents)} → ${c(p.cumCents)}</title></circle>`).join('') +
+        svgMarks(tradeMarks('v2'), X, Y) +
         `<text x="${W - pad}" y="12" text-anchor="end" fill="currentColor" font-size="15" class="mono">${esc(c(last))} · ${cv.length} settled</text></svg>`;
     }
     setH2Chart('h2cV2', 'v2 · cumulative net P&amp;L after the 1-contract fee (¢, kept trades only)', svg);
@@ -725,11 +748,11 @@ window.HAWSE.explain = (() => {
       const X = (t) => pad + ((t - x0) / Math.max(1, x1 - x0)) * (W - 2 * pad), Y = (q) => Hh - pad - ((q - y0) / (y1 - y0)) * (Hh - 2 * pad);
       const hex = { '3pct': ORB.up, '7pct': '#5b8def' }, LL = Ls.filter((L) => L.curve.some((p) => p.at != null));
       if (isCme()) svg = orbCanvas({ title: 'v3 · ' + LL.map((L) => `${L.id} ${usd(L.balance)} (${L.settled})`).join(' · '), aria: 'v3 paper balance, 3% and 7% lines', base: 10000, x0, x1, fmt: (v) => usd(Math.round(v)),
-        legend: LL.map((L) => ({ name: L.id, col: hex[L.id] || '#ccc' })), series: LL.map((L, i) => ({ pts: L.curve.filter((p) => p.at != null).map((p) => [p.at, p.balance]), step: 1, extendTo: x1, band: i === 0, col: hex[L.id] || '#ccc' })) }, 'orb-big');
+        legend: LL.map((L) => ({ name: L.id, col: hex[L.id] || '#ccc' })), series: LL.map((L, i) => ({ pts: L.curve.filter((p) => p.at != null).map((p) => [p.at, p.balance]), step: 1, extendTo: x1, band: i === 0, col: hex[L.id] || '#ccc' })), marks: LL.flatMap((L) => tradeMarks('v3-' + L.id)) }, 'orb-big');
       else svg = `<svg id="h2v3Curve" viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:none;height:auto;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="v3 paper balance, 3% and 7% lines">` +
         `<line x1="${pad}" x2="${W - pad}" y1="${Y(10000).toFixed(1)}" y2="${Y(10000).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>` +
         Ls.map((L, i) => { const cv = L.curve.filter((p) => p.at != null); if (!cv.length) return ''; let d = `M${X(cv[0].at).toFixed(1)},${Y(cv[0].balance).toFixed(1)}`; for (const p of cv.slice(1)) d += ` H${X(p.at).toFixed(1)} V${Y(p.balance).toFixed(1)}`; d += ` H${X(x1).toFixed(1)}`;
-          return `<path d="${d}" fill="none" stroke="${col[L.id] || '#ccc'}" stroke-width="1.6"/><text x="${W - pad}" y="${12 + i * 12}" text-anchor="end" fill="${col[L.id] || '#ccc'}" font-size="15" class="mono">${esc(L.id)} ${esc(usd(L.balance))} · ${L.settled} settled</text>`; }).join('') + `</svg>`;
+          return `<path d="${d}" fill="none" stroke="${col[L.id] || '#ccc'}" stroke-width="1.6"/><text x="${W - pad}" y="${12 + i * 12}" text-anchor="end" fill="${col[L.id] || '#ccc'}" font-size="15" class="mono">${esc(L.id)} ${esc(usd(L.balance))} · ${L.settled} settled</text>`; }).join('') + svgMarks(Ls.flatMap((L) => tradeMarks('v3-' + L.id)), X, Y) + `</svg>`;
     }
     setH2Chart('h2cV3', 'v3 · paper balance, 3% and 7% lines (settled trades only)', svg);
     const capTxt = (L) => Object.entries(L.capBound || {}).filter(([k]) => k !== 'pct').map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || 'none';
@@ -834,11 +857,11 @@ window.HAWSE.explain = (() => {
       const X = (t) => pad + ((t - x0) / Math.max(1, x1 - x0)) * (W - 2 * pad), Y = (v) => Hh - pad - ((v - y0) / (y1 - y0)) * (Hh - 2 * pad);
       let d = `M${X(x0).toFixed(1)},${Y(0).toFixed(1)}`; for (const p of cv) d += ` H${X(p.at).toFixed(1)} V${Y(p.cumCents).toFixed(1)}`; d += ` H${X(x1).toFixed(1)}`;
       const last = cv[cv.length - 1].cumCents;
-      if (isCme()) svg = orbCanvas({ title: `v1 · ${c(last)} · ${cv.length} settled`, aria: 'cumulative realized net P&L after fees', base: 0, x0, x1, fmt: c, series: [{ pts: [[x0, 0], ...cv.map((p) => [p.at, p.cumCents])], step: 1, extendTo: x1, band: 1, col: last >= 0 ? ORB.up : ORB.down }], dots: cv.map((p) => [p.at, p.cumCents, p.pnlCents >= 0 ? ORB.up : ORB.down]) }, 'orb-big');
+      if (isCme()) svg = orbCanvas({ title: `v1 · ${c(last)} · ${cv.length} settled`, aria: 'cumulative realized net P&L after fees', base: 0, x0, x1, fmt: c, series: [{ pts: [[x0, 0], ...cv.map((p) => [p.at, p.cumCents])], step: 1, extendTo: x1, band: 1, col: last >= 0 ? ORB.up : ORB.down }], marks: tradeMarks('v1') }, 'orb-big');
       else svg = `<svg id="h2Curve" viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:none;height:auto;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="cumulative realized net P&L after fees">` +
         `<line x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>` +
         `<path d="${d}" fill="none" stroke="${last >= 0 ? 'var(--mint,#3dffb0)' : 'var(--hot,#ff3d5a)'}" stroke-width="1.6"/>` +
-        cv.map((p) => `<circle cx="${X(p.at).toFixed(1)}" cy="${Y(p.cumCents).toFixed(1)}" r="2.2" fill="${p.pnlCents >= 0 ? 'var(--mint,#3dffb0)' : 'var(--hot,#ff3d5a)'}"><title>${esc(p.tk)} ${c(p.pnlCents)} → ${c(p.cumCents)}</title></circle>`).join('') +
+        svgMarks(tradeMarks('v1'), X, Y) +
         `<text x="${W - pad}" y="12" text-anchor="end" fill="currentColor" font-size="15" class="mono">${esc(c(last))} · ${cv.length} settled</text></svg>`;
     }
     setH2Chart('h2cV1', 'v1 · cumulative realized net P&amp;L after the 1-contract fee (¢ per 1-contract test)', svg);

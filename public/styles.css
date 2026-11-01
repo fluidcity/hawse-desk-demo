@@ -278,3 +278,73 @@ canvas.orb-mid{width:100%;height:110px}
 .layout-panel textarea{resize:vertical;margin:6px 0}
 .lp-io{display:grid;gap:4px}
 @media (max-width:700px){.layout-panel{left:8px;right:8px;width:auto}}
+/* ---------- Scoreboard card (public/scoreboard.js): big plain numbers, one tile per strategy, every H2 trade ---------- */
+.board>.a-score{grid-column:1/-1!important}
+.a-score .sb-strip{display:flex;flex-wrap:wrap;gap:12px 24px;align-items:flex-start;margin:4px 0 6px}
+.a-score .sb-real{min-width:220px}
+.a-score .sb-k{font-size:12px;letter-spacing:.06em;text-transform:uppercase;color:var(--dim,#8b98a5)}
+.a-score .sb-big{font-size:30px;font-weight:700;line-height:1.15}
+.a-score .sb-none{font-size:20px;color:var(--dim,#8b98a5);font-weight:600}
+.a-score .flat{color:var(--ink,#e8ecf4)}
+.a-score .sb-wl{display:flex;flex-wrap:wrap;gap:4px 14px;font-size:14px;margin:2px 0}
+.a-score .sb-wl b{font-size:17px}
+.a-score .sb-side{display:flex;flex-direction:column;gap:6px;flex:1;min-width:0}
+.a-score .sb-chipbox{display:flex;flex-wrap:wrap;gap:6px 10px;align-items:center;font-size:13px}
+.a-score .sb-h2chip{border:1px solid rgba(255,255,255,.12);border-radius:6px;padding:2px 7px;white-space:nowrap}
+.a-score .sb-sentence{font-size:17px;margin:8px 0 12px;line-height:1.4}
+.a-score .sb-h3{font-size:16px;margin:14px 0 6px}
+.a-score .sb-sec{min-width:0}
+.a-score .sb-arm-d{border:1px solid rgba(255,255,255,.09);border-radius:8px;padding:6px 10px;margin:0 0 8px;min-width:0}
+.a-score .sb-arm-d>summary{cursor:pointer;font-size:15px;line-height:1.5}
+.a-score .sb-arm{font-weight:700;font-size:16px}
+.a-score .sb-armsum{font-size:14px}
+.a-score .sb-note{margin:4px 0 6px}
+.a-score .sb-subh{font-size:13px;margin:8px 0 4px;color:var(--ink,#e8ecf4)}
+.a-score .sb-twrap{overflow-x:auto;max-width:100%;-webkit-overflow-scrolling:touch}
+.a-score .sb-table{border-collapse:collapse;width:100%;font-size:13px}
+.a-score .sb-table th{text-align:left;font-weight:600;color:var(--dim,#8b98a5);border-bottom:1px solid rgba(255,255,255,.14);padding:4px 6px;white-space:nowrap}
+.a-score .sb-table td{padding:5px 6px;border-bottom:1px solid rgba(255,255,255,.05);white-space:nowrap;vertical-align:top}
+.a-score .sb-tr{cursor:pointer;transition:background .15s}
+.a-score .sb-tr:hover,.a-score .sb-tr.thot{background:rgba(91,141,239,.14)}
+.a-score .sb-tr.is-loss{background:rgba(255,61,90,.12);box-shadow:inset 4px 0 0 var(--hot,#ff3d5a)}
+.a-score .sb-tr.is-skip{opacity:.8}
+.a-score .sb-tr.tsel{outline:2px solid #fff;outline-offset:-2px}
+.a-score .sb-tr.tflash{animation:sbflash 1.4s ease-out}
+@keyframes sbflash{0%{background:rgba(255,255,255,.35)}100%{background:transparent}}
+.a-score .sb-loss{color:#fff;background:var(--hot,#ff3d5a);border-radius:4px;padding:1px 6px}
+.a-score .sb-skip{color:var(--amber,#ffb84d);font-weight:600}
+.a-score .sb-more>summary{cursor:pointer;font-size:13px;color:var(--cyan,#4de1ff);margin:4px 0}
+.a-score .sb-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(250px,1fr));gap:10px}
+.a-score .sb-tile{border:1px solid rgba(255,255,255,.1);border-radius:10px;padding:10px 12px;background:rgba(255,255,255,.02);min-width:0}
+.a-score .sb-tile>summary{cursor:pointer;list-style:none}
+.a-score .sb-tile>summary::-webkit-details-marker{display:none}
+.a-score .sb-tile[open]{grid-column:1/-1}
+.a-score .sb-th{display:flex;flex-wrap:wrap;gap:4px 6px;align-items:center}
+.a-score .sb-name{font-weight:700;font-size:16px;margin-right:4px}
+.a-score .sb-plain{font-size:12px;margin:2px 0 4px}
+.a-score .sb-mid{display:flex;align-items:center;gap:10px;min-height:40px}
+.a-score .sb-mid svg,.a-score .sb-mid canvas{flex:1;min-width:0;max-width:140px;height:32px}
+.a-score .sb-last,.a-score .sb-simline{font-size:12px;margin-top:3px;overflow-wrap:anywhere}
+.a-score .sb-losses{margin:4px 0 4px 18px;padding:0;font-size:13px;line-height:1.55}
+.a-score .sb-losses li{overflow-wrap:anywhere}
+.a-score .sb-wins{margin-top:6px}
+@media(max-width:700px){
+  .a-score .sb-big{font-size:26px}
+  .a-score .sb-table thead{display:none}
+  .a-score .sb-table,.a-score .sb-table tbody{display:block;width:100%}
+  .a-score .sb-table tr{display:grid;grid-template-columns:1fr auto;grid-template-areas:"res pnl" "tk tk" "in out" "side size" "bal bal";gap:1px 10px;border-bottom:1px solid rgba(255,255,255,.12);padding:6px 6px}
+  .a-score .sb-table td{display:block;border:0;padding:0;white-space:normal;font-size:12px}
+  .a-score .sb-table td[data-m]::before{content:attr(data-m) " ";color:var(--dim,#8b98a5)}
+  .a-score .c-res{grid-area:res}.a-score .c-pnl{grid-area:pnl;text-align:right;font-size:15px!important}.a-score .c-tk{grid-area:tk;overflow-wrap:anywhere}
+  .a-score .c-in{grid-area:in}.a-score .c-out{grid-area:out;text-align:right}.a-score .sb-table td.c-in,.a-score .sb-table td.c-out{white-space:nowrap;font-size:11px}.a-score .c-side{grid-area:side}.a-score .c-size{grid-area:size;text-align:right}.a-score .c-bal{grid-area:bal}
+  .a-score .sb-arm-d{padding:6px 6px}
+}
+/* chart trade markers (app.js svgMarks / orbDraw marks) + their tooltip */
+.tmk{cursor:pointer}
+.tmk .ring{animation:tmkpulse 2.4s ease-in-out infinite}
+.tmk.thot .dot,.tmk.tsel .dot{stroke:#fff;stroke-width:4}
+.tmk.thot .ring,.tmk.tsel .ring{stroke:#fff}
+@keyframes tmkpulse{0%,100%{opacity:1}50%{opacity:.45}}
+@media (prefers-reduced-motion:reduce){.tmk .ring,.a-score .sb-tr.tflash{animation:none}}
+.trade-tip{position:fixed;z-index:60;pointer-events:none;background:#0d1219;border:1px solid rgba(255,255,255,.2);border-radius:6px;padding:6px 9px;font-size:12px;line-height:1.45;max-width:min(320px,calc(100vw - 12px));box-shadow:0 6px 18px rgba(0,0,0,.5)}
+.a-score .badge.paper{color:var(--violet);border-color:rgba(169,139,255,.45);background:rgba(169,139,255,.07)}

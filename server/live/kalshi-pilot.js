@@ -14,6 +14,7 @@ const rest = require('./kalshi-rest');
 const PILOT_FILE = path.join(__dirname, '..', '..', 'config', 'frozen', 'kalshi-live-pilot.json');
 const PILOT_SHA256 = '7c3cec56c216a01bf0c840a356badc3cee16f1907afa664c2e69c37a69290989';
 const U = 10000; // u$ per cent
+const BALANCE_REFRESH_MS = 20000, BALANCE_TIMEOUT_MS = 4000; // shadow balance refresh: at most once per 20 s, 4 s timeout
 const STATES = ['DISABLED', 'DISARMED', 'ARMED', 'HALTED'];
 const PERM_MSG = "this key can't trade, make a read+trade key";
 /** 401/403, or a clear insufficient-scope / permission reply on an order. */
@@ -43,10 +44,11 @@ const assetOf = (tk) => { const m = /^KX(BTC|ETH|SOL)15M-/.exec(String(tk)); ret
  */
 function planSlice({ cfg, tk, askCents, limitCents, bankrollCents, availCents, vol, filled = 0, openRiskCents = 0, dayLossCents = 0, dayOpenRiskCents = 0 }) {
   const asset = assetOf(tk), caps = {};
-  if (!asset || !cfg.series.some((s) => tk.startsWith(s + '-'))) return { contracts: 0, bound: ['series'], caps };
-  if (!(limitCents >= 1 && limitCents <= cfg.order.maxPriceCents)) return { contracts: 0, bound: ['price'], caps };
-  if (vol == null) return { contracts: 0, bound: ['unknown_volume'], caps };
   const perTrade = Math.floor((bankrollCents * Math.round(cfg.perTradePct * 10000)) / 10000);
+  const none = (b) => ({ contracts: 0, bound: [b], caps, perTradeCents: perTrade, worstCents: 0, sizing: sizingOf(cfg, bankrollCents, perTrade, 0, limitCents, [b]) });
+  if (!asset || !cfg.series.some((s) => tk.startsWith(s + '-'))) return none('series');
+  if (!(limitCents >= 1 && limitCents <= cfg.order.maxPriceCents)) return none('price');
+  if (vol == null) return none('unknown_volume');
   caps.pct = Math.floor(perTrade / askCents);
   caps.asset = Math.floor((cfg.perAssetCapCents[asset] || 0) / askCents);
   caps.participation = Math.floor(cfg.participationShare * vol + 1e-9);
@@ -57,7 +59,15 @@ function planSlice({ cfg, tk, askCents, limitCents, bankrollCents, availCents, v
   if (cfg.dailyLossStopCents != null && cfg.shrinkToDailyBudget) caps.daily = maxN(cfg.dailyLossStopCents - dayLossCents - dayOpenRiskCents, limitCents, rem);
   const vals = Object.entries(caps).filter(([k]) => k !== 'pct' && k !== 'asset' && k !== 'participation'), n = Math.max(0, Math.min(...vals.map(([, v]) => v)));
   const bound = n < rem ? vals.filter(([, v]) => v === n).map(([k]) => k) : Object.entries({ pct: caps.pct, asset: caps.asset, participation: caps.participation }).filter(([, v]) => v === target).map(([k]) => k);
-  return { contracts: n, bound, caps, perTradeCents: perTrade, worstCents: n ? worstCents(n, limitCents) : 0 };
+  return { contracts: n, bound, caps, perTradeCents: perTrade, worstCents: n ? worstCents(n, limitCents) : 0, sizing: sizingOf(cfg, bankrollCents, perTrade, n, limitCents, bound) };
+}
+/** Card/ledger sizing fields: bankroll used, percent, order dollars (contracts x limit), 7% target dollars, which cap bound. */
+const CAP_LABEL = { pct: '7% line', asset: 'asset cap', participation: '10% volume', openRisk: 'open-risk', cash: 'balance', daily: 'daily budget', remaining: 'target reached',
+  series: 'series', price: 'price', unknown_volume: 'volume unknown', no_balance: 'no balance yet' };
+function sizingOf(cfg, bankrollCents, perTradeCents, contracts, limitCents, bound) {
+  const caps = (bound || []).map((b) => CAP_LABEL[b] || b);
+  return { bankrollCents, pct: Math.round(cfg.perTradePct * 10000) / 100, targetCents: perTradeCents == null ? null : perTradeCents, sizeCents: contracts * (limitCents || 0),
+    contracts, limitCents, capBound: caps.length ? caps.join(' + ') : null, capped: !!caps.length && !caps.includes('7% line') };
 }
 
 class KalshiPilot {
@@ -68,7 +78,7 @@ class KalshiPilot {
     this.presence = rest.tradeEnvPresence(env);
     this.cfg = null; this.hash = null; this.error = null; this.state = 'DISABLED'; this.inert = []; this.haltReason = null; this.totalStop = false;
     this.signals = new Map(); this.shadow = []; this.events = []; this.realizedMicros = 0; this.dayLoss = new Map();
-    this.balanceCents = null; this.apiErrors = 0; this.busy = new Set(); this.timers = []; this.preflight = null;
+    this.balanceCents = null; this.balanceAt = null; this.balanceTryAt = null; this.balanceStale = false; this.balanceError = null; this.apiErrors = 0; this.busy = new Set(); this.timers = []; this.preflight = null;
     try { const f = loadPilotConfig(file, pin); this.cfg = f.cfg; this.hash = f.hash; } catch (e) { this.error = e.message; this.inert.push('config: ' + e.message); }
     if (!this.presence.enabledFlag) this.inert.push('LIVE_PILOT_ENABLED is not "true"');
     if (!this.presence.keySet) this.inert.push('Kalshi key not set');
@@ -170,7 +180,7 @@ class KalshiPilot {
       pf.keySource = this.client.keySource || this.presence.keySource;
       pf.subaccount = this.client.subaccount;
       if (pf.subaccount != null && (pf.subaccount < 0 || pf.subaccount > 63)) throw new Error('bad subaccount');
-      this.write({ t: 'balance', balanceCents: pf.balanceCents, src: 'preflight' });
+      this.write({ t: 'balance', balanceCents: pf.balanceCents, src: 'preflight' }); this.markBalance();
       pf.ok = true; this.apiErrors = 0;
     } catch (e) { pf.error = e.message; if (e.status) this.apiError(e); }
     this.preflight = pf; return pf;
@@ -243,7 +253,7 @@ class KalshiPilot {
     if (this.state === 'DISABLED') return null;
     const askCents = toCents(sig.ya), limit = Math.min(this.cfg.order.maxPriceCents, askCents + this.cfg.order.limitAboveAskCents);
     this.write({ t: 'signal', tk: sig.tk, asset: sig.asset, decisionAsk: askCents, limit, close: sig.close, bookRx: sig.bookRx, state: this.state });
-    if (this.state === 'DISARMED') return this.shadowPlan(sig, askCents, limit);
+    if (this.state === 'DISARMED') { const p = this.shadowPlan(sig, askCents, limit).catch((e) => { this.log('pilot shadow: ' + e.message); return null; }); this.sig(sig.tk).run = p; return p; }
     if (this.state === 'ARMED') { const p = this.runSignal(sig.tk).catch((e) => this.halt('exception in order path: ' + e.message, 'exception')); this.sig(sig.tk).run = p; return p; }
     return null;
   }
@@ -253,9 +263,34 @@ class KalshiPilot {
     return planSlice({ cfg: this.cfg, tk: s.tk, askCents: s.decisionAsk, limitCents: s.limit, bankrollCents: this.bankrollCents(), availCents: Math.min(avail, this.bankrollCents() - this.openRiskCents()),
       vol, filled, openRiskCents: this.openRiskCents(), dayLossCents: this.dayLossCents(day), dayOpenRiskCents: this.dayOpenRiskCents(day) });
   }
-  shadowPlan(sig, askCents, limit) {
-    const s = this.sig(sig.tk), z = this.plan(s, 0, this.volume(sig));
+  markBalance() { this.balanceAt = this.balanceTryAt = this.now(); this.balanceStale = false; this.balanceError = null; }
+  /**
+   * SHADOW sizing tracks the live balance: a read-only signed GET balance before a decision, at most once per
+   * cfg-independent 20 s and with a short timeout. A failure never halts in shadow; it marks the balance stale and the
+   * last known value is used (or the decision is skipped if there has never been one).
+   */
+  async refreshBalance({ minGapMs = BALANCE_REFRESH_MS, timeoutMs = BALANCE_TIMEOUT_MS } = {}) {
+    if (!this.client || !this.presence.enabledFlag || !this.presence.keySet) return;
+    const t = this.now(); if (this.balanceTryAt != null && t - this.balanceTryAt < minGapMs) return;
+    this.balanceTryAt = t; let timer;
+    try {
+      const b = await Promise.race([this.client.getBalance(), new Promise((_, rej) => { timer = setTimeout(() => rej(new Error('balance read timed out')), timeoutMs); if (timer.unref) timer.unref(); })]);
+      const c = Number.isInteger(b.balance) ? b.balance : Math.round((rest.dollarsToMicros(b.balance_dollars) || NaN) / U);
+      if (!Number.isFinite(c)) throw new Error('balance unreadable');
+      this.balanceCents = c; this.balanceAt = t; this.balanceStale = false; this.balanceError = null;
+    } catch (e) { this.balanceStale = true; this.balanceError = String(e && e.message || e).slice(0, 120); }
+    finally { clearTimeout(timer); }
+  }
+  async shadowPlan(sig, askCents, limit) {
+    await this.refreshBalance();
+    const s = this.sig(sig.tk);
+    if (this.balanceCents == null) {
+      const sizing = sizingOf(this.cfg, null, null, 0, limit, ['no_balance']);
+      return this.write({ t: 'shadow', noMoney: true, tk: sig.tk, decisionAsk: askCents, limit, contracts: 0, bound: ['no_balance'], skipped: 'no Kalshi balance yet' + (this.balanceError ? ' (' + this.balanceError + ')' : ''), sizing, balanceStale: true, slices: [] });
+    }
+    const z = this.plan(s, 0, this.volume(sig));
     return this.write({ t: 'shadow', noMoney: true, tk: sig.tk, decisionAsk: askCents, limit, contracts: z.contracts, bound: z.bound, caps: z.caps, perTradeCents: z.perTradeCents,
+      sizing: z.sizing, balanceCents: this.balanceCents, balanceStale: this.balanceStale,
       worstCents: z.worstCents, slices: z.contracts ? [{ slice: 1, contracts: z.contracts, limit, tif: 'IOC', note: `up to ${this.cfg.order.maxSlices} IOC slices ${this.cfg.order.sliceGapMs / 1000}s apart for any unfilled remainder` }] : [] });
   }
   async runSignal(tk) {
@@ -269,10 +304,10 @@ class KalshiPilot {
         const cur = this.asks && this.asks.get(tk); if (cur && toCents(cur.ask) > s.limit) { this.write({ t: 'slice_skip', tk, slice: i, reason: `ask ${toCents(cur.ask)}c above limit ${s.limit}c` }); continue; }
         // fresh balance right before every slice: sizing uses it, and the after-slice check compares against it (so a settlement credit
         // from an earlier market landing between slices is not mistaken for a mismatch)
-        try { const b = await this.client.getBalance(); this.balanceCents = Number.isInteger(b.balance) ? b.balance : Math.round((rest.dollarsToMicros(b.balance_dollars) || 0) / U); this.apiErrors = 0; }
+        try { const b = await this.client.getBalance(); this.balanceCents = Number.isInteger(b.balance) ? b.balance : Math.round((rest.dollarsToMicros(b.balance_dollars) || 0) / U); this.apiErrors = 0; this.markBalance(); }
         catch (e) { this.apiError(e); this.write({ t: 'slice_skip', tk, slice: i, reason: 'balance read failed before the slice: ' + e.message }); return; }
         const z = this.plan(s, s.filled, vol);
-        if (z.contracts < 1) { this.write({ t: 'slice_skip', tk, slice: i, reason: 'size 0', bound: z.bound, caps: z.caps }); return; }
+        if (z.contracts < 1) { this.write({ t: 'slice_skip', tk, slice: i, reason: 'size 0', bound: z.bound, caps: z.caps, sizing: z.sizing }); return; }
         const done = await this.sendSlice(s, i, z); if (!done) return;
         if (done.filled >= z.contracts) return; // this slice filled in full: the target is reached
       }
@@ -283,7 +318,7 @@ class KalshiPilot {
     if (s.intents.has(coid)) return null; // never twice
     if (!this.presence.enabledFlag || this.state !== 'ARMED') return null; // orders are signed only when LIVE_PILOT_ENABLED === 'true' AND ARMED
     const balBefore = this.balanceCents;
-    this.write({ t: 'order_intent', tk: s.tk, coid, slice: i, contracts: z.contracts, limit: s.limit, decisionAsk: s.decisionAsk, tif: 'IOC', side: 'yes', action: 'buy', bound: z.bound, caps: z.caps, balanceBeforeCents: balBefore });
+    this.write({ t: 'order_intent', tk: s.tk, coid, slice: i, contracts: z.contracts, limit: s.limit, decisionAsk: s.decisionAsk, tif: 'IOC', side: 'yes', action: 'buy', bound: z.bound, caps: z.caps, sizing: z.sizing, balanceBeforeCents: balBefore });
     if (!this.checkSkew()) return null;
     this.write({ t: 'order_sent', tk: s.tk, coid });
     let ack;
@@ -366,12 +401,14 @@ class KalshiPilot {
       const i0 = s.slices.length ? s.intents.get(s.slices[0]) : null;
       return { tk: s.tk, at: s.at, limit: s.limit, decisionAsk: s.decisionAsk, contracts: s.filled, requested: i0 ? i0.contracts : 0, fillPx: s.filled ? Math.round(s.costMicros / s.filled) / U : null,
         feeCents: s.feeMicros / U, costCents: s.costMicros / U, result: s.settle ? s.settle.result : null, win: s.settle ? s.settle.win : null, pnlCents: s.settle ? s.settle.pnlMicros / U : null,
-        balanceBeforeCents: i0 ? i0.balanceBeforeCents : null, balanceAfterCents: s.settle ? s.settle.bankrollAfterCents : null, slices: s.slices.length };
+        balanceBeforeCents: i0 ? i0.balanceBeforeCents : null, balanceAfterCents: s.settle ? s.settle.bankrollAfterCents : null, slices: s.slices.length,
+        sizing: i0 ? i0.sizing || null : null, sliceSizing: s.slices.map((k) => (s.intents.get(k) || {}).sizing || null) };
     });
     const compare = [...this.signals.values()].slice(-30).reverse().map((s) => {
       const p = L && L.orders.get(s.tk), sh = this.shadow.find((x) => x.tk === s.tk);
       return { tk: s.tk, at: s.at, decisionAsk: s.decisionAsk, paper: p ? { filled: p.filled, vwapCents: p.vwap != null ? Math.round(p.vwap * 10000) / 100 : null, unfilled: p.unfilled, feeCents: Math.round(p.fee * 100) } : null,
-        live: s.filled ? { filled: s.filled, vwapCents: Math.round(s.costMicros / s.filled) / U, feeCents: s.feeMicros / U } : null, shadow: sh ? { contracts: sh.contracts, limit: sh.limit } : null,
+        live: s.filled ? { filled: s.filled, vwapCents: Math.round(s.costMicros / s.filled) / U, feeCents: s.feeMicros / U } : null, shadow: sh ? { contracts: sh.contracts, limit: sh.limit, skipped: sh.skipped || null } : null,
+        sizing: s.slices.length ? (s.intents.get(s.slices[0]) || {}).sizing || null : sh ? sh.sizing || null : null,
         slippageCents: s.filled ? Math.round((s.costMicros / s.filled / U - s.decisionAsk) * 100) / 100 : null, unfilled: i0Unfilled(s) };
     });
     return { title: 'LIVE · REAL MONEY · Kalshi pilot (v3 7%, $150)', state: this.state, statusChip: this.state === 'DISARMED' ? 'DISARMED-SHADOW' : this.state, inert: this.inert, error: this.error,
@@ -381,7 +418,7 @@ class KalshiPilot {
       config: c ? { bankrollCents: c.bankrollCents, perTradePct: c.perTradePct, perAssetCapCents: c.perAssetCapCents, participationShare: c.participationShare, maxOpenRiskCents: c.maxOpenRiskCents,
         dailyLossStopCents: c.dailyLossStopCents, shrinkToDailyBudget: !!c.shrinkToDailyBudget, totalLossStopCents: c.totalLossStopCents, maxPriceCents: c.order.maxPriceCents, maxSlices: c.order.maxSlices, sliceGapMs: c.order.sliceGapMs,
         series: c.series, follows: c.follows.line, armPhrase: c.armPhrase } : null,
-      money: { real: true, bankrollCents: this.cfg ? this.bankrollCents() : null, balanceCents: this.balanceCents, realizedCents: this.realizedMicros / U, openRiskCents: this.openRiskCents(),
+      money: { real: true, bankrollCents: this.cfg ? this.bankrollCents() : null, balanceCents: this.balanceCents, balanceAt: this.balanceAt, balanceStale: this.balanceStale, realizedCents: this.realizedMicros / U, openRiskCents: this.openRiskCents(),
         dayLossCents: this.cfg ? this.dayLossCents(laDay(this.now(), c.dailyLossTimeZone)) : 0, fills: [...this.signals.values()].reduce((a, s) => a + s.fills.length, 0),
         settled: [...this.signals.values()].filter((s) => s.settle && s.filled).length, wins: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros > 0).length, losses: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros < 0).length },
       trades, compare, shadow: this.shadow.slice(-15).reverse(), events: this.events.slice(-12).reverse().map((e) => ({ at: e.at, t: e.t, tk: e.tk, reason: e.reason, coid: e.coid })) };
@@ -389,4 +426,4 @@ class KalshiPilot {
   }
 }
 
-module.exports = { KalshiPilot, PERM_MSG, isPermission, planSlice, feeCents, worstCents, laDay, loadPilotConfig, PILOT_FILE, PILOT_SHA256, STATES };
+module.exports = { KalshiPilot, PERM_MSG, isPermission, planSlice, sizingOf, BALANCE_REFRESH_MS, feeCents, worstCents, laDay, loadPilotConfig, PILOT_FILE, PILOT_SHA256, STATES };

@@ -124,13 +124,13 @@ test('sizing: 7% of the live bankroll ($10.50 at $150), price <= ask+1c and <= 9
   const v = fakes({ ya: 0.95 }); const q = pilot({ v }).p; v.take(); assert.equal(q.signals.get(TK).limit, 96);
 });
 
-test('DISARMED = SHADOW: each v3 take logs a would-be order (no money) and sends nothing; non-take decisions are ignored', () => {
+test('DISARMED = SHADOW: each v3 take logs a would-be order (no money) and sends nothing; non-take decisions are ignored', async () => {
   const v = fakes(); const { p, client } = pilot({ v });
-  assert.equal(p.state, 'DISARMED'); v.take();
+  assert.equal(p.state, 'DISARMED'); v.take(); await p.signals.get(TK).run;
   v.v3.rows.set('KXETH15M-B', { sig: { tk: 'KXETH15M-B', ya: 0.95, decision: 'skip' } }); for (const f of v.v1.rowListeners) f({ t: 'signal', tk: 'KXETH15M-B' });
-  assert.equal(p.shadow.length, 1); assert.equal(p.shadow[0].noMoney, true); assert.equal(p.shadow[0].contracts, 11); assert.equal(p.shadow[0].limit, 96);
-  assert.equal(client.calls.length, 0); assert.equal(p.snapshot().statusChip, 'DISARMED-SHADOW');
-  v.line.orders.set(TK, { filled: 7, vwap: 0.955, unfilled: 0, fee: 0.03 }); const cmp = p.snapshot().compare[0]; assert.equal(cmp.paper.filled, 7); assert.equal(cmp.shadow.contracts, 11);
+  assert.equal(p.shadow.length, 1); assert.equal(p.shadow[0].noMoney, true); assert.equal(p.shadow[0].contracts, 7, '7% of the live $100 balance'); assert.equal(p.shadow[0].limit, 96);
+  assert.deepEqual(client.calls, ['balance'], 'shadow makes one read-only balance GET and nothing else'); assert.equal(p.snapshot().statusChip, 'DISARMED-SHADOW');
+  v.line.orders.set(TK, { filled: 7, vwap: 0.955, unfilled: 0, fee: 0.03 }); const cmp = p.snapshot().compare[0]; assert.equal(cmp.paper.filled, 7); assert.equal(cmp.shadow.contracts, 7);
 });
 
 test('arm refused without the phrase, without the flag, on a failed preflight, while HALTED; armed state is never restored on restart', async () => {
@@ -270,9 +270,9 @@ test('repo-wide: only the pilot client names order endpoints / builds orders; ev
   const v3src = fs.readFileSync(path.join(ROOT, 'server', 'kalshi-h2', 'v3.js'), 'utf8'); assert.ok(!/kalshi-pilot|live\//.test(v3src), 'v3 does not know the pilot exists');
 });
 
-test('card: HALT always visible, ARM only on this machine, "Daily stop: OFF", SHADOW rows say NO MONEY; Scoreboard LIVE chip is separate from paper', () => {
+test('card: HALT always visible, ARM only on this machine, "Daily stop: OFF", SHADOW rows say NO MONEY; Scoreboard LIVE chip is separate from paper', async () => {
   const UI = require('../public/pilot.js'), SB = require('../public/scoreboard.js');
-  const v = fakes(); const { p } = pilot({ v }); v.take(); const snap = p.snapshot();
+  const v = fakes(); const { p } = pilot({ v }); v.take(); await p.signals.get(TK).run; const snap = p.snapshot();
   assert.equal(snap.title, 'LIVE · REAL MONEY · Kalshi pilot (v3 7%, $150)');
   const h = UI.render(snap, { local: false }); assert.match(h, /data-pilot="halt"/); assert.doesNotMatch(h, /data-pilot="arm"/); assert.match(h, /Daily stop: OFF \(paper arms have none\)/); assert.match(h, /SHADOW · NO MONEY/); assert.match(h, /DISARMED-SHADOW/);
   assert.match(UI.render(snap, { local: true }), /data-pilot="arm"/);
@@ -401,4 +401,64 @@ test('.gitignore keeps Kalshi key files and hawse.env out of git', () => {
   let git = true; try { execFileSync('git', ['--version'], { stdio: 'ignore' }); } catch { git = false; }
   if (git) for (const f of ['kalshi_trade_key.pem', 'keys/desk.pem', 'kalshi_trade_key', 'kalshi_trade_key.txt', 'hawse.env', 'config/hawse.env'])
     assert.doesNotThrow(() => execFileSync('git', ['check-ignore', '-q', '--no-index', f], { cwd: ROOT, stdio: 'ignore' }), f + ' must be ignored');
+});
+
+test('shadow sizing tracks the live balance: throttled read-only GET before each decision; $80 -> $150 -> $400 sizes at 7% of $80, $150, $150', async () => {
+  let t = Date.parse('2026-11-01T18:00:00Z'); const now = () => t;
+  const v = fakes(), c = fakeClient({ balance: 8000 }); const { p } = pilot({ v, client: c, now });
+  const sized = [];
+  for (const [bal, tk] of [[8000, 'KXBTC15M-26NOV011015-A'], [15000, 'KXBTC15M-26NOV011030-B'], [40000, 'KXBTC15M-26NOV011045-C']]) {
+    c.balance = bal; v.take(tk, t); await p.signals.get(tk).run; sized.push(p.shadow[p.shadow.length - 1]); t += 21000;
+  }
+  assert.deepEqual(sized.map((r) => r.sizing.bankrollCents), [8000, 15000, 15000]);
+  assert.deepEqual(sized.map((r) => r.sizing.targetCents), [560, 1050, 1050], '7% of $80, $150, $150 (never 7% of $400)');
+  assert.deepEqual(sized.map((r) => r.contracts), [5, 11, 11]); assert.ok(sized.every((r) => r.sizing.pct === 7 && r.noMoney));
+  assert.deepEqual(sized.map((r) => r.sizing.sizeCents), [5 * 96, 11 * 96, 11 * 96], 'order dollars = contracts x limit');
+  assert.deepEqual(c.calls, ['balance', 'balance', 'balance'], 'read-only GETs only, no restart needed');
+  // throttle: a second decision within 20 s reuses the last read
+  c.balance = 9000; v.take('KXETH15M-26NOV011045-D', t); await p.signals.get('KXETH15M-26NOV011045-D').run; t += 5000; v.take('KXSOL15M-26NOV011045-E', t); await p.signals.get('KXSOL15M-26NOV011045-E').run;
+  assert.equal(c.calls.length, 4, 'at most one balance read per 20 s');
+  // a failed read in shadow: no halt, balance marked stale, last known value used
+  t += 21000; c.getBalance = async () => { c.calls.push('balance'); throw new Error('HTTP 503'); };
+  v.take('KXBTC15M-26NOV011100-F', t); await p.signals.get('KXBTC15M-26NOV011100-F').run; const r = p.shadow[p.shadow.length - 1];
+  assert.equal(p.state, 'DISARMED'); assert.equal(r.balanceStale, true); assert.equal(r.sizing.bankrollCents, 9000); assert.equal(p.snapshot().money.balanceStale, true);
+  assert.match(require('../public/pilot.js').render(p.snapshot(), {}), /stale/);
+  // never had a balance: the decision is skipped, not sized from the $150 book
+  const c2 = fakeClient({ async getBalance() { throw new Error('timeout'); } }), q = pilot({ client: c2, v: fakes() });
+  q.v.take(); await q.p.signals.get(TK).run; assert.equal(q.p.shadow[0].contracts, 0); assert.match(q.p.shadow[0].skipped, /no Kalshi balance yet/); assert.equal(q.p.state, 'DISARMED');
+  // short timeout
+  const c3 = fakeClient({ getBalance: () => new Promise(() => {}) }), w = pilot({ client: c3 }).p; const t0 = Date.now();
+  await w.refreshBalance({ timeoutMs: 30 }); assert.ok(Date.now() - t0 < 1000); assert.equal(w.balanceStale, true); assert.match(w.balanceError, /timed out/);
+});
+
+test('sizing fields on every shadow / intent / compare row, persisted in the ledger, shown on the card with the cap that bound', async () => {
+  const dir = tmp(); let v = fakes({ vol: 60 }), c = fakeClient({ balance: 15000 }); let x = pilot({ v, client: c, dir }).p;
+  v.take(); await x.signals.get(TK).run; const sh = x.shadow[0];
+  assert.deepEqual({ ...sh.sizing }, { bankrollCents: 15000, pct: 7, targetCents: 1050, sizeCents: 6 * 96, contracts: 6, limitCents: 96, capBound: '10% volume', capped: true });
+  // armed: the order intent carries the same fields (7% line binding here)
+  v = fakes(); x = pilot({ v, client: fakeClient({ balance: 15000 }), dir: tmp() }).p; await x.arm('ARM LIVE $150'); v.take(); await x.signals.get(TK).run;
+  const it = [...x.signals.get(TK).intents.values()][0]; assert.equal(it.sizing.bankrollCents, 15000); assert.equal(it.sizing.capBound, '7% line'); assert.equal(it.sizing.capped, false); assert.equal(it.sizing.sizeCents, 11 * 96);
+  const led = fs.readFileSync(path.join(x.dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map(JSON.parse);
+  assert.ok(led.filter((r) => r.t === 'order_intent').every((r) => r.sizing && r.sizing.pct === 7));
+  // restart: rebuilt from the ledger, the snapshot still has the sizing
+  const y = new P.KalshiPilot({ v1: fakes().v1, v3: fakes().v3, dir: x.dir, killFile: path.join(x.dir, 'KILL'), env: ENV_ON, client: fakeClient(), sleep: async () => {} }); y.start(); y.stop();
+  const snap = y.snapshot(); assert.equal(snap.trades[0].sizing.targetCents, 1050); assert.equal(snap.compare[0].sizing.bankrollCents, 15000);
+  const h = require('../public/pilot.js').render(snap, {}); assert.match(h, /7% × \$150\.00 = \$10\.50 → 11 × 96¢ = <b>\$10\.56<\/b>/); assert.match(h, /bound: 7% line/);
+  const s2 = pilot({ v: (v = fakes({ vol: 60 })), client: fakeClient({ balance: 15000 }), dir }).p; v.take(); await s2.signals.get(TK).run;
+  assert.match(require('../public/pilot.js').render(s2.snapshot(), {}), /capped by 10% volume/);
+  for (const [b, lab] of [['asset', 'asset cap'], ['openRisk', 'open-risk'], ['cash', 'balance'], ['pct', '7% line']]) assert.equal(P.sizingOf(CFG, 15000, 1050, 1, 96, [b]).capBound, lab);
+});
+
+test('money above $150 is never counted: $400 balance -> $150 bankroll; unrelated balance moves leave it alone; only the pilot\'s own fills/fees move it', async () => {
+  let t = Date.parse('2026-11-01T18:00:00Z'); const now = () => t;
+  const v = fakes(), c = fakeClient({ balance: 40000 }), { p } = pilot({ v, client: c, now });
+  await p.refreshBalance(); assert.equal(p.bankrollCents(), 15000);
+  for (const bal of [35000, 52000, 17000]) { c.balance = bal; t += 21000; await p.refreshBalance(); assert.equal(p.bankrollCents(), 15000, 'unrelated move to ' + bal); }
+  // the pilot's own trade: fills + fees leave the cash balance but stay counted as open cost, so the bankroll holds while the position is open
+  c.balance = 40000; assert.ok((await p.arm('ARM LIVE $150')).ok); v.take(TK, t); await p.signals.get(TK).run;
+  assert.equal(p.signals.get(TK).filled, 11); assert.equal(p.bankrollCents(), 15000);
+  // settled as a loss: realized = -(cost + fees); the bankroll drops by exactly that, then ignores further unrelated moves
+  c.getSettlements = async (tk) => ({ settlements: [{ ticker: tk, revenue: 0 }] }); await p.onV1Row({ t: 'settle', tk: TK, win: false, result: 'no' }); const s = p.signals.get(TK);
+  const lost = (s.costMicros + s.feeMicros) / 1e4; assert.equal(p.realizedMicros / 1e4, -lost); assert.equal(p.bankrollCents(), 15000 - lost);
+  c.balance = 90000; t += 21000; p.state = 'DISARMED'; await p.refreshBalance(); assert.equal(p.bankrollCents(), 15000 - lost);
 });

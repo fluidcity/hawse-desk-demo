@@ -926,6 +926,14 @@ $150 and a $90 account counts $90 · per trade 7% of that bankroll (≈ $10.50 a
 `dailyLossStopCents`/`shrinkToDailyBudget` exist, are tested, and default to null/false) · KXBTC15M / KXETH15M / KXSOL15M only · YES BUY only ·
 limit ≤ ask+1¢ and ≤ 98¢ · IOC · up to 3 slices 10 s apart · only inside v3's window (360–600 s left) · hold to settlement.
 
+**Sizing follows the current balance (no restart).** Every decision, shadow or live, is 7% of the bankroll *at that moment*. ARMED re-reads the
+balance before every slice; DISARMED/shadow does a read-only signed `GET /portfolio/balance` before each decision (only when the key and
+`LIVE_PILOT_ENABLED` are present), throttled to once per 20 s with a 4 s timeout. A failed read never halts: the balance is marked **stale** and the
+last value is used; with no balance ever read, the decision is skipped. Money above $150 is never counted, and unrelated balance moves above $150
+do not change the bankroll (only the pilot's own fills/fees/settlements move the $150 book). Every shadow, compare and live row on the card, and
+every `order_intent`/`slice_skip`/`shadow` ledger row, carries `sizing` = bankroll used, 7%, target $, order $ (contracts × limit) and which cap
+bound (7% line / asset cap / 10% volume / open-risk / balance).
+
 **Main account (no subaccount).** The pilot trades in Bryan's main Kalshi account. **Other positions and orders in that account are not managed,
 not counted and never cancelled** (no cancel-all; HALT cancels only the pilot's own `hp1-…` orders). Because the balance moves with unrelated
 activity, the balance check compares only the pilot's **own** fills and fees (fill price ≤ its limit, fills = acks, settlement credit ≥ its own

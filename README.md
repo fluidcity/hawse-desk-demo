@@ -1004,6 +1004,18 @@ For both, Enter works, and the result ("Reset: the pilot is now DISARMED-SHADOW 
 says "Arm and reset only on the desk PC; this link can HALT only." ARMED shows neither box. Screenshot (EXAMPLE / mock exchange, labeled):
 `docs/screenshots/kalshi-pilot-halted-reset-desktop.png`.
 
+**Fills that lag the ack, and read-only recovery.** Kalshi's fills list can trail an order ack by seconds (live: ack 5 filled @ 94c, fills 0 at
++80 ms). A disagreement is re-read up to 5 times (0.5, 1, 1.5, 2, 2.5 s; every wait is at least the 1.5 s read gap; a 429 adds its backoff and is
+never a halt), then cross-checked with `GET /portfolio/orders/{order_id}`. If the order lookup's fill count matches the ack, the remainder is booked
+from it (`source order_lookup`; price from the order's fill cost, else the ack average; fee from the order's fees, else the ack's average fee, else
+`ceil(0.07·C·P·(1−P))`, each labeled). Real fills that arrive later are logged `fill_seen` and never counted twice. The pilot HALTS only when the
+fills and the order lookup both still disagree; the card then shows ack / fills / order lookup counts, prices, fees, status and the retry count.
+**Recovery** runs at startup and from the desk-PC-only **Recover missed trades (read-only)** button (`POST /api/live/kalshi-pilot/recover`, loopback
+only, never forwarded by the auth proxy). For each acked order the ledger is missing it reads the order lookup, `GET /portfolio/fills` (ticker +
+order_id) and `GET /portfolio/settlements` (ticker), 1.5 s apart, and appends the fill, settlement and realized P&L rows marked `source recovered`.
+It is idempotent, never halts, never clears a halt, never arms and never sends an order or transfer; an unsettled market gets only the fill (a later
+run books the settlement). The settle row's cost + fee + payout vs balance-delta check is display only, never a trigger.
+
 **Sizing follows the current balance (no restart).** Every decision, shadow or live, is 7% of the bankroll *at that moment*. ARMED re-reads the
 shard 2 balance before every slice; DISARMED/shadow does a read-only signed `GET /portfolio/balance?exchange_index=2` before each decision (only when the key and
 `LIVE_PILOT_ENABLED` are present), throttled to once per 20 s with a 4 s timeout. A failed read never halts: the balance is marked **stale** and the

@@ -16,7 +16,7 @@
 //   intent after a restart, so it does not rely on that. count is sent as a 2-decimal string per the V2 example.
 // - Cancel Order V2: DELETE /portfolio/events/orders/{order_id}?market_ticker=..  (Cancel-all exists but is NOT used: it would also cancel orders the pilot did not place.)
 // - GET /portfolio/balance (balance in cents), /portfolio/fills (fee_cost dollars string, count_fp, yes_price_dollars),
-//   /portfolio/orders?ticker= (client_order_id in each order), /portfolio/settlements?ticker= (revenue cents, fee_cost), /api_keys (scopes).
+//   /portfolio/orders?ticker= (client_order_id in each order), /portfolio/orders/{order_id} (one order: status, fill count, fill cost, fees), /portfolio/settlements?ticker= (revenue cents, fee_cost), /api_keys (scopes).
 // - Move cash between Bryan's own pools (exchange shards), ONLY when he presses Confirm on the desk PC (server/live/kalshi-transfer.js):
 //   POST /portfolio/intra_exchange_instance_transfer, body { client_transfer_id (UUID, reuse only for an identical retry: a repeat
 //   returns 409 and creates no new transfer), source: 'event_contract', destination: 'event_contract', amount (integer CENTICENTS:
@@ -35,7 +35,7 @@ const PREFIX = '/trade-api/v2';
 const SERIES = ['KXBTC15M', 'KXETH15M', 'KXSOL15M'];
 const MAX_PRICE_CENTS = 98;
 const EP = Object.freeze({
-  balance: '/portfolio/balance', deposits: '/portfolio/deposits', fills: '/portfolio/fills', orders: '/portfolio/orders', settlements: '/portfolio/settlements',
+  balance: '/portfolio/balance', deposits: '/portfolio/deposits', fills: '/portfolio/fills', orders: '/portfolio/orders', order: (id) => '/portfolio/orders/' + encodeURIComponent(id), settlements: '/portfolio/settlements',
   createOrder: '/portfolio/events/orders', cancelOrder: (id) => '/portfolio/events/orders/' + encodeURIComponent(id),
   apiKeys: '/api_keys',
   transfer: '/portfolio/intra_exchange_instance_transfer', transfers: '/portfolio/intra_exchange_instance_transfers',
@@ -132,6 +132,9 @@ function makeTradeClient({ env = process.env, fetchImpl = globalThis.fetch, now 
     getDeposits: ({ limit = 20 } = {}) => call('GET', EP.deposits, { query: { limit } }),
     getApiKeys: () => call('GET', EP.apiKeys),
     getOrders: (ticker) => call('GET', EP.orders, { query: { ticker, ...subQ() } }),
+    /** Read-only. Get Order: GET /portfolio/orders/{order_id} -> { order: { status, fill_count_fp, taker_fill_cost_dollars, maker_fill_cost_dollars,
+     * taker_fees_dollars, maker_fees_dollars, ... } }. Used to cross-check an ack when the fills read lags, and by the read-only recovery. */
+    getOrder: (orderId) => { if (typeof orderId !== 'string' || !orderId) throw new Error('refused: order id missing'); return call('GET', EP.order(orderId), { query: subQ() }); },
     getFills: ({ ticker, orderId } = {}) => call('GET', EP.fills, { query: { ticker, order_id: orderId, ...subQ() } }),
     getSettlements: (ticker) => call('GET', EP.settlements, { query: { ticker, ...subQ() } }),
     cancelOrder: (orderId, ticker) => call('DELETE', EP.cancelOrder(orderId), { query: { market_ticker: ticker, ...subQ() } }),

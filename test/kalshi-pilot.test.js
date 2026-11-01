@@ -40,11 +40,12 @@ function fakeClient(over = {}) {
     async getDeposits() { calls.push('deposits'); if (c.depositsError) throw c.depositsError; return { deposits: c.deposits }; },
     async getApiKeys() { calls.push('api_keys'); return { api_keys: [{ api_key_id: 'trade-kid', scopes: ['read', 'write::trade'] }] }; },
     async createOrder(o) { R.validateOrder(o); calls.push(['create', o]); const id = 'oid-' + (++n), f = Math.floor(o.count * c.fillRatio);
-      c.orders.push({ order_id: id, client_order_id: o.clientOrderId, status: 'executed', fill_count_fp: f.toFixed(2) });
+      c.orders.push({ order_id: id, client_order_id: o.clientOrderId, status: 'executed', fill_count_fp: f.toFixed(2), taker_fill_cost_dollars: (f * (o.priceCents - 1) / 100).toFixed(4), taker_fees_dollars: f ? '0.0300' : '0.0000' });
       if (f) { c.fills.push({ fill_id: 'f-' + n, order_id: id, count_fp: f.toFixed(2), yes_price_dollars: (o.priceCents / 100 - 0.01).toFixed(4), fee_cost: '0.0300', is_taker: true }); c.balance -= f * (o.priceCents - 1) + 3; }
       return { order_id: id, client_order_id: o.clientOrderId, fill_count: f.toFixed(2), remaining_count: (o.count - f).toFixed(2) }; },
     async getFills({ orderId }) { calls.push('fills'); return { fills: c.fills.filter((x) => x.order_id === orderId) }; },
     async getOrders() { calls.push('orders'); return { orders: c.orders }; },
+    async getOrder(id) { calls.push('order'); const o = c.orders.find((x) => x.order_id === id); if (!o) throw Object.assign(new Error('not found'), { status: 404 }); return { order: o }; },
     async cancelOrder(id) { calls.push(['cancel', id]); return { order_id: id }; },
     async getSettlements(tk) { calls.push('settlements'); return { settlements: c.settled ? [{ ticker: tk, revenue: c.settled }] : [] }; },
     ...over };
@@ -188,7 +189,7 @@ test('auto-HALT: auth failure, repeated API errors, unreconciled fills, balance 
   const err = (s) => Object.assign(new Error('x'), { status: s });
   let v = fakes(), c = fakeClient({ async createOrder() { throw err(401); } }), x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.equal(x.state, 'HALTED');
   v = fakes(); c = fakeClient({ async createOrder() { throw err(503); } }); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /without a clear answer/);
-  v = fakes(); c = fakeClient(); c.getFills = async () => ({ fills: [] }); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /unreconciled/);
+  v = fakes(); c = fakeClient(); c.getFills = async () => ({ fills: [] }); c.getOrder = async (id) => ({ order: { order_id: id, status: 'canceled', fill_count_fp: '0.00' } }); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /unreconciled/);
   v = fakes(); c = fakeClient({ subaccount: 3 }); const cg = c.getBalance; let k = 0; c.getBalance = async () => (k++ ? { balance: 5000 } : cg()); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.match(x.haltReason, /balance mismatch/);
   v = fakes(); c = fakeClient({ async createOrder() { return null; } }); x = pilot({ v, client: c }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; assert.equal(x.state, 'HALTED');
   x = pilot({ client: fakeClient() }).p; for (let i = 0; i < 3; i++) x.apiError(err(500)); assert.match(x.haltReason, /3 Kalshi API errors/);
@@ -916,4 +917,75 @@ test('card: DISARMED-SHADOW ARM box is open with an "type ARM LIVE" input; ARMED
   const ph = UI.render(p.snapshot(), { local: false }); assert.ok(!ph.includes('data-pilot="phrase"')); assert.match(ph, /Arm and reset only on the desk PC/);
   assert.equal((await p.arm('ARM LIVE')).ok, true); const A = UI.render(p.snapshot(), { local: true });
   assert.equal(p.snapshot().statusChip, 'ARMED'); assert.ok(!A.includes('reset-phrase') && !A.includes('data-pilot="reset"') && !A.includes('pl-arm"'), 'ARMED: no reset/arm box'); assert.ok(!A.includes('desk PC; this link'));
+});
+
+// ---- Task F: lagging fills, order lookup cross-check, read-only recovery (all mocked) ----
+const err429 = () => Object.assign(new Error('rate limited'), { status: 429 });
+const realFills = (c, id) => c.fills.filter((x) => x.order_id === id);
+async function oneTrade(c, dir = tmp()) { const v = fakes(); const x = pilot({ v, client: c, dir }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run; return { x, s: x.signals.get(TK), dir, v }; }
+const rows = (dir, t) => fs.readFileSync(path.join(dir, 'ledger.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l)).filter((r) => r.t === t);
+
+test('fills lag the ack: 0 at first, then all after 2 retries -> no halt, booked exactly once', async () => {
+  const c = fakeClient(); let k = 0; c.getFills = async ({ orderId }) => { c.calls.push('fills'); return { fills: k++ < 2 ? [] : realFills(c, orderId) }; };
+  const { x, s, dir } = await oneTrade(c);
+  assert.notEqual(x.state, 'HALTED', x.haltReason); assert.equal(s.fills.length, 1); assert.equal(s.filled, realFills(c, s.fills[0].orderId)[0].count_fp | 0);
+  const lag = rows(dir, 'fills_lag'); assert.equal(lag.length, 1); assert.equal(lag[0].retries, 2);
+  await x.readFills(s, s.fills[0].orderId, s.fills[0].coid); assert.equal(s.fills.length, 1, 're-read never double-books');
+});
+
+test('fills never arrive but the order lookup agrees with the ack -> accepted from order_lookup, late fills deduped', async () => {
+  const c = fakeClient(); let late = false; c.getFills = async ({ orderId }) => ({ fills: late ? realFills(c, orderId) : [] });
+  const { x, s } = await oneTrade(c);
+  assert.notEqual(x.state, 'HALTED', x.haltReason); assert.equal(s.fills.length, 1); assert.equal(s.fills[0].source, 'order_lookup'); assert.ok(s.fills[0].synthetic);
+  assert.equal(s.fills[0].feeSource, 'order_lookup fees'); assert.equal(s.fills[0].feeMicros, 300 * 100);
+  const n = s.filled; late = true; await x.readFills(s, s.fills[0].orderId, s.fills[0].coid); assert.equal(s.filled, n); assert.equal(s.fills.length, 1); assert.equal(s.seen.size, 1);
+  assert.equal(x.snapshot().trades[0].source, 'order_lookup');
+});
+
+test('true mismatch (fills and order lookup both disagree with the ack) -> HALT with ack/fills/lookup counts and retries', async () => {
+  const c = fakeClient(); c.getFills = async () => ({ fills: [] }); c.getOrder = async (id) => ({ order: { order_id: id, status: 'canceled', fill_count_fp: '0.00' } });
+  const { x } = await oneTrade(c);
+  assert.equal(x.state, 'HALTED'); assert.match(x.haltReason, /unreconciled after 5 fills retries: ack says \d+ filled .*; fills say 0; order lookup says 0 filled .*canceled/);
+  const r = x.snapshot().reconcile; assert.equal(r.retries, 5); assert.equal(r.fills.count, 0); assert.equal(r.orderLookup.count, 0); assert.ok(r.ack.count > 0);
+});
+
+test('a 429 during a fills retry backs off and is never a halt', async () => {
+  const c = fakeClient(); let k = 0; const waits = []; c.getFills = async ({ orderId }) => { k++; if (k === 1) return { fills: [] }; if (k === 2) throw err429(); return { fills: realFills(c, orderId) }; };
+  const v = fakes(); const x = pilot({ v, client: c, sleep: async (ms) => { waits.push(ms); } }).p; await x.arm('ARM LIVE'); v.take(); await x.signals.get(TK).run;
+  assert.notEqual(x.state, 'HALTED', x.haltReason); assert.equal(x.signals.get(TK).fills.length, 1);
+  assert.ok(waits.some((w) => w >= 1500 + 2000), 'the retry after the 429 waits the backoff on top of the 1.5 s gap');
+});
+
+/** The live incident: ack 5 filled, fills read 0, halted. Then Kalshi shows the fills and (optionally) the settlement. */
+async function incident({ settled }) {
+  const c = fakeClient(); let show = false; c.getFills = async ({ orderId }) => { c.calls.push('fills'); return { fills: show ? realFills(c, orderId) : [] }; };
+  const og = c.getOrder; c.getOrder = async (id) => (show ? og(id) : { order: { order_id: id, status: 'resting', fill_count_fp: '0.00' } });
+  const { x, s, dir } = await oneTrade(c); assert.equal(x.state, 'HALTED'); assert.equal(s.fills.length, 0);
+  show = true; if (settled) c.settled = s.intents.values().next().value.ack.fillCount * 100; c.getOrder = og; return { c, x, s, dir };
+}
+
+test('recovery books the missed fill + settlement once (idempotent, twice and again after a restart), source recovered', async () => {
+  const { c, x, s, dir } = await incident({ settled: true });
+  const creates = () => c.calls.filter((k) => Array.isArray(k) && (k[0] === 'create' || k[0] === 'cancel')).length, c0 = creates();
+  const r1 = await x.recoverTrades('test'); assert.ok(r1.ok, r1.error); assert.equal(r1.fillsBooked, 1); assert.equal(r1.settled, 1); assert.deepEqual(r1.reads, ['Get Order', 'Get Fills', 'Get Settlements']);
+  assert.equal(s.fills[0].source, 'recovered'); assert.equal(s.settle.source, 'recovered'); assert.ok(s.settle.win); assert.equal(typeof s.settle.check.netCents, 'number');
+  const realized = x.realizedMicros;
+  const r2 = await x.recoverTrades('again'); assert.equal(r2.checked, 0); assert.equal(r2.fillsBooked, 0); assert.equal(r2.settled, 0);
+  assert.equal(s.fills.length, 1); assert.equal(rows(dir, 'settle').length, 1); assert.equal(rows(dir, 'recovery').length, 1); assert.equal(x.realizedMicros, realized);
+  const y = pilot({ dir, client: c }).p; await y.startupRecover; assert.equal(rows(dir, 'fill').length, 1); assert.equal(rows(dir, 'settle').length, 1); assert.equal(y.state, 'HALTED');
+  assert.equal(creates(), c0, 'no order or cancel from recovery');
+});
+
+test('recovery with a market Kalshi has not settled yet books only the fill; a later run books the settlement', async () => {
+  const { c, x, s, dir } = await incident({ settled: false });
+  const r = await x.recoverTrades('test'); assert.equal(r.fillsBooked, 1); assert.equal(r.settled, 0); assert.equal(r.unsettled, 1); assert.equal(s.settle, null); assert.equal(rows(dir, 'settle').length, 0);
+  c.settled = s.filled * 100; const r2 = await x.recoverTrades('later'); assert.equal(r2.fillsBooked, 0); assert.equal(r2.settled, 1); assert.equal(rows(dir, 'fill').length, 1);
+});
+
+test('recovery never clears a halt, never arms, never halts; errors (429) just stop the run', async () => {
+  const { c, x } = await incident({ settled: true }); const reason = x.haltReason;
+  c.getOrder = async () => { throw err429(); }; const r = await x.recoverTrades('rate'); assert.equal(r.ok, false); assert.match(r.error, /429/);
+  assert.equal(x.state, 'HALTED'); assert.equal(x.haltReason, reason);
+  const d = pilot({ client: fakeClient() }).p; assert.notEqual(d.state, 'ARMED'); const st = d.state; const r2 = await d.recoverTrades('idle'); assert.ok(r2.ok); assert.equal(r2.checked, 0); assert.equal(d.state, st);
+  assert.ok(!c.calls.some((k) => Array.isArray(k) && k[0] === 'create' && k.recovery));
 });

@@ -28,10 +28,10 @@ function txOf(r) {
     case 'order_sent': e.text = 'order sent'; break;
     case 'ack': e.text = `order acknowledged · filled ${r.fillCount ?? '—'}, remaining ${r.remainingCount ?? '—'}`; break;
     case 'fill': e.amountCents = Number.isFinite(r.costMicros) ? -Math.round((r.costMicros + (r.feeMicros || 0)) / U) : null;
-      e.text = `fill ${r.count} @ ${Number.isFinite(r.priceMicros) ? (r.priceMicros / U).toFixed(2) + '¢' : '—'}${Number.isFinite(r.feeMicros) ? ' · fee ' + usd(Math.round(r.feeMicros / U)) : ''}`; break;
+      e.text = `fill ${r.count} @ ${Number.isFinite(r.priceMicros) ? (r.priceMicros / U).toFixed(2) + '¢' : '—'}${Number.isFinite(r.feeMicros) ? ' · fee ' + usd(Math.round(r.feeMicros / U)) : ''}${r.source ? ' · source ' + r.source : ''}`; break;
     case 'not_sent': e.tone = 'neg'; e.text = 'rejected / not sent' + (r.error || r.reason ? ': ' + err(r.error || r.reason) : ''); break;
     case 'settle': e.amountCents = Number.isFinite(r.pnlMicros) ? Math.round(r.pnlMicros / U) : null; e.tone = e.amountCents > 0 ? 'pos' : e.amountCents < 0 ? 'neg' : '';
-      e.text = `settled ${r.result || (r.win ? 'win' : 'loss')} · ${r.contracts ?? '—'} contracts · P&L ${usd(e.amountCents)}`; break;
+      e.text = `settled ${r.result || (r.win ? 'win' : 'loss')} · ${r.contracts ?? '—'} contracts · P&L ${usd(e.amountCents)}${r.source === 'recovered' ? ' · source recovered' : ''}`; break;
     case 'transfer': e.amountCents = r.amountCents; e.tone = r.outcome === 'accepted' ? 'pos' : 'neg';
       e.text = `transfer ${usd(r.amountCents)} ${pool(r.from)} → ${pool(r.to)} · ${r.outcome}${r.error ? ': ' + err(r.error) : ''}`; break;
     case 'transfer_status': e.text = `transfer status: ${r.status}`; e.tone = r.status === 'complete' ? 'pos' : ''; break;

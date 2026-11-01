@@ -19,6 +19,7 @@ const U = 10000; // u$ per cent
 const BALANCE_REFRESH_MS = 20000, BALANCE_TIMEOUT_MS = 4000; // shadow balance refresh: at most once per 20 s, 4 s timeout
 const INFO_REFRESH_MS = 60000; // display-only reads (pending deposits, all-shard balance): at most once a minute
 const READ_GAP_MS = 1500; // display reads (deposits, all pools) are spaced at least 1.5 s from each other and from the shard read before them
+const FILL_RETRY_MS = [500, 1000, 1500, 2000, 2500]; // Kalshi's fills list can lag the order ack: re-read (each wait >= READ_GAP_MS, so ~9 s in all)
 const BACKOFF_MAX_MS = 60000; // 429 too_many_requests: back off (doubling from 2 s) and retry the READ only; never a halt by itself
 const NO_SEND_KINDS = new Set(['permission', 'auth', 'insufficient', 'reject']);
 const STATES = ['DISABLED', 'DISARMED', 'ARMED', 'HALTED'];
@@ -42,6 +43,16 @@ function loadPilotConfig(file = PILOT_FILE, pin = PILOT_SHA256) {
 /** Kalshi general taker fee for one order, in cents: ceil(0.07 * C * P * (1-P)) with P in dollars. Integer math. */
 function feeCents(contracts, priceCents, rateBp = 700) { const num = rateBp * contracts * priceCents * (100 - priceCents); return Math.floor((num + 999999) / 1000000); }
 /** Worst-case loss of buying n YES at the limit: everything paid if it settles NO. Cents. */
+/** Kalshi price / fee value -> u$ (1e6 per dollar). Dollar strings ("0.9400") and numbers <= 1 are dollars; larger numbers are cents. */
+function pxMicros(v) { if (v == null || v === '') return null; if (typeof v === 'string' && v.includes('.')) return rest.dollarsToMicros(v); const n = Number(v); return Number.isFinite(n) ? Math.round(n <= 1 ? n * 1e6 : n * U) : null; }
+const sumDollars = (...a) => { const v = a.filter((x) => x != null && x !== '').map((x) => rest.dollarsToMicros(String(x))).filter(Number.isFinite); return v.length ? v.reduce((p, q) => p + q, 0) : null; };
+/** Get Order -> { count, status, avgPriceMicros, feeMicros } (fees/cost from the order's own *_dollars fields when present). */
+function orderView(o) {
+  if (!o) return null; const count = rest.countToInt(o.fill_count_fp != null ? o.fill_count_fp : o.fill_count) || 0;
+  const cost = sumDollars(o.taker_fill_cost_dollars, o.maker_fill_cost_dollars), fee = sumDollars(o.taker_fees_dollars, o.maker_fees_dollars);
+  return { orderId: o.order_id || null, count, status: o.status || null, avgPriceMicros: count && cost != null ? Math.round(cost / count) : pxMicros(o.average_fill_price), feeMicros: fee };
+}
+const cts = (m) => (Number.isFinite(m) && m != null ? Math.round(m / U * 100) / 100 + 'c' : '?');
 const worstCents = (n, limit) => n * limit + feeCents(n, limit);
 const maxN = (budgetCents, limit, hi) => { let n = Math.max(0, Math.min(hi, Math.floor(budgetCents / limit))); while (n > 0 && worstCents(n, limit) > budgetCents) n--; return n; };
 function laDay(ms, tz = 'America/Los_Angeles') { return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(ms)); }
@@ -122,7 +133,7 @@ class KalshiPilot {
   get enabled() { return !this.inert.length; }
   // ---- ledger -------------------------------------------------------------------------------------------------
   write(row) { const r = { at: this.now(), ...row }; fs.mkdirSync(this.dir, { recursive: true }); fs.appendFileSync(this.ledgerFile, JSON.stringify(r) + '\n'); this.apply(r); return r; }
-  sig(tk) { let s = this.signals.get(tk); if (!s) { s = { tk, slices: [], fills: [], filled: 0, costMicros: 0, feeMicros: 0, settle: null, intents: new Map() }; this.signals.set(tk, s); } return s; }
+  sig(tk) { let s = this.signals.get(tk); if (!s) { s = { tk, slices: [], fills: [], filled: 0, costMicros: 0, feeMicros: 0, settle: null, intents: new Map(), seen: new Set() }; this.signals.set(tk, s); } return s; }
   apply(r) {
     this.events.push(r); if (this.events.length > 60) this.events.shift();
     if (this.history) this.history.noteRow(r);
@@ -131,6 +142,8 @@ class KalshiPilot {
     if (r.t === 'order_sent') { const i = this.sig(r.tk).intents.get(r.coid); if (i) i.status = 'sent'; }
     if (r.t === 'ack' || r.t === 'reconciled') { const i = this.sig(r.tk).intents.get(r.coid); if (i) Object.assign(i, { status: 'done', orderId: r.orderId, ack: r }); }
     if (r.t === 'not_sent') { const i = this.sig(r.tk).intents.get(r.coid); if (i) i.status = 'not_sent'; }
+    if (r.t === 'fill_seen') this.sig(r.tk).seen.add(r.fillId); // a real fill for an order already booked from the order lookup: logged, never counted twice
+    if (r.t === 'reconcile_mismatch') this.mismatch = r;
     if (r.t === 'fill') { const s = this.sig(r.tk); if (!s.fills.some((f) => f.fillId === r.fillId)) { s.fills.push(r); s.filled += r.count; s.costMicros += r.costMicros; s.feeMicros += r.feeMicros; } }
     if (r.t === 'balance') this.balanceCents = r.balanceCents;
     if (r.t === 'settle') { const s = this.sig(r.tk); if (!s.settle) { s.settle = r; this.realizedMicros += r.pnlMicros; const d = laDay(r.at, this.cfg ? this.cfg.dailyLossTimeZone : undefined); this.dayLoss.set(d, (this.dayLoss.get(d) || 0) + r.pnlMicros); } }
@@ -155,6 +168,8 @@ class KalshiPilot {
     this.asks = new Map();
     if (this.kalshi && this.kalshi.on) this.kalshi.on('book', (e) => { if (e && e.tk && assetOf(e.tk) && e.ya != null) this.asks.set(e.tk, { ask: +e.ya, rx: e.rx }); });
     this.startupReconcile = this.reconcilePending('startup').catch((e) => this.halt('exception in startup reconcile: ' + e.message));
+    // read-only: book any acked trade whose fills/settlement never made it into the ledger (never halts, never arms, never clears a halt)
+    this.startupRecover = this.startupReconcile.then(() => (this.client ? this.recoverTrades('startup') : null)).catch(() => {});
     const t = setInterval(() => this.tick(), 1000); if (t.unref) t.unref(); this.timers.push(t);
   }
   stop() { for (const t of this.timers) clearInterval(t); this.timers = []; }
@@ -167,7 +182,7 @@ class KalshiPilot {
   // ---- halts --------------------------------------------------------------------------------------------------
   async halt(reason, kind = 'halt') {
     const first = this.state !== 'HALTED';
-    if (first) { this.write({ t: 'stop', kind, reason: String(reason).slice(0, 200) }); this.log('[kalshi-pilot] HALTED: ' + reason); }
+    if (first) { this.write({ t: 'stop', kind, reason: String(reason).slice(0, 400) }); this.log('[kalshi-pilot] HALTED: ' + reason); }
     if (this.client && !NO_SEND_KINDS.has(kind)) await this.cancelResting('halt'); // auth/permission/order-reject halts send nothing else; otherwise only the pilot's own orders (client_order_id hp1-...), never anything else on the account
     return { ok: true, state: this.state, reason: this.haltReason };
   }
@@ -473,21 +488,117 @@ class KalshiPilot {
     const fc = rest.countToInt(ack.fill_count), rc = rest.countToInt(ack.remaining_count);
     this.write({ t: 'ack', tk: s.tk, coid, orderId: ack.order_id, fillCount: fc, remainingCount: rc, avgFillPrice: ack.average_fill_price, avgFee: ack.average_fee_paid });
     if (rc > 0) this.write({ t: 'cancel', tk: s.tk, coid, orderId: ack.order_id, contracts: rc, reason: 'IOC remainder expired unfilled' });
-    const got = await this.pullFills(s, ack.order_id, coid);
+    const got = await this.reconcileFills(s, ack.order_id, coid, fc, ack);
     if (got == null) return null;
-    if (got !== fc) { await this.halt(`unreconciled: ack says ${fc} filled, fills say ${got}`, 'unreconciled'); return null; }
     await this.checkBalance(balBefore, s, coid);
     return { filled: got };
   }
+  /** One read of GET /portfolio/fills for this order. New fills are booked once (by fill_id); if the order was already booked from the order
+   * lookup, a late real fill is logged as fill_seen and never counted twice. Returns the real fill count for the order. Throws on error. */
+  async readFills(s, orderId, coid, source) {
+    const r = await this.client.getFills({ ticker: s.tk, orderId }); let n = 0;
+    const synth = s.fills.some((x) => x.orderId === orderId && x.synthetic);
+    for (const f of r.fills || []) {
+      if (f.order_id !== orderId) continue; const count = rest.countToInt(f.count_fp != null ? f.count_fp : f.count), px = rest.dollarsToMicros(f.yes_price_dollars), fee = rest.dollarsToMicros(f.fee_cost);
+      n += count; if (s.fills.some((x) => x.fillId === f.fill_id) || s.seen.has(f.fill_id)) continue;
+      if (synth) { this.write({ t: 'fill_seen', tk: s.tk, coid, orderId, fillId: f.fill_id, count, priceMicros: px, note: 'already booked from the order lookup; not counted again' }); continue; }
+      const feeM = fee != null ? fee : feeCents(count, Math.round(px / U)) * U;
+      this.write({ t: 'fill', tk: s.tk, coid, orderId, fillId: f.fill_id, count, priceMicros: px, costMicros: Math.round(count * px), feeMicros: feeM, feeSource: fee != null ? 'fills fee_cost' : 'formula ceil(0.07*C*P*(1-P))',
+        isTaker: f.is_taker, ts: f.created_time, ...(source ? { source } : {}) });
+    }
+    return n;
+  }
   async pullFills(s, orderId, coid) {
-    try {
-      const r = await this.client.getFills({ ticker: s.tk, orderId }); this.apiErrors = 0; let n = 0;
-      for (const f of r.fills || []) {
-        if (f.order_id !== orderId) continue; const count = rest.countToInt(f.count_fp != null ? f.count_fp : f.count), px = rest.dollarsToMicros(f.yes_price_dollars), fee = rest.dollarsToMicros(f.fee_cost) || 0;
-        n += count; if (!s.fills.some((x) => x.fillId === f.fill_id)) this.write({ t: 'fill', tk: s.tk, coid, orderId, fillId: f.fill_id, count, priceMicros: px, costMicros: Math.round(count * px), feeMicros: fee, isTaker: f.is_taker, ts: f.created_time });
+    try { const n = await this.readFills(s, orderId, coid); this.apiErrors = 0; return n; }
+    catch (e) { this.apiError(e); await this.halt('could not read fills for ' + coid + ': ' + e.message, 'unreconciled'); return null; }
+  }
+  /** Book the part of an order the fills list has not shown yet, from the order lookup (labeled; deterministic id, so never twice). */
+  bookFromOrder(s, orderId, coid, L, ackV, have, source, idPrefix) {
+    const count = L.count - have; if (!(count > 0)) return 0;
+    const px = L.avgPriceMicros != null ? L.avgPriceMicros : ackV.avgPriceMicros;
+    const realFee = s.fills.filter((f) => f.orderId === orderId).reduce((a, f) => a + (f.feeMicros || 0), 0);
+    const fee = L.feeMicros != null ? { m: Math.max(0, L.feeMicros - realFee), src: 'order_lookup fees' } : ackV.feeEachMicros != null ? { m: Math.round(ackV.feeEachMicros * count), src: 'ack average_fee_paid' }
+      : { m: feeCents(count, Math.round((px || 0) / U)) * U, src: 'formula ceil(0.07*C*P*(1-P))' };
+    this.write({ t: 'fill', tk: s.tk, coid, orderId, fillId: idPrefix + orderId, count, priceMicros: px, costMicros: Math.round(count * (px || 0)), feeMicros: fee.m, feeSource: fee.src,
+      priceSource: L.avgPriceMicros != null ? 'order_lookup' : 'ack average_fill_price', orderStatus: L.status, synthetic: true, source });
+    return count;
+  }
+  /**
+   * Ack vs fills. The fills list can lag the ack by seconds, so a disagreement is re-read (0.5..2.5 s, each wait >= 1.5 s; a 429 backs off
+   * and is never a halt) and then cross-checked with GET /portfolio/orders/{order_id}. If the order lookup agrees with the ack, the rest is
+   * booked from it (source order_lookup) and trading continues. HALT only when the fills still disagree AND the order lookup disagrees too.
+   * Runs inside this ticker's busy lock only; other tickers keep deciding.
+   */
+  async reconcileFills(s, orderId, coid, fc, ack) {
+    let got = await this.pullFills(s, orderId, coid); if (got == null) return null;
+    if (got === fc) return got;
+    const tries = []; let extra = 0; const bo = this.fillsBackoff || (this.fillsBackoff = {});
+    for (const d of FILL_RETRY_MS) {
+      await this.sleep(Math.max(d, READ_GAP_MS) + extra); extra = 0;
+      try { got = await this.readFills(s, orderId, coid); this.apiErrors = 0; bo.backoffMs = 0; tries.push(got); }
+      catch (e) {
+        if (this.backoff(bo, e)) { extra = bo.backoffMs; tries.push('429'); this.write({ t: 'backoff', what: 'fills retry', status: 429, waitMs: extra }); continue; }
+        tries.push('error'); await this.apiError(e); if (this.state === 'HALTED') return null; continue;
       }
-      return n;
-    } catch (e) { this.apiError(e); await this.halt('could not read fills for ' + coid + ': ' + e.message, 'unreconciled'); return null; }
+      if (got === fc) { this.write({ t: 'fills_lag', tk: s.tk, coid, orderId, retries: tries.length, fillCount: got, note: 'fills arrived after the ack' }); return got; }
+    }
+    const ackV = { count: fc, avgPriceMicros: pxMicros(ack.average_fill_price), feeEachMicros: pxMicros(ack.average_fee_paid) };
+    let L = null, lErr = null; await this.sleep(READ_GAP_MS);
+    try { const r = await this.client.getOrder(orderId); L = orderView(r && (r.order || r)); this.apiErrors = 0; } catch (e) { lErr = String(e && e.message || e).slice(0, 80); }
+    if (L && L.count === fc && got <= fc) { this.bookFromOrder(s, orderId, coid, L, ackV, got, 'order_lookup', 'ol-'); this.write({ t: 'fills_lag', tk: s.tk, coid, orderId, retries: tries.length, fillCount: got, acceptedFrom: 'order_lookup', orderCount: L.count }); return fc; }
+    const d = { t: 'reconcile_mismatch', tk: s.tk, coid, orderId, retries: tries.length, tries,
+      ack: { count: fc, avgPriceMicros: ackV.avgPriceMicros, feeEachMicros: ackV.feeEachMicros }, fills: { count: got },
+      orderLookup: L ? { count: L.count, status: L.status, avgPriceMicros: L.avgPriceMicros, feeMicros: L.feeMicros } : { error: lErr || 'no answer' } };
+    this.write(d);
+    const lk = L ? `${L.count} filled @ ${cts(L.avgPriceMicros)} (${L.status || 'status ?'}${L.feeMicros != null ? ', fee ' + cts(L.feeMicros) : ''})` : 'unavailable (' + (lErr || 'no answer') + ')';
+    await this.halt(`unreconciled after ${tries.length} fills retries: ack says ${fc} filled @ ${cts(ackV.avgPriceMicros)}${ackV.feeEachMicros != null ? ' (fee ' + cts(ackV.feeEachMicros * fc) + ')' : ''}; fills say ${got}; order lookup says ${lk}`, 'unreconciled');
+    return null;
+  }
+  /**
+   * Read-only recovery (desk startup + the desk-PC-only POST /api/live/kalshi-pilot/recover). For every acked order whose fills are missing from
+   * the ledger it reads GET /portfolio/orders/{order_id}, GET /portfolio/fills (ticker + order_id) and GET /portfolio/settlements (ticker), each
+   * read 1.5 s apart, and appends the fill / settlement / realized P&L lines exactly like the normal path (source: recovered). Idempotent
+   * (deterministic ids, already-booked checks), never halts, never clears a halt, never arms, never sends an order or a transfer. A market
+   * Kalshi has not settled yet gets only the fill; the settlement is booked by a later run (or the normal v1 settle path).
+   */
+  recoverTrades(why = 'desk PC') {
+    if (!this.cfg || !this.client) return Promise.resolve({ ok: false, error: 'no trade client' });
+    if (!this.recovering) this.recovering = this.recoverRun(why).finally(() => { this.recovering = null; });
+    return this.recovering;
+  }
+  async recoverRun(why) {
+    const out = { at: this.now(), why, ok: true, checked: 0, fillsBooked: 0, settled: 0, unsettled: 0, reads: [], notes: [], stateBefore: this.state };
+    let first = true; const gap = async () => { if (!first) await this.sleep(READ_GAP_MS); first = false; };
+    const booked = (s, id) => s.fills.filter((f) => f.orderId === id).reduce((a, f) => a + f.count, 0);
+    const todo = new Set();
+    try {
+      for (const s of [...this.signals.values()]) for (const i of [...s.intents.values()]) {
+        const want = i.ack && i.ack.fillCount; if (!i.orderId || !(want > 0) || booked(s, i.orderId) >= want) continue;
+        out.checked++; todo.add(s.tk);
+        await gap(); let L = null; try { const r = await this.client.getOrder(i.orderId); L = orderView(r && (r.order || r)); } finally { out.reads.push('Get Order'); }
+        await gap(); const before = s.fills.length; let got; try { got = await this.readFills(s, i.orderId, i.coid, 'recovered'); } finally { out.reads.push('Get Fills'); }
+        out.fillsBooked += s.fills.length - before;
+        if (got < want && L && L.count === want) { if (this.bookFromOrder(s, i.orderId, i.coid, L, { avgPriceMicros: pxMicros(i.ack.avgFillPrice), feeEachMicros: pxMicros(i.ack.avgFee) }, booked(s, i.orderId), 'recovered', 'rec-')) out.fillsBooked++; }
+        else if (booked(s, i.orderId) < want) out.notes.push(`${i.coid}: ack ${want}, fills ${got}, order lookup ${L ? L.count : '?'}; not booked (they disagree)`);
+      }
+      for (const s of [...this.signals.values()]) {
+        if (s.settle || !s.filled || !(todo.has(s.tk) || s.fills.some((f) => f.source === 'recovered' || f.source === 'order_lookup'))) continue;
+        await gap(); let k; try { const r = await this.client.getSettlements(s.tk); k = (r.settlements || []).find((x) => x.ticker === s.tk) || null; } finally { out.reads.push('Get Settlements'); }
+        if (!k) { out.unsettled++; out.notes.push(`${s.tk}: Kalshi has not settled it yet; fill booked, settlement later`); continue; }
+        const win = k.market_result ? String(k.market_result).toLowerCase() === 'yes' : Number(k.revenue) > 0, winMicros = win ? s.filled * 1e6 : 0, pnl = winMicros - s.costMicros - s.feeMicros;
+        const i0 = s.slices.length ? s.intents.get(s.slices[0]) : null, b0 = i0 ? i0.balanceBeforeCents : null, bNow = this.balanceCents, bk = this.bankrollCents();
+        const net = Math.round((winMicros - s.costMicros - s.feeMicros) / U);
+        this.write({ t: 'settle', tk: s.tk, win, result: k.market_result || (win ? 'yes' : 'no'), contracts: s.filled, costMicros: s.costMicros, feeMicros: s.feeMicros, pnlMicros: pnl,
+          source: 'recovered', kalshiRevenueCents: k.revenue, bankrollBeforeCents: bk, bankrollAfterCents: bk == null ? null : bk + Math.floor(pnl / U),
+          check: { costCents: -Math.round(s.costMicros / U), feeCents: -Math.round(s.feeMicros / U), payoutCents: Math.round(winMicros / U), netCents: net, balanceBeforeCents: b0, balanceNowCents: bNow,
+            balanceDeltaCents: b0 != null && bNow != null ? bNow - b0 : null, matches: b0 != null && bNow != null ? bNow - b0 === net : null, note: 'display only, never a trigger (main-account balance can include other activity)' } });
+        out.settled++;
+      }
+    } catch (e) {
+      out.ok = false; if (e && e.status === 429) { this.backoff(this.recoverBackoff || (this.recoverBackoff = {}), e); out.error = '429 from Kalshi: stopped this run; run it again later'; } else out.error = String(e && e.message || e).slice(0, 120);
+    }
+    out.stateAfter = this.state; if (out.fillsBooked || out.settled) this.write({ t: 'recovery', why, fillsBooked: out.fillsBooked, settled: out.settled, unsettled: out.unsettled });
+    this.lastRecovery = out; return out;
   }
   async checkBalance(before, s, coid) {
     try {
@@ -547,6 +658,7 @@ class KalshiPilot {
       return { tk: s.tk, at: s.at, limit: s.limit, decisionAsk: s.decisionAsk, contracts: s.filled, requested: i0 ? i0.contracts : 0, fillPx: s.filled ? Math.round(s.costMicros / s.filled) / U : null,
         feeCents: s.feeMicros / U, costCents: s.costMicros / U, result: s.settle ? s.settle.result : null, win: s.settle ? s.settle.win : null, pnlCents: s.settle ? s.settle.pnlMicros / U : null,
         balanceBeforeCents: i0 ? i0.balanceBeforeCents : null, balanceAfterCents: s.settle ? s.settle.bankrollAfterCents : null, slices: s.slices.length,
+        source: (s.fills.find((f) => f.source) || {}).source || null, feeSource: (s.fills.find((f) => f.feeSource) || {}).feeSource || null,
         sizing: i0 ? i0.sizing || null : null, sliceSizing: s.slices.map((k) => (s.intents.get(k) || {}).sizing || null) };
     });
     const compare = [...this.signals.values()].slice(-30).reverse().map((s) => {
@@ -568,6 +680,8 @@ class KalshiPilot {
         pools: this.poolsView(), shardsAt: this.shardsAt, openPositionsCents: this.portfolioValueCents, otherShardCents: this.otherShardCents, shards: this.shards, otherShards: c && this.shards ? this.shards.filter((x) => x.exchangeIndex !== c.balanceExchangeIndex) : null, shardMismatch: this.shardMismatch ? this.shardMsg() : null, deposits: this.info.deposits || null, outOfMoney: this.outOfMoney ? this.fundsMsg() : null, realizedCents: this.realizedMicros / U, openRiskCents: this.openRiskCents(),
         dayLossCents: this.cfg ? this.dayLossCents(laDay(this.now(), c.dailyLossTimeZone)) : 0, fills: [...this.signals.values()].reduce((a, s) => a + s.fills.length, 0),
         settled: [...this.signals.values()].filter((s) => s.settle && s.filled).length, wins: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros > 0).length, losses: [...this.signals.values()].filter((s) => s.settle && s.filled && s.settle.pnlMicros < 0).length },
+      reconcile: this.mismatch ? { at: this.mismatch.at, tk: this.mismatch.tk, coid: this.mismatch.coid, retries: this.mismatch.retries, ack: this.mismatch.ack, fills: this.mismatch.fills, orderLookup: this.mismatch.orderLookup } : null,
+      recovery: this.lastRecovery ? { at: this.lastRecovery.at, why: this.lastRecovery.why, ok: this.lastRecovery.ok, checked: this.lastRecovery.checked, fillsBooked: this.lastRecovery.fillsBooked, settled: this.lastRecovery.settled, unsettled: this.lastRecovery.unsettled, notes: this.lastRecovery.notes.slice(0, 5), error: this.lastRecovery.error || null } : null,
       transfer: this.transfers.view().transfer,
       live: this.history.view(),
       trades, compare, shadow: this.shadow.slice(-15).reverse(), events: this.events.slice(-12).reverse().map((e) => ({ at: e.at, t: e.t, tk: e.tk, reason: e.reason, coid: e.coid })) };

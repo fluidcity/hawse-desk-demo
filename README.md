@@ -975,12 +975,37 @@ rejected order or a halt). The points are the balances the pilot **already** rea
 before/after each order slice, the once-a-minute all-pools read, the pools re-read after a transfer); the chart never makes a request of its own.
 Each read is appended to `data/live/kalshi-pilot/balances.jsonl` (gitignored, append-only: time, source, pool, cash, positions value; no key, no
 header, no token). The same numbers are not written again within 15 minutes, the last 5,000 points are kept in memory and the snapshot sends at
-most 600. Until there are 2 real reads the card says **"collecting live data"**; no mock or example data is ever shown in the app. **Transaction
+most 800 downsampled points plus the first read at or after each marker (see the live card paragraph below). Until there are 2 real reads the card says **"collecting live data"**; no mock or example data is ever shown in the app. **Transaction
 history** lists the pilot ledger's orders sent, acks, fills (cost + fee), rejects / not sent, settlements (P&L), transfers and their status, and
 arm / disarm / halt / reset, newest first (last 40; rebuilt from `ledger.jsonl` on restart). Display only: nothing here changes sizing or state.
 DISABLED shows neither and writes no file. Screenshots (EXAMPLE / mock exchange, labeled in the picture):
 `docs/screenshots/kalshi-pilot-live-chart-cme-desktop.png`, `docs/screenshots/kalshi-pilot-live-chart-classic-desktop.png`,
 `docs/screenshots/kalshi-pilot-live-chart-mobile.png`, and the empty state `docs/screenshots/kalshi-pilot-live-chart-empty-desktop.png`.
+
+**Live card: big P&L header, daily history, phone-friendly zoomable chart (asked for by Bryan).** Above the live chart the card now shows a
+**REAL MONEY (Kalshi)** box with big green/red numbers. **TOTAL P&L** (all time) and **TODAY** are the sums of the ledger's `settle` lines
+(realized P&L with fees included). TODAY uses Bryan's day in **America/Los_Angeles**, worked out on the server with `Intl` so the DST
+changes are handled (Nov 1 2026 is a 25-hour day). Under them: the W–L record, win rate, settled count, fills and, when it is not zero, the
+**open risk now**. A **last 7 days (PT)** table lists each day's settled trades, W–L and P&L. Anything with no data shows **"—"**, never $0.
+All of this comes from `LiveHistory.pnl()` in `server/live/kalshi-live-history.js`; it is display only.
+
+The CME live chart is now an interactive canvas in `public/livechart.js`. It has no dependency, no CDN and makes no network call.
+- **Time frames.** Buttons **1H / 6H / 1D / 1W / All**, each at least 44 px; the default is 1D once there is more than a day of data, otherwise All.
+- **Zoom, pan and reset.** Wheel or pinch zooms around the pointer, down to a 2-minute window. Drag pans the chart, and `touch-action: pan-y`
+  keeps vertical page scrolling. A double-click or double-tap resets the view.
+- **Crosshair.** Hovering or tapping shows a crosshair and a tooltip with the PT time, the balance(s) and the trade label.
+- **Axes and labels.** The $ axis auto-scales to the window and its last value is tagged. Time ticks adapt to the width (2–5 on a phone, PT
+  midnights labeled "Nov 1"), and marker labels are placed so they never overlap.
+- **Sharp at any size.** The canvas is sized by `devicePixelRatio` and redrawn on resize and orientation change. The legend sits below the
+  chart and wraps, so a 390 px phone has no horizontal scroll.
+- **Smaller feed.** The feed is cached per change and downsampled to 800 points, half of them for the last 24 h, while every fill, settle,
+  transfer and reject is kept as a compact marker (up to 3,000). The live part of `/api/state` stays well under 450 KB even after thousands
+  of trades.
+- **Classic mode.** The Classic SVG chart stays a static step chart.
+
+Screenshots use EXAMPLE mock data run through the real `LiveHistory` and are labeled in the picture. Phone 390×844 and desktop 1280×800:
+`docs/screenshots/live-card-phone-390-header-chart.png`, `-zoomed.png`, `-crosshair.png` and `docs/screenshots/live-card-desktop-1280-header-chart.png`,
+`-zoomed.png`, `-crosshair.png`.
 
 **Bankroll by pool (straight from Kalshi; asked for by Bryan).** The card's money section has a **Bankroll by pool** table headed
 **"Kalshi balance, read at HH:MM"** (Bryan's time zone). One row per pool, by name: Default (shard 0), Combos (shard 1), Crypto &

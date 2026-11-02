@@ -391,3 +391,21 @@ canvas.orb-mid{width:100%;height:110px}
 .a-pilot .pl-phone .pl-confirm dt{color:var(--dim);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-top:6px}
 .a-pilot .pl-phone .pl-confirm dd{margin:0;min-width:0}
 .a-pilot .pl-ctl{margin:6px 0;font-weight:600;color:var(--hot)}
+/* LIVE card: big REAL MONEY P&L header, 7-day history, interactive live chart (time frames, zoom, pan, crosshair) */
+.a-pilot .pl-pnl{border:1px solid #2a2f37;border-radius:10px;padding:10px 12px;margin:12px 0 8px;background:rgba(255,255,255,.02);overflow-wrap:anywhere;max-width:100%}
+.a-pilot .pl-pnl-tag{font:700 12px/1.3 var(--mono);letter-spacing:.08em;color:#ffb020;margin-bottom:6px}
+.a-pilot .pl-pnl-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,230px),1fr));gap:10px}
+.a-pilot .pl-pnl-lbl{font:600 11px/1.2 var(--mono);letter-spacing:.1em;color:#9fb0c0}
+.a-pilot .pl-pnl-num{font-size:clamp(34px,10vw,56px);font-weight:800;white-space:nowrap;line-height:1.05;letter-spacing:-.02em;font-family:var(--mono);font-variant-numeric:tabular-nums;color:#c9d1d9;margin:2px 0}
+.a-pilot .pl-pnl-num.pos{color:var(--mint)}.a-pilot .pl-pnl-num.neg{color:var(--hot)}
+.a-pilot .pl-pnl-sub{font-size:11px}
+.a-pilot .pl-pnl-rec{font-size:13px;margin:6px 0 4px}.a-pilot .pl-pnl-risk{color:#ffb020}
+.a-pilot .pl-t.pl-days{min-width:0;max-width:520px}.a-pilot .pl-days caption{text-align:left;padding:2px 0}.a-pilot .pl-days td:nth-child(n+2),.a-pilot .pl-days th:nth-child(n+2){text-align:right}
+.a-pilot .pl-tf{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px}
+.a-pilot .pl-tfb{min-height:44px;min-width:48px;padding:0 12px;border-radius:8px;border:1px solid #2a2f37;background:transparent;color:#9fb0c0;font:600 13px/1 var(--mono);cursor:pointer}
+.a-pilot .pl-tfb.on{background:rgba(91,141,239,.18);border-color:#5b8def;color:#e6edf3}
+.a-pilot .pl-lc{touch-action:pan-y;max-width:100%;overflow:hidden;border:1px solid rgba(255,255,255,.08);border-radius:6px}
+.a-pilot canvas.pl-livechart{touch-action:pan-y;width:100%;height:280px;margin:0;cursor:crosshair;user-select:none;-webkit-user-select:none}
+.a-pilot .pl-legend{display:flex;flex-wrap:wrap;gap:2px 10px;margin:6px 0 2px}.a-pilot .pl-legend span{margin-right:0}
+.a-pilot .pl-lchint{margin:0 0 8px}
+@media (max-width:640px){.a-pilot .pl-pnl{padding:8px}.a-pilot .pl-pnl-row{gap:6px}.a-pilot canvas.pl-livechart{height:240px}.a-pilot .pl-tf{gap:4px}.a-pilot .pl-tfb{flex:1 1 0;min-width:0;padding:0 4px}}

@@ -9,6 +9,7 @@
 // No keys, no exchange calls: the browser only talks to the desk.
 (function (root) {
   'use strict';
+  const LC = typeof module === 'object' && module.exports ? require('./livechart') : root.HAWSE_LC; // chart math + the interactive live canvas
   const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   const fin = (v) => typeof v === 'number' && isFinite(v);
   const $c = (c) => (fin(c) ? `${c < 0 ? '−' : ''}$${(Math.abs(c) / 100).toFixed(2)}` : '—');
@@ -110,31 +111,52 @@
         if (fin(q.pvCents) && fin(q.cashCents)) acct.push([q.at, (q.cashCents + q.pvCents) / 100]);
       }
     }
-    const series = [];
-    if (acct.length) series.push({ name: 'account value (all pools + open positions)', col: COL.acct, pts: acct });
-    if (pilot.length) series.push({ name: `pilot pool cash · ${pool(xi)}`, col: COL.pilot, pts: pilot });
-    [...other.entries()].sort((a, b) => a[0] - b[0]).forEach(([k, v], i) => { if (v.some((x) => x[1] !== 0)) series.push({ name: `${pool(k)} cash`, col: COL.other[i % COL.other.length], pts: v, dash: 1 }); });
-    const xs = series.flatMap((x) => x.pts.map((q) => q[0])), tx = Array.isArray(L.tx) ? L.tx : [];
-    const x0 = xs.length ? Math.min(...xs) : null, x1 = xs.length ? Math.max(...xs, ...tx.map((e) => e.at).filter(fin)) : null;
+    const series = [], byT = (a, b) => a[0] - b[0];
+    if (acct.length) series.push({ name: 'account value (all pools + open positions)', col: COL.acct, pts: acct.sort(byT) });
+    if (pilot.length) series.push({ name: `pilot pool cash · ${pool(xi)}`, col: COL.pilot, pts: pilot.sort(byT) });
+    [...other.entries()].sort((a, b) => a[0] - b[0]).forEach(([k, v], i) => { if (v.some((x) => x[1] !== 0)) series.push({ name: `${pool(k)} cash`, col: COL.other[i % COL.other.length], pts: v.sort(byT), dash: 1 }); });
+    // every chart marker the feed sent (compact rows), else the newest transactions (older feeds)
+    const chrono = Array.isArray(L.marks), tx = chrono ? L.marks.map(LC.unpackMark) : Array.isArray(L.tx) ? L.tx : []; // marks: oldest first; tx: newest first
+    let x0 = null, x1 = null; for (const s of series) for (const q of s.pts) { if (x0 == null || q[0] < x0) x0 = q[0]; if (x1 == null || q[0] > x1) x1 = q[0]; }
+    if (x1 != null) for (const e of tx) if (fin(e.at) && e.at > x1) x1 = e.at;
     // y = the pilot pool's cash at the first real balance read AFTER the event (the read that shows its effect), else the last one before it
-    const ps = pilot.slice().sort((a, b) => a[0] - b[0]);
-    const yAt = (at) => { const nx = ps.find((q) => q[0] >= at); if (nx) return nx[1]; return ps.length ? ps[ps.length - 1][1] : 0; };
+    const ps = pilot;
+    const yAt = (at) => { let lo = 0, hi = ps.length; while (lo < hi) { const m = (lo + hi) >> 1; if (ps[m][0] < at) lo = m + 1; else hi = m; } return lo < ps.length ? ps[lo][1] : ps.length ? ps[ps.length - 1][1] : 0; };
     const marks = x0 == null ? [] : tx.filter((e) => fin(e.at) && e.at >= x0 && /^(fill|settle|transfer|not_sent|stop)$/.test(e.kind)).map((e, i) => {
       const tn = e.kind === 'fill' ? 'neutral' : e.tone || '', label = mkLabel(e);
-      return { x: e.at, y: yAt(e.at), loss: tn === 'neg', tone: tn, col: MK[tn] || MK[''], label, showLabel: e.kind === 'settle' || e.kind === 'stop',
+      return { x: e.at, y: yAt(e.at), loss: tn === 'neg', tone: tn, col: MK[tn] || MK[''], label, showLabel: e.kind === 'settle' || e.kind === 'stop', tk: e.tk || null,
         title: `${e.kind}${e.tk ? ' ' + e.tk : ''}: ${label}${fin(e.amountCents) && e.kind !== 'settle' ? ' · ' + $c(e.amountCents) : ''}`, key: 'live|' + i, kind: e.kind, i };
-    }).sort((a, b) => a.x - b.x || b.i - a.i);
+    }).sort((a, b) => a.x - b.x || (chrono ? a.i - b.i : b.i - a.i));
     const R = L.realized && fin(L.realized.cents) && L.realized.settled ? L.realized : null;
-    return { series, marks, realized: R, x0, x1, n: L.count || 0, ok: (L.count || 0) >= 2 && x1 > x0 && series.some((x) => x.pts.length >= 2) };
+    const times = series.length ? series[series.length > 1 ? 1 : 0].pts.map((q) => q[0]) : [];
+    return { series, marks, realized: R, x0, x1, n: L.count || 0, tf: LC.defaultTf(times), ok: (L.count || 0) >= 2 && x1 > x0 && series.some((x) => x.pts.length >= 2) };
   }
-  /** Same look as the paper cards: CME (canvas, drawn by HAWSE.charts after paint) or Classic (inline SVG step lines), per the chart-style toggle. */
+  const dayName = (k) => new Date(k + 'T12:00:00Z').toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' });
+  /**
+   * Big REAL MONEY P&L header (above the live chart): realized total and today (America/Los_Angeles day), from the ledger's settle lines
+   * (fees included, computed on the desk). "—" when there is no settle behind a number: never a made-up $0.00.
+   */
+  function pnlHeader(P) {
+    const L = (P && P.live) || {}, S = L.pnl || {}, m = (P && P.money) || {}, num = (c) => `<div class="pl-pnl-num${tone(c) ? ' ' + tone(c) : ''}">${esc($s(c))}</div>`;
+    const rec = S.settled ? `${esc(S.wins)}W–${esc(S.losses)}L · ${fin(S.winRate) ? Math.round(S.winRate * 100) + '% win rate' : '—'} · ${esc(S.settled)} settled` : 'no settled trades yet';
+    const days = (Array.isArray(S.daily) ? S.daily : []).slice().reverse().map((d) => `<tr data-pl-day="${esc(d.day)}"><td>${esc(dayName(d.day))}${d.day === S.today ? ' <span class="dim">today</span>' : ''}</td><td>${esc(d.trades)}</td><td>${d.trades ? `${esc(d.wins)}–${esc(d.losses)}` : '—'}</td><td class="${tone(d.pnlCents)}">${esc($s(d.pnlCents))}</td></tr>`).join('');
+    return `<div class="pl-pnl" data-pl-pnl="1" role="group" aria-label="real money realized P&amp;L"><div class="pl-pnl-tag">REAL MONEY (Kalshi) <span class="dim">· realized from settled trades, fees included</span></div>` +
+      `<div class="pl-pnl-row"><div class="pl-pnl-box"><div class="pl-pnl-lbl">TOTAL P&amp;L <span class="dim">all time</span></div>${num(S.totalCents)}</div>` +
+      `<div class="pl-pnl-box"><div class="pl-pnl-lbl">TODAY <span class="dim">${S.today ? esc(dayName(S.today)) + ' PT' : 'PT'}</span></div>${num(S.todayCents)}<div class="pl-pnl-sub dim">${esc(S.todaySettled || 0)} settled today</div></div></div>` +
+      `<div class="pl-pnl-rec mono">${rec} · ${fin(S.fills) ? esc(S.fills) : '—'} fills${fin(m.openRiskCents) && m.openRiskCents > 0 ? ` · <span class="pl-pnl-risk">open risk now <b>${esc($c(m.openRiskCents))}</b></span>` : ''}</div>` +
+      (days ? `<div class="pl-scroll"><table class="pl-t mono pl-days"><caption class="dim sm">last 7 days (PT)</caption><thead><tr><th>date</th><th>trades</th><th>W–L</th><th>P&amp;L</th></tr></thead><tbody>${days}</tbody></table></div>` : '') + '</div>';
+  }
+  /** Same look as the paper cards: CME (interactive canvas, public/livechart.js) or Classic (inline SVG step lines), per the chart-style toggle. */
   function liveChart(P, o) {
     const L = (P && P.live) || {}, d = liveData(P);
     const head = `<h3 class="pl-h3">Live money <span class="dim">(real Kalshi balance reads${L.count ? ` · ${esc(L.count)} read${L.count === 1 ? '' : 's'} since ${esc(t(L.first, o.tz))}` : ''} · recorded from the pilot's own reads, no extra polling)</span></h3>`;
     if (!d.ok) return head + `<div class="pl-empty mono sm">collecting live data: ${esc(L.count || 0)} balance read${L.count === 1 ? '' : 's'} so far. The chart starts after the pilot's next reads of your Kalshi balance (no mock data is ever shown).</div>`;
-    const legend = `<div class="dim sm mono pl-legend">${d.series.map((x) => `<span style="color:${x.col}">■ ${esc(x.name)} ${esc($c(Math.round(x.pts[x.pts.length - 1][1] * 100)))}</span>`).join(' ')}${d.realized ? ` <span class="${tone(d.realized.cents)}">realized P&amp;L ${esc($s(d.realized.cents))} (${esc(d.realized.wins)}W / ${esc(d.realized.losses)}L)</span>` : ''}${d.marks.length ? ' · <span style="color:#e6edf3">●</span> buys &amp; transfers (neutral) · <span class="pos">●</span>/<span class="neg">●</span> settles, green win / red loss, labeled with P&amp;L · <span class="neg">◉</span> rejects &amp; halts' : ''}</div>`;
-    const tip = d.marks.map((m) => m.title).join(' · ');
-    if (o.cme) return head + legend + `<canvas class="orb orb-big pl-livechart" data-pilot-chart="1" role="img" title="${esc(tip)}" aria-label="live Kalshi account value and pool cash over time${tip ? '; ' + esc(tip) : ''}"></canvas>`;
+    const legend = `<div class="dim sm mono pl-legend">${d.series.map((x) => `<span style="color:${x.col}">■ ${esc(x.name)} ${esc($c(Math.round(x.pts[x.pts.length - 1][1] * 100)))}</span>`).join(' ')}${d.realized ? ` <span class="${tone(d.realized.cents)}">realized P&amp;L ${esc($s(d.realized.cents))} (${esc(d.realized.wins)}W / ${esc(d.realized.losses)}L)</span>` : ''}${d.marks.length ? ' <span><span style="color:#e6edf3">●</span> buys &amp; transfers (neutral)</span> <span><span class="pos">●</span>/<span class="neg">●</span> settles, green win / red loss, labeled with P&amp;L</span> <span><span class="neg">◉</span> rejects &amp; halts</span>' : ''}</div>`;
+    const recent = d.marks.slice(-20), tip = recent.map((m) => m.title).join(' · ');
+    if (o.cme) { const tf = LC.TFS.includes(o.tf) ? o.tf : d.tf;
+      const bar = `<div class="pl-tf" role="group" aria-label="chart time frame">${LC.TFS.map((k) => `<button type="button" data-pilot="tf" data-tf="${k}" class="pl-tfb${k === tf ? ' on' : ''}" aria-pressed="${k === tf}">${k}</button>`).join('')}</div>`;
+      return head + bar + `<div class="pl-lc"><canvas class="orb orb-big pl-livechart" data-pilot-chart="1" role="img" title="${esc(tip)}" aria-label="live Kalshi account value and pool cash over time${tip ? '; ' + esc(tip) : ''}"></canvas></div>` + legend +
+        `<div class="dim sm pl-lchint">scroll or pinch to zoom · drag to pan · double-click / double-tap to reset · hover or tap for exact time (PT), balance and trade</div>`; }
     const W = 900, Hh = 260, pad = 22, ys = d.series.flatMap((x) => x.pts.map((q) => q[1])), y0 = Math.min(0, ...ys), y1 = Math.max(y0 + 1, ...ys);
     const X = (v) => pad + ((v - d.x0) / Math.max(1, d.x1 - d.x0)) * (W - 2 * pad), Y = (v) => Hh - pad - ((v - y0) / (y1 - y0)) * (Hh - 2 * pad);
     const paths = d.series.map((x) => { let p = `M${X(x.pts[0][0]).toFixed(1)},${Y(x.pts[0][1]).toFixed(1)}`; for (const q of x.pts.slice(1)) p += ` H${X(q[0]).toFixed(1)} V${Y(q[1]).toFixed(1)}`; p += ` H${X(d.x1).toFixed(1)}`;
@@ -144,13 +166,14 @@
       return `<g class="pl-mk pl-mk-${esc(m.kind)}" data-tone="${esc(m.tone)}"><title>${esc(m.title)}</title>${m.loss ? `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="8" fill="none" stroke="${m.col}" stroke-width="2"/>` : ''}` +
         `<circle cx="${cx.toFixed(1)}" cy="${cy.toFixed(1)}" r="${m.kind === 'settle' ? 5 : m.loss ? 5 : 3.5}" fill="${m.col}"${m.kind === 'fill' ? ' stroke="#5b8def" stroke-width="1.2"' : ''}/>` +
         (m.showLabel ? `<text x="${cx.toFixed(1)}" y="${(up ? cy - 10 : cy + 18).toFixed(1)}" text-anchor="${cx > W - 80 ? 'end' : 'middle'}" fill="${m.col}" font-size="12" font-weight="700" class="mono">${esc(m.label)}</text>` : '') + '</g>'; }).join('');
-    return head + legend + `<svg class="pl-livechart" viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="live Kalshi account value and pool cash over time">` +
-      `<line x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>${paths}${mk}</svg>`;
+    return head + `<svg class="pl-livechart" viewBox="0 0 ${W} ${Hh}" style="width:100%;height:auto;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="live Kalshi account value and pool cash over time">` +
+      `<line x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>${paths}${mk}</svg>` + legend +
+      `<div class="dim sm pl-lchint">switch the chart style to CME for time frames, zoom, pan and the crosshair</div>`;
   }
-  /** CME spec for HAWSE.charts.draw (same renderer as the paper cards). */
+  /** Spec for the live canvas (public/livechart.js; the shared paper renderer HAWSE.charts.draw also accepts it). */
   function liveSpec(P) {
     const d = liveData(P); if (!d.ok) return null;
-    return { title: 'live · real Kalshi balance reads', aria: 'live Kalshi account value and pool cash', base: 0, x0: d.x0, x1: d.x1, fmt: (v) => '$' + v.toFixed(2),
+    return { title: 'live · real Kalshi balance reads', aria: 'live Kalshi account value and pool cash', base: 0, x0: d.x0, x1: d.x1, fmt: (v) => '$' + v.toFixed(2), tf: d.tf, names: d.series.map((x) => x.name),
       series: d.series.map((x, i) => ({ pts: x.pts, step: 1, extendTo: d.x1, band: i === 0, col: x.col, dash: x.dash ? [4, 3] : undefined })), marks: d.marks };
   }
   function txList(P, o) {
@@ -197,9 +220,9 @@
     const trades = `<h3 class="pl-h3">Live trades <span class="dim">(real money)</span></h3><div class="pl-scroll"><table class="pl-t mono"><thead><tr><th>time</th><th>market</th><th>limit</th><th>fill</th><th>size</th><th>fee</th><th>result</th><th>P&amp;L</th><th>balance</th><th>sizing (bankroll × % → order $)</th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="dim">no live trades yet</td></tr>'}</tbody></table></div>`;
     const cmp = (P.compare || []).map((r) => `<tr${r.shadow && !r.live ? ' class="pl-shadowrow"' : ''}><td>${esc(r.tk)}<div class="pl-szm">${sz(r.sizing)}</div></td><td>${ct(r.decisionAsk)}</td><td>${r.paper ? `${r.paper.filled} @ ${ct(r.paper.vwapCents)}` : '—'}</td><td>${r.live ? `${r.live.filled} @ ${ct(r.live.vwapCents)}` : r.shadow ? `<span class="pl-nomoney">SHADOW · NO MONEY</span> ${r.shadow.skipped ? esc(r.shadow.skipped) : `${r.shadow.contracts} @ ≤${ct(r.shadow.limit)}`}` : '—'}</td><td>${ct(r.slippageCents)}</td><td>${r.unfilled == null ? '—' : r.unfilled}</td><td class="pl-szc">${sz(r.sizing)}</td></tr>`).join('');
     const compare = `<h3 class="pl-h3">Paper v3 7% vs live <span class="dim">(fill, slippage, unfilled)</span></h3><div class="pl-scroll"><table class="pl-t mono"><thead><tr><th>market</th><th>ask</th><th>paper fill</th><th>live fill</th><th>slip</th><th>unfilled</th><th>sizing (bankroll × % → order $)</th></tr></thead><tbody>${cmp || '<tr><td colspan="7" class="dim">no v3 takes yet</td></tr>'}</tbody></table></div>`;
-    return head + banner + why + ctl + recBox + resetBox + phone + deskOnly + lastAct + oom + facts + env + ktest + arm + recover + xferBlock(P, o) + (chip === 'DISABLED' ? '' : liveChart(P, o) + txList(P, o)) + trades + compare;
+    return head + banner + why + ctl + recBox + resetBox + phone + deskOnly + lastAct + oom + facts + env + ktest + arm + recover + xferBlock(P, o) + (chip === 'DISABLED' ? '' : pnlHeader(P) + liveChart(P, o) + txList(P, o)) + trades + compare;
   }
-  const API = { render, POOLS, liveData, liveSpec };
+  const API = { render, POOLS, liveData, liveSpec, pnlHeader };
   if (typeof module === 'object' && module.exports) { module.exports = API; return; }
   const H = (root.HAWSE = root.HAWSE || { onState: [] }); H.onState = H.onState || [];
   const local = /^(localhost|127(\.\d+){3}|\[::1\])$/.test(location.hostname);
@@ -212,10 +235,14 @@
   const paint = (force) => { const el = document.getElementById('pilotBody'); if (!el) return;
     const a = document.activeElement; if (!force && a && a.dataset && /^(phrase|reset-phrase|xfer-amount|xfer-from|xfer-to)$/.test(a.dataset.pilot || '')) return; // do not repaint while typing
     const C = H.charts, cme = !C || !C.isCme || C.isCme();
-    const h = render(lastP, { local, link, armCheck, cme, act, xferForm: xf.form, xferConfirm: xf.confirm, xferRetry: xf.retry }); if (h !== last) { last = h; el.innerHTML = h; } drawLive(); };
-  // the live chart canvas is drawn by the shared chart code (public/app.js loads after this file, so look it up at paint time)
-  const drawLive = () => { const c = document.querySelector('#pilotBody canvas[data-pilot-chart]'), C = H.charts; if (!c || !C || !C.draw) return; const sp = liveSpec(lastP); if (sp) requestAnimationFrame(() => C.draw(c, sp)); };
-  addEventListener('hawse:chartstyle', () => paint(true)); addEventListener('resize', drawLive); document.addEventListener('toggle', drawLive, true);
+    const h = render(lastP, { local, link, armCheck, cme, act, tf: lc.tfSel, xferForm: xf.form, xferConfirm: xf.confirm, xferRetry: xf.retry }); if (h !== last) { last = h; el.innerHTML = h; } drawLive(); };
+  // the live chart: public/livechart.js (time frames, zoom, pan, crosshair). lc keeps the chosen time frame and zoom window across repaints.
+  const lc = { tfSel: null, tf: 'All', view: null, follow: false, hover: null }; let spP = null, spC = null;
+  const spec = () => (spP === lastP ? spC : ((spP = lastP), (spC = liveSpec(lastP))));
+  const drawLive = () => { const c = document.querySelector('#pilotBody canvas[data-pilot-chart]'); if (!c) return; const sp = spec(); if (!sp) return;
+    if (LC && LC.draw) { lc.tf = lc.tfSel || sp.tf; LC.bind(c, spec, lc); requestAnimationFrame(() => LC.draw(c, spec(), lc)); return; }
+    const C = H.charts; if (C && C.draw) requestAnimationFrame(() => C.draw(c, sp)); };
+  addEventListener('hawse:chartstyle', () => paint(true)); addEventListener('resize', drawLive); addEventListener('orientationchange', () => setTimeout(drawLive, 150)); document.addEventListener('toggle', drawLive, true);
   H.onState.push((S) => { lastP = S && S.feeds && S.feeds.kalshiPilot; paint(false); });
   document.addEventListener('input', (e) => { const d = e.target && e.target.dataset && e.target.dataset.pilot; if (d === 'xfer-amount') xf.form.amount = e.target.value; });
   document.addEventListener('change', (e) => { const d = e.target && e.target.dataset && e.target.dataset.pilot; if (d === 'xfer-from') xf.form.from = +e.target.value; if (d === 'xfer-to') xf.form.to = +e.target.value; });
@@ -223,6 +250,7 @@
   document.addEventListener('keydown', (e) => { const d = e.key === 'Enter' && e.target && e.target.dataset && e.target.dataset.pilot; const btn = d === 'phrase' ? 'arm' : d === 'reset-phrase' ? 'reset' : null;
     if (btn) { const b = e.target.parentNode.querySelector(btn === 'arm' ? '[data-pilot="arm"],[data-pilot="arm-phone"]' : `[data-pilot="${btn}"]`); if (b) { e.preventDefault(); b.click(); } } });
   document.addEventListener('click', async (e) => { const b = e.target.closest && e.target.closest('[data-pilot]'); if (!b || !b.closest('#pilotBody')) return;
+    if (b.dataset.pilot === 'tf') { lc.tfSel = b.dataset.tf; lc.view = null; lc.follow = false; lc.hover = null; paint(true); return; }
     if (b.dataset.pilot === 'halt') { b.disabled = true; const r = await post('halt'); b.disabled = false; if (!r.ok) alert('HALT: ' + (r.error || 'failed')); }
     if (b.dataset.pilot === 'test-key') { b.disabled = true; await post('test-key'); b.disabled = false; }
     if (b.dataset.pilot === 'xfer-prepare') { xf.retry = null; b.disabled = true; const r = await post('transfer-prepare', { amount: xf.form.amount, from: xf.form.from, to: xf.form.to }); b.disabled = false;

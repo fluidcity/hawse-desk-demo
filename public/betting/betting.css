@@ -1,0 +1,52 @@
+/* Sports-betting module UI. Self-contained; uses the host's CSS variables when present. */
+.bd .tabs{margin-bottom:10px}
+.bd-chips{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin:6px 0 10px}
+.bd .btn.sm{min-height:30px;font-size:11.5px;padding:0 10px;color:var(--fg,#e6edf3);text-decoration:none;display:inline-flex;align-items:center}
+.bd .inp{background:var(--bg2,#0a0e13);color:var(--fg,#e6edf3);border:1px solid var(--line2,#1f2a35);border-radius:8px;padding:6px 8px;font-size:12px;min-height:30px}
+.bd textarea.inp{width:100%;font-family:var(--mono,monospace);font-size:11.5px;line-height:1.45;resize:vertical}
+.bd-list{max-height:620px;overflow-y:auto}
+.bdrow.ok{border-color:rgba(184,255,46,.35);background:rgba(184,255,46,.04)}
+.bdrow.expired{opacity:.55}
+.bd-act{display:flex;flex-wrap:wrap;gap:4px;justify-content:flex-end}
+.bd-rule{border:1px solid var(--line,#151c24);border-radius:10px;padding:9px 10px;margin-bottom:6px;background:rgba(255,255,255,.015)}
+.bd-rule.on{border-color:rgba(61,255,176,.3)}
+.bd-rule-h{display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.bd-rule-h .bd-act{margin-left:auto}
+.bd-conds{display:flex;flex-wrap:wrap;gap:5px;margin-top:6px}
+.cond{font-family:var(--mono,monospace);font-size:10.5px;border:1px solid var(--line2,#1f2a35);border-radius:6px;padding:2px 7px;color:#9aa8b6}
+.cond b{color:var(--cyan,#4fd8ff);font-weight:600}
+.bd-editor{margin-top:10px}
+.bd-venues{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+.bd-venue{border:1px dashed rgba(255,61,90,.35);border-radius:10px;padding:10px;background:rgba(255,61,90,.03)}
+.bd-venue code{color:var(--amber,#ffb020)}
+#bdImportOut .subh{margin:10px 0 4px}
+/* slip modal */
+.slip-modal{position:fixed;inset:0;z-index:50;background:rgba(0,0,0,.72);display:flex;align-items:flex-start;justify-content:center;padding:40px 14px;overflow:auto}
+.slip-modal[hidden]{display:none}
+.slip-sheet{width:min(720px,100%);background:#f7f7f2;color:#111;border-radius:12px;padding:22px;font-family:var(--sans,system-ui);box-shadow:0 20px 80px rgba(0,0,0,.6)}
+.slip-sheet .dim{color:#666}.slip-sheet .label{color:#555}.slip-sheet .subh{color:#555}
+.slip-wm{font-family:var(--mono,monospace);font-weight:700;font-size:12px;color:#a0300f;border:2px dashed #a0300f;border-radius:8px;padding:8px 10px;margin-bottom:12px;text-align:center;letter-spacing:.04em}
+.slip-h{display:flex;justify-content:space-between;gap:12px;border-bottom:2px solid #111;padding-bottom:10px}
+.slip-h h3{font-size:22px;margin:4px 0}.slip-id{text-align:right;color:#444}
+.slip-grid{display:grid;grid-template-columns:1fr 1fr;gap:8px 18px;margin-top:12px;font-size:13px}
+.slip-grid small{display:block;font-size:9.5px;letter-spacing:.1em;text-transform:uppercase;color:#666;font-family:var(--sans,system-ui)}
+.slip-sheet ul{margin:0;padding-left:18px;line-height:1.5}.slip-check{list-style:none;padding-left:0!important}
+.slip-disc{border-top:1px solid #ccc;padding-top:8px;margin-top:10px;color:#333}
+.slip-actions{display:flex;flex-wrap:wrap;gap:6px;align-items:center;margin-top:14px;border-top:1px solid #ddd;padding-top:12px}
+.slip-actions .btn{color:#111;background:#fff;border-color:#bbb}
+@media (max-width:820px){
+  .bdrow{grid-template-columns:1fr 1fr 48px 52px!important}
+  .bdrow>span:nth-child(1),.bdrow>span:nth-child(5),.bdrow>span:nth-child(7){display:none}
+  .bdrow>span:nth-child(8){grid-column:1/-1;justify-content:flex-start}
+  .bdrow.head>span:nth-child(8){display:none}
+  .bd-venues,.slip-grid{grid-template-columns:1fr}
+  .slip-modal{padding:12px 8px}
+}
+@media print{
+  html,body{background:#fff!important}
+  body>*:not(.slip-modal){display:none!important}
+  .slip-modal{position:static;inset:auto;background:#fff;padding:0;display:block;overflow:visible}
+  .slip-sheet{box-shadow:none;border-radius:0;width:100%;padding:0}
+  .no-print{display:none!important}
+}
+.bd-rule .explain{margin-top:7px}

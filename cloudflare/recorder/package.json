@@ -1,0 +1,11 @@
+{
+  "name": "hawse-cf-recorder",
+  "private": true,
+  "type": "module",
+  "description": "Always-on record-only recorder (Kalshi + Polymarket public market data) on a Durable Object with SQLite chunk storage.",
+  "scripts": {
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "tail": "wrangler tail hawse-recorder"
+  }
+}

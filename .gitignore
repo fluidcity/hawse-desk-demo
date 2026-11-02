@@ -1,0 +1,22 @@
+# Dependencies
+/node_modules/
+# Secrets (only the template is tracked)
+.env
+.env.*
+!.env.example
+# Runtime state, anchored to the repo root ONLY: data/credits.json, data/odds-cache.json,
+# data/betting/rules.json, data/lab/strategies.json. Do NOT use a bare `data/` rule:
+# it silently ignored source under server/betting/data/ (lines.js, stats.js, schedule.js).
+/data/
+*.log
+.DS_Store
+
+# Cloudflare skeleton local state/secrets
+.dev.vars
+.wrangler/
+cloudflare/**/node_modules/
+
+# Kalshi keys never go in git (desk machine files)
+*.pem
+kalshi_trade_key*
+hawse.env

@@ -1,0 +1,758 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/fluidcity/hawse-desk-demo/schema/strategy.schema.json",
+  "title": "HAWSE paper strategy config",
+  "description": "A versioned, paper-only strategy configuration. Imported configs are always stored with status 'unverified' until they are backtested on this desk; any performance fields in an import are ignored. Betting kinds (betting_*) are paper-only analytics: real-money bet placement is a disabled stub.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "name",
+    "kind",
+    "market",
+    "params",
+    "risk"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": 1
+    },
+    "id": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{0,47}$"
+    },
+    "version": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 80
+    },
+    "description": {
+      "type": "string",
+      "maxLength": 2000
+    },
+    "kind": {
+      "enum": [
+        "funding_arb",
+        "basis_carry",
+        "ma_cross",
+        "bollinger_revert",
+        "orb",
+        "dca_grid",
+        "volatility_breakout",
+        "betting_ev",
+        "betting_spread",
+        "betting_arb"
+      ]
+    },
+    "status": {
+      "enum": [
+        "unverified",
+        "backtested"
+      ]
+    },
+    "source": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "type": {
+          "enum": [
+            "template",
+            "user",
+            "import-json",
+            "import-text"
+          ]
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    },
+    "market": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "symbol": {
+          "type": "string",
+          "pattern": "^[A-Z0-9]{2,10}$"
+        },
+        "venue": {
+          "enum": [
+            "okx"
+          ]
+        },
+        "instrument": {
+          "enum": [
+            "swap",
+            "spot"
+          ]
+        },
+        "bar": {
+          "enum": [
+            "1m",
+            "5m",
+            "15m",
+            "1H",
+            "4H",
+            "1D"
+          ]
+        },
+        "sport": {
+          "type": "string",
+          "pattern": "^[a-z0-9_]{2,60}$",
+          "description": "The Odds API sport key, e.g. basketball_nba, americanfootball_nfl, icehockey_nhl, baseball_mlb, soccer_epl"
+        },
+        "books": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^[a-z0-9_]{2,40}$"
+          },
+          "maxItems": 40,
+          "description": "bookmaker keys to shop; empty = all returned"
+        },
+        "betMarkets": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "h2h",
+              "spreads",
+              "totals"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 3
+        },
+        "regions": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "us",
+              "us2",
+              "uk",
+              "eu",
+              "au"
+            ]
+          },
+          "minItems": 1,
+          "maxItems": 5
+        }
+      }
+    },
+    "params": {
+      "type": "object"
+    },
+    "entry": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "allowShort": {
+          "type": "boolean"
+        },
+        "note": {
+          "type": "string",
+          "maxLength": 500
+        }
+      }
+    },
+    "exit": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "stopPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 50
+        },
+        "takePct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 200
+        },
+        "maxHoldBars": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 10000
+        }
+      }
+    },
+    "risk": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "capitalUsd": {
+          "type": "number",
+          "minimum": 100,
+          "maximum": 10000000
+        },
+        "positionPct": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 100
+        },
+        "maxDrawdownPct": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "kellyFraction": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 1,
+          "description": "fraction of full Kelly (0.25 = quarter Kelly)"
+        },
+        "maxStakePct": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 10,
+          "description": "max stake per bet, % of the sleeve bankroll"
+        },
+        "maxEventPct": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 25,
+          "description": "max total stake on one event, % of bankroll"
+        },
+        "maxOpenPct": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "maximum": 100,
+          "description": "max total open stake, % of bankroll"
+        }
+      }
+    },
+    "costs": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "feeRate",
+        "slippageBps"
+      ],
+      "properties": {
+        "feeRate": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 0.01
+        },
+        "slippageBps": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 200
+        }
+      }
+    },
+    "riskNotes": {
+      "type": "array",
+      "items": {
+        "type": "string",
+        "maxLength": 400
+      },
+      "maxItems": 12
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "funding_arb",
+              "basis_carry",
+              "ma_cross",
+              "bollinger_revert",
+              "orb",
+              "dca_grid",
+              "volatility_breakout"
+            ]
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "exit",
+          "costs"
+        ],
+        "properties": {
+          "market": {
+            "required": [
+              "symbol",
+              "bar"
+            ]
+          },
+          "risk": {
+            "required": [
+              "positionPct"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "enum": [
+              "betting_ev",
+              "betting_spread",
+              "betting_arb"
+            ]
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "market": {
+            "required": [
+              "sport"
+            ]
+          },
+          "risk": {
+            "required": [
+              "kellyFraction",
+              "maxStakePct"
+            ]
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "ma_cross"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "params": {
+            "$ref": "#/$defs/ma_cross"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "bollinger_revert"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "params": {
+            "$ref": "#/$defs/bollinger_revert"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "orb"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "params": {
+            "$ref": "#/$defs/orb"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "dca_grid"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "params": {
+            "$ref": "#/$defs/dca_grid"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "volatility_breakout"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "params": {
+            "$ref": "#/$defs/volatility_breakout"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "basis_carry"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "params": {
+            "$ref": "#/$defs/basis_carry"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "funding_arb"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "params": {
+            "$ref": "#/$defs/funding_arb"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "betting_ev"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "params": {
+            "$ref": "#/$defs/betting_ev"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "betting_spread"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "params": {
+            "$ref": "#/$defs/betting_spread"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "kind": {
+            "const": "betting_arb"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "params": {
+            "$ref": "#/$defs/betting_arb"
+          }
+        }
+      }
+    }
+  ],
+  "$defs": {
+    "ma_cross": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "fast",
+        "slow"
+      ],
+      "properties": {
+        "fast": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 500
+        },
+        "slow": {
+          "type": "integer",
+          "minimum": 3,
+          "maximum": 1000
+        },
+        "maType": {
+          "enum": [
+            "ema",
+            "sma"
+          ]
+        }
+      }
+    },
+    "bollinger_revert": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "period",
+        "mult"
+      ],
+      "properties": {
+        "period": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 500
+        },
+        "mult": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 5
+        }
+      }
+    },
+    "orb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sessionStartUtc",
+        "rangeMinutes"
+      ],
+      "properties": {
+        "sessionStartUtc": {
+          "type": "string",
+          "pattern": "^([01][0-9]|2[0-3]):[0-5][0-9]$"
+        },
+        "rangeMinutes": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 240
+        },
+        "sessionMinutes": {
+          "type": "integer",
+          "minimum": 30,
+          "maximum": 1440
+        }
+      }
+    },
+    "dca_grid": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "spacingPct",
+        "levels"
+      ],
+      "properties": {
+        "spacingPct": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 20
+        },
+        "levels": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 50
+        }
+      }
+    },
+    "volatility_breakout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "lookback",
+        "atrMult"
+      ],
+      "properties": {
+        "lookback": {
+          "type": "integer",
+          "minimum": 5,
+          "maximum": 500
+        },
+        "atrPeriod": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 200
+        },
+        "atrMult": {
+          "type": "number",
+          "minimum": 0.1,
+          "maximum": 10
+        },
+        "expansion": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 5
+        }
+      }
+    },
+    "basis_carry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minNetBps"
+      ],
+      "properties": {
+        "minNetBps": {
+          "type": "number",
+          "minimum": -100,
+          "maximum": 1000
+        },
+        "exitBps": {
+          "type": "number",
+          "minimum": -100,
+          "maximum": 1000
+        },
+        "holdHours": {
+          "type": "number",
+          "minimum": 1,
+          "maximum": 2000
+        }
+      }
+    },
+    "funding_arb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minNetBps"
+      ],
+      "properties": {
+        "minNetBps": {
+          "type": "number",
+          "minimum": -100,
+          "maximum": 1000
+        },
+        "venues": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "binance",
+              "bybit",
+              "okx",
+              "hyperliquid"
+            ]
+          },
+          "minItems": 2
+        }
+      }
+    },
+    "betting_ev": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minEdgePct"
+      ],
+      "properties": {
+        "minEdgePct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 50,
+          "description": "min expected value % vs the no-vig consensus of the OTHER books"
+        },
+        "minBooks": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 40
+        },
+        "maxDecimalOdds": {
+          "type": "number",
+          "minimum": 1.01,
+          "maximum": 100
+        },
+        "fairMethod": {
+          "enum": [
+            "multiplicative",
+            "power"
+          ]
+        },
+        "minMinutesToStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10080
+        }
+      }
+    },
+    "betting_spread": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minPointEdge",
+        "pointValuePct"
+      ],
+      "properties": {
+        "minPointEdge": {
+          "type": "number",
+          "minimum": 0.5,
+          "maximum": 20,
+          "description": "how many points better than the consensus line"
+        },
+        "pointValuePct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 10,
+          "description": "ASSUMED win-probability gain per point (sport-specific; not estimated by the app)"
+        },
+        "minEdgePct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 50
+        },
+        "minBooks": {
+          "type": "integer",
+          "minimum": 2,
+          "maximum": 40
+        },
+        "minMinutesToStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10080
+        }
+      }
+    },
+    "betting_arb": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "minMarginPct"
+      ],
+      "properties": {
+        "minMarginPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 50,
+          "description": "min guaranteed margin % at quoted prices"
+        },
+        "includeMiddles": {
+          "type": "boolean",
+          "description": "also ALERT on middles (alerts only; never auto-staked)"
+        },
+        "maxMiddleCostPct": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 20,
+          "description": "max worst-case loss % of stake for a middle alert"
+        },
+        "minMinutesToStart": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 10080
+        }
+      }
+    }
+  }
+}

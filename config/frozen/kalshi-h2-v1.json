@@ -1,0 +1,77 @@
+{
+  "id": "kalshi-h2",
+  "version": "v1",
+  "frozenAt": "2026-10-30",
+  "status": "FROZEN. Do not edit. Any change needs a new file (kalshi-h2-v2.json), a new hash in server/kalshi-h2/index.js FROZEN and in test/kalshi-h2.test.js, and a new ledger folder; v1 results stay separate.",
+  "source": "hawse-research/kalshi-15m-payout-sweep.md section 7 (H2: YES favorite, 93-98c, 6-10 minutes left, paper only), recorder per kalshi-15m-study.md section 7A",
+  "mode": "paper-only",
+  "liveOrders": false,
+  "rule": {
+    "series": ["KXBTC15M", "KXETH15M", "KXSOL15M"],
+    "side": "yes",
+    "secondsLeftMin": 360,
+    "secondsLeftMax": 600,
+    "yesAskMin": 0.93,
+    "yesAskMax": 0.979,
+    "entry": "first observed book with secondsLeft in [360, 600] and YES ask in [0.93, 0.979]; one entry per market; no other filters",
+    "onePerMarket": true,
+    "hold": "to settlement"
+  },
+  "coverage": {
+    "requirePreWindowBook": true,
+    "maxBookGapMs": 5000,
+    "why": "a first touch is only trusted if books were observed continuously from before 600 s left until the signal; otherwise the market is logged as a skip (joined_late / incomplete_coverage), never as a signal"
+  },
+  "sizing": {
+    "contracts": 1,
+    "pnlUnit": "cents per contract",
+    "shadowBankroll": { "fractionPerSignal": 0.01, "start": 1, "reportingOnly": true }
+  },
+  "fill": {
+    "model": "take the ask on the NEXT book snapshot after the signal (no same-snapshot fills)",
+    "nextSnapshotMaxMs": 5000,
+    "limitAboveSignalAsk": 0.01,
+    "limitCap": 0.99,
+    "walkAskLadder": true,
+    "price": "worse (higher) of the signal ask and the VWAP to fill 1 contract on the next snapshot",
+    "skipReasons": ["fill_snapshot_too_late", "no_ask", "no_fill_within_limit"],
+    "specLiteralShadow": "P&L at the signal ask is also logged as a sensitivity column; it is not the headline number"
+  },
+  "fees": {
+    "oneLot": "ceil(0.07 * P * (1 - P) * 100) / 100 dollars per 1-contract order (Kalshi general fee, cent-rounded up)",
+    "largeOrder": "0.07 * P * (1 - P) dollars per contract (rounding amortized)",
+    "rate": 0.07,
+    "expectSeriesFeeType": "quadratic",
+    "expectSeriesFeeMultiplier": 1
+  },
+  "ticks": {
+    "expectPriceLevelStructure": "tapered_deci_cent",
+    "expectRanges": [
+      { "start": "0.0000", "end": "0.1000", "step": "0.0010" },
+      { "start": "0.1000", "end": "0.9000", "step": "0.0100" },
+      { "start": "0.9000", "end": "1.0000", "step": "0.0010" }
+    ]
+  },
+  "settlement": {
+    "source": "official Kalshi market result (GET /markets/{ticker}: result yes/no once status is determined/settled/finalized)",
+    "timeoutHours": 6,
+    "noOwnIndex": true
+  },
+  "targets": { "minWeeks": 8, "minSignals": 2500 },
+  "pass": {
+    "meanPnlOneLotFeeGt": 0,
+    "meanPnlOneLotFeeDayBootstrapCi95LowerGt": 0,
+    "meanPnlLargeOrderFeeGteCents": 0.8,
+    "positiveWeeksMinOf8": 6,
+    "positiveAssetsMinOf3": 2,
+    "askSizeAtLeast": 10,
+    "askSizeShareMin": 0.8
+  },
+  "failStop": {
+    "meanLteZeroAfterSignals": 2500,
+    "rolling4WeekLossPer100SignalsGtCents": 60,
+    "feeScheduleChange": true,
+    "tickSizeChange": true
+  },
+  "stats": { "bootstrapReps": 2000, "bootstrapSeed": 20261030, "ci": 0.95 }
+}

@@ -1,0 +1,67 @@
+{
+  "id": "kalshi-h2",
+  "version": "v3",
+  "name": "fav93_98_v2_nojump_sized",
+  "frozenAt": "2026-10-30",
+  "status": "FROZEN. Do not edit. Any change needs a new file, a new hash in server/kalshi-h2/index.js FROZEN and in test/kalshi-h2-v3.test.js, and a new ledger folder. v1 and v2 (config/frozen/kalshi-h2-v1.json, kalshi-h2-v2.json) are NOT changed by this arm and keep running. Definition changes to the v2 rule are proposed as v4, not here.",
+  "source": "Bryan via miro, 2026-10-30: v2 entry/skip PLUS size caps; backtest reference hawse-research/kalshi-15m-capacity-10k.md and hawse-research/kalshi-15m/capacity/. UNPROVEN.",
+  "mode": "paper-only",
+  "liveOrders": false,
+  "base": {
+    "v1": { "config": "kalshi-h2-v1", "sha256": "2f0053c4eb13bd48697eb06d4a6c841b327313393e97c619e96e3e9956c9675c" },
+    "v2": { "config": "kalshi-h2-v2", "sha256": "ee5185f8e059a8995c557b474b873f47dae867be5f02fb021368c83cf0294a4c" },
+    "entry": "identical to v2: v3 trades exactly the v1 signals that v2 decides 'take' (same market, same book, same time); 'skip' and 'unknown' are not traded. v3 never re-decides. Kalshi's official result comes from v1's settle row."
+  },
+  "sizing": {
+    "lines": [
+      { "id": "3pct", "pctOfBalance": 0.03, "startBalance": 10000 },
+      { "id": "7pct", "pctOfBalance": 0.07, "startBalance": 10000 }
+    ],
+    "balance": "each line has its own paper balance and ledger; the balance compounds from settled P&L only (open positions do not count)",
+    "contracts": "min( floor(pct * balance / decisionAsk), floor(perAssetCap / decisionAsk), floor(overallCap / decisionAsk) if set, floor(participation * entryMinuteVolume), floor(cash / (decisionAsk + 0.01 + 0.25 * fee rate)) ); cash = balance minus cost and fee reserved by open positions. 'cap bound' = a cap other than the X% line is the smallest (ties count for every cap at the minimum)",
+    "perAssetDollarCap": { "BTC": 5000, "ETH": 400, "SOL": 250, "XRP": 250 },
+    "perAssetCapStatus": "provisional (XRP is listed but v1 does not trade XRP)",
+    "overallDollarCap": null,
+    "participation": {
+      "share": 0.10,
+      "volume": "contracts traded (sum of c, Kalshi public trades, both taker sides) with exchange time in the 60 s before the signal book",
+      "windowMs": 60000,
+      "note": "volume counts both sides (YES and NO takers), so this cap is optimistic; the backtest found YES-taker share 41% (27% at 93-98c)",
+      "ifVolumeUnknown": "no trade; logged as unknown_volume",
+      "ifZeroVolume": "zero contracts; logged with the participation cap as the bound"
+    }
+  },
+  "fill": {
+    "snapshot": "the same next book snapshot v1 fills on (v1 fill row bookRx); no v3 fill when v1 has no fill",
+    "visible": "walk the recorded YES ask ladder best-first; fill only levels at or below limit = min(0.99, decisionAsk + 0.01)",
+    "remainder": "contracts above the visible depth within the limit are NOT filled (logged as unfilled). A stress line prices them at min(0.99, worst visible level + 0.01) and flags remainder_priced_worst_plus_1c; the stress line is display only and never enters the balance",
+    "slippage": "fill VWAP minus decision-time YES ask, in cents"
+  },
+  "fees": { "rate": 0.07, "formula": "per order: roundup_to_cent(0.07 * sum over fill levels of C_i * P_i * (1 - P_i))" },
+  "log": ["requested $", "which cap bound", "final contracts", "per-level fills", "slippage vs decision-time ask", "unfilled remainder", "fee", "result", "book depth at the ask (all recorded levels)", "60 s of refill afterward"],
+  "refill": { "windowMs": 60000, "sampleEveryMs": 5000, "measure": "YES ask contracts at or below the fill limit in each later book, plus the best ask" },
+  "pass": {
+    "minV1Signals": 1500,
+    "test": "same gate as v2 for the edge: one-sided Fisher exact, the skipped group's loss rate is greater than the kept group's (identical to v2 by construction)",
+    "alpha": 0.05,
+    "keptMeanNetGtCents": 0,
+    "keptNet": "v3 3pct line: settled P&L per filled contract after the per-order fee, on the take signals in the first-look cohort",
+    "firstLookOnly": true,
+    "otherwise": "retired",
+    "label": "UNPROVEN until minV1Signals settled v1 signals with a known v2 decision"
+  },
+  "backtestReference": {
+    "file": "hawse-research/kalshi-15m-capacity-10k.md",
+    "fillable": "probably fillable up to ~$300 per trade on all assets; BTC up to ~$5,000",
+    "questionable": "ETH/SOL $300-1,000 per trade",
+    "fiction": "ETH/SOL above ~$1,000-2,000 per trade (BTC above ~$8,000-10,000)",
+    "medianDollarsWithin1c": { "BTC": 8822, "ETH": 1118, "SOL": 1170 },
+    "medianDollarsAtBestAsk": { "BTC": 769, "ETH": 53, "SOL": 43 },
+    "simPeriod": "v2 with the 10% participation cap (of entry-candle volume), Jun-Oct OOS, from $10,000 on Jun 1",
+    "sim3pctCap10": { "capBoundShare": 0.50, "avgFillDollars": 388, "endBalance": 32500, "endBalanceUncapped": 59100, "maxDrawdown": 0.186 },
+    "sim7pctCap10": { "capBoundShare": 0.64, "avgFillDollars": 888, "endBalance": 66400, "endBalanceUncapped": 497000, "maxDrawdown": 0.363 },
+    "yesTakerShare": { "all": 0.41, "at93to98": 0.27 },
+    "realBookMarkets": 16,
+    "caveat": "volume counts both sides and is measured in the entry candle while the fill happens a few seconds later; only 16 real markets with a full book, all on one afternoon"
+  }
+}

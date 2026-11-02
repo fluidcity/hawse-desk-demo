@@ -1,0 +1,35 @@
+# gitleaks config: default rules plus narrowly scoped allowlists for known false positives.
+# Classification (PR #1 review, 2026-10-29). No real credential is committed anywhere in history;
+# real keys are read only from env vars server-side (.env is gitignored).
+# Note: allowlists are value-specific, not path-wide, so a real-looking key added to test/ is still flagged.
+[extend]
+useDefault = true
+
+# 1) Test fixtures: deliberately FAKE secret values used to assert that nothing leaks.
+[[allowlists]]
+description = "fake secrets in leak-assertion tests"
+regexTarget = "match"
+regexes = [
+  '''sentinel-[a-z]+-[0-9a-f]{4,6}''',
+  '''(secret-odds-key|sekret-helius|pw-123|sec-xyz|alch-key|HKEY-should-not-print|super-secret-helius-value|kaiko-secret-xyz|whsec-TEST-not-a-real-secret)''',
+]
+
+# 2) Public identifiers, exact values only: Pyth price-feed ids and the keccak256 topics of the
+#    ERC-20 Transfer / Uniswap-v3 Swap events. Mints and contract addresses are public too
+#    (commented in server/feeds/{dex,whales}.js) and are not flagged by the default rules.
+#    Hex-64 is NOT allowlisted generically, because that is also the shape of an EVM private key.
+[[allowlists]]
+description = "public Pyth feed ids and EVM event topics"
+regexes = ['''(e62df6c8b4a85fe1a67db44dc12de5db330f7ac66b72dc658afedf0f4a415b43|ff61491a931112ddf1bd8147cd1b641375f79f5825126d665480874634fd0ace|ef0d8b6fda2ceba41da15d4095d1da392a0d2f8ed0c6c7bc0f4cfac8c280b56d|0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef|0xc42079f94a6350d7e6235f29174924f928cc2ac818eb64fed8004e115fbcca67)''']
+
+# 3) Public Kalshi market tickers used as test fixtures (exchange identifiers, not credentials).
+[[allowlists]]
+description = "public Kalshi market tickers in tests"
+regexTarget = "match"
+regexes = ['''KXBTC15M-26OCT301715-15''']
+
+# 4) RFC 6455 section 1.3 sample Sec-WebSocket-Key (base64 of "the sample nonce"), used in the proxy upgrade test.
+[[allowlists]]
+description = "RFC 6455 sample websocket key"
+regexTarget = "match"
+regexes = ['''dGhlIHNhbXBsZSBub25jZQ==''']

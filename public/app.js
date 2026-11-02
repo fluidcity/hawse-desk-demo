@@ -1,0 +1,929 @@
+/* HAWSE paper desk client. Renders server state (SSE). Holds no secrets and places no orders. */
+window.HAWSE = window.HAWSE || { onState: [] }; // tiny host hook for module UIs
+
+// Strategy explainer boxes ("How it works"): native <details>/<summary>, so they are keyboard (Tab + Enter/Space), screen-reader
+// and touch friendly with no JS needed to open them. Text comes from the server explainers (generated from the strategy code's own
+// constants/config). Open state and focus survive the desk's periodic innerHTML re-renders.
+window.HAWSE.explain = (() => {
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const open = new Set();
+  document.addEventListener('toggle', (e) => { const d = e.target; if (d && d.classList && d.classList.contains('explain') && d.dataset.xid) d.open ? open.add(d.dataset.xid) : open.delete(d.dataset.xid); }, true);
+  function html(x, id, label = 'How it works') {
+    if (!x || !x.what) return '';
+    const rules = (x.rules || []).map((r) => `<div class="x-row"><dt>${esc(r.k)}</dt><dd><ul>${r.items.map((i) => `<li>${esc(i)}</li>`).join('')}</ul></dd></div>`).join('');
+    return `<details class="explain" data-xid="${esc(id)}"${open.has(id) ? ' open' : ''}><summary><span class="x-caret" aria-hidden="true"></span>${esc(label)}</summary>` +
+      `<div class="x-body"><p class="x-what">${esc(x.what)}</p>${rules ? `<dl class="x-rules">${rules}</dl>` : ''}</div></details>`;
+  }
+  /** Replace el.innerHTML, then put keyboard focus back on the same explainer summary if it had it. */
+  function swap(el, markup) {
+    const a = document.activeElement, d = a && a.tagName === 'SUMMARY' && el.contains(a) && a.parentElement.dataset.xid;
+    el.innerHTML = markup;
+    if (d) { const s = el.querySelector(`details.explain[data-xid="${CSS.escape(d)}"] > summary`); if (s) s.focus({ preventScroll: true }); }
+  }
+  return { html, swap, isOpen: (id) => open.has(id) };
+})();
+(() => {
+  'use strict';
+  const $ = (id) => document.getElementById(id);
+  const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  const money = (n, d = 2) => (n < 0 ? '-$' : '$') + Math.abs(n).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d });
+  const signed = (n, d = 2) => n == null || !isFinite(n) ? '<span class="dim">—</span>' : `<span class="${n >= 0 ? 'pos' : 'neg'}">${n >= 0 ? '+' : '-'}$${Math.abs(n).toFixed(d)}</span>`;
+  const pct = (n, d = 2) => n == null || !isFinite(n) ? '—' : `${n >= 0 ? '+' : ''}${n.toFixed(d)}%`;
+  const hhmmss = (t) => new Date(t).toLocaleTimeString('en-US', { hour12: false });
+  const ago = (ms) => ms == null ? '—' : ms < 1000 ? 'now' : ms < 60e3 ? Math.round(ms / 1000) + 's' : ms < 3600e3 ? Math.round(ms / 60e3) + 'm' : Math.round(ms / 3600e3) + 'h';
+  const compact = (n) => Math.abs(n) >= 1e9 ? (n / 1e9).toFixed(2) + 'B' : Math.abs(n) >= 1e6 ? (n / 1e6).toFixed(2) + 'M' : Math.abs(n) >= 1e3 ? (n / 1e3).toFixed(1) + 'k' : n.toFixed(0);
+  const pxFmt = (p) => p >= 1000 ? p.toLocaleString('en-US', { maximumFractionDigits: 1 }) : p >= 1 ? p.toFixed(3) : p.toFixed(5);
+  const BADGE_CLASS = { 'missing key': 'missing', 'mocked (missing key)': 'mock', mocked: 'mock', stale: 'stale', blocked: 'blocked', 'not implemented': 'pending', idle: 'pending' };
+  const badge = (mode) => `<span class="badge ${esc(BADGE_CLASS[mode] || mode)}">${esc({ live: 'LIVE', mock: 'MOCK', sim: 'SIMULATED', mixed: 'MIXED', down: 'NO DATA', indicative: 'INDICATIVE', pending: 'PENDING', stale: 'STALE', blocked: 'BLOCKED' }[mode] || String(mode).toUpperCase())}</span>`;
+  const heatColor = (v, scale) => {
+    if (v == null || !isFinite(v)) return 'transparent';
+    const a = Math.min(1, Math.abs(v) / scale);
+    return v >= 0 ? `rgba(61,255,176,${0.08 + a * 0.55})` : `rgba(255,61,90,${0.08 + a * 0.55})`;
+  };
+  // Operator POSTs (same-origin JSON; works directly and through scripts/auth-proxy.js, whose CSRF check wants JSON + Origin).
+  // Never throws: -> the JSON body, or { ok:false, error } on a refusal, which is shown as a toast (e.g. not on the proxy allowlist).
+  const toast = (msg) => {
+    let t = document.getElementById('opToast'); if (!t) { t = document.createElement('div'); t.id = 'opToast'; t.setAttribute('role', 'status'); t.style.cssText = 'position:fixed;left:50%;bottom:16px;transform:translateX(-50%);z-index:50;max-width:90vw;padding:8px 12px;border-radius:6px;background:#2a0f16;color:#ffb3c0;border:1px solid #ff3d5a;font:12px ui-monospace,monospace'; document.body.appendChild(t); }
+    t.textContent = msg; t.hidden = false; clearTimeout(t._h); t._h = setTimeout(() => { t.hidden = true; }, 6000);
+  };
+  const post = (url, body = {}) => fetch(url, { method: 'POST', credentials: 'same-origin', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })
+    .then(async (r) => {
+      let j = {}; try { j = await r.json(); } catch {}
+      if (r.status === 401) { location.href = '/login'; return { ok: false, error: 'signed out' }; }
+      if (!r.ok || j.ok === false) { const e = j.error || 'HTTP ' + r.status; toast(`${url.replace(/^\/api\//, '')} refused: ${e}`); return { ...j, ok: false, error: e }; }
+      return j;
+    }, () => { toast(`${url.replace(/^\/api\//, '')} failed: desk unreachable`); return { ok: false, error: 'unreachable' }; });
+
+  let S = null, tapeFilter = 'all', lastTapeId = 0;
+
+  // ---------- chart style switch (display only): "classic" = the original look, "cme" = the flat look of the CME micros ORB chart ----------
+  // CME look (mirrors renderFutures): flat canvas, no grid/glow/gradient, mint/red lines, a dashed purple reference line with a faint purple
+  // band, grey 10px IBM Plex Mono hi/lo labels at the right edge, a label at top-left. Persisted in localStorage (hawse.chartStyle), default CME.
+  let chartStyle = (() => { try { return localStorage.getItem('hawse.chartStyle') === 'classic' ? 'classic' : 'cme'; } catch { return 'cme'; } })();
+  const isCme = () => chartStyle === 'cme';
+  const ORB = { up: '#3dffb0', down: '#ff3d5a', flat: '#6b7a89', ref: 'rgba(169,139,255,0.5)', band: 'rgba(169,139,255,0.08)', label: '#6b7a89', font: '10px IBM Plex Mono' };
+  const orbSpecs = new Map(); let orbSeq = 0, orbQueued = false;
+  /** Canvas placeholder for a CME-style chart; drawn by drawAllCharts() on the next frame (before paint). */
+  function orbCanvas(spec, cls) { const k = 'o' + (++orbSeq); orbSpecs.set(k, spec); queueOrb(); return `<canvas class="orb ${cls || ''}" data-k="${k}" role="img" aria-label="${esc(spec.aria || spec.title || 'chart')}"></canvas>`; }
+  function queueOrb() { if (!orbQueued) { orbQueued = true; requestAnimationFrame(drawAllCharts); } }
+  function drawAllCharts() {
+    orbQueued = false; const live = new Set();
+    document.querySelectorAll('canvas.orb[data-k]').forEach((c) => { const sp = orbSpecs.get(c.dataset.k); if (!sp) return; live.add(c.dataset.k); if (!c.clientWidth) return;
+      try { const { ctx, w, h } = sizeCanvas(c); const g = orbDraw(ctx, w, h, sp); c._hits = (g && g.hits) || null; } catch (e) { console.error(e); } });
+    for (const k of [...orbSpecs.keys()]) if (!live.has(k)) orbSpecs.delete(k);
+  }
+  /** sp: { series: [{ pts: [[x, y]], col, dash, step, band, width, extendTo, name }], base, x0, x1, yFix, minSpan, fmt, title, legend, dots: [[x, y, col]], compact,
+   *  marks: [{ x, y, loss, key, col?, label?, showLabel? }] (trade markers: red ringed dot per loss, small mint dot per win; col overrides the dot colour and
+   *  label is drawn next to it when showLabel (live pilot: settles "WIN +$0.28"); hit boxes returned as .hits for the Scoreboard link) } */
+  function orbDraw(ctx, w, h, sp) {
+    ctx.clearRect(0, 0, w, h);
+    const cp = !!sp.compact, L = cp ? 1 : 2, R = cp ? 1 : 50, T = cp ? 3 : sp.legend && sp.legend.length ? 34 : sp.title ? 22 : 8, B = cp ? 3 : 16;
+    const ser = (sp.series || []).filter((s) => s.pts && s.pts.length);
+    const xs = ser.flatMap((s) => s.pts.map((p) => p[0])); if (!xs.length) return null;
+    const ys = ser.flatMap((s) => s.pts.map((p) => p[1])).concat(sp.base != null ? [sp.base] : [], sp.yFix || []);
+    const x0 = sp.x0 != null ? sp.x0 : Math.min(...xs); let x1 = sp.x1 != null ? sp.x1 : Math.max(...xs); if (!(x1 > x0)) x1 = x0 + 1;
+    let lo = Math.min(...ys), hi = Math.max(...ys); if (sp.minSpan && hi - lo < sp.minSpan) { const m = (hi + lo) / 2; lo = m - sp.minSpan / 2; hi = m + sp.minSpan / 2; } if (!(hi > lo)) { hi = lo + 1; }
+    const X = (t) => L + ((t - x0) / (x1 - x0)) * (w - R - L), Y = (v) => T + (1 - (v - lo) / (hi - lo)) * (h - T - B);
+    const path = (s) => { ctx.beginPath(); s.pts.forEach((p, i) => { const x = X(p[0]), y = Y(p[1]); if (!i) ctx.moveTo(x, y); else { if (s.step) ctx.lineTo(x, Y(s.pts[i - 1][1])); ctx.lineTo(x, y); } });
+      const lp = s.pts[s.pts.length - 1]; if (s.extendTo != null) ctx.lineTo(X(s.extendTo), Y(lp[1])); return s.extendTo != null ? X(s.extendTo) : X(lp[0]); };
+    if (sp.base != null) {
+      const yb = Y(sp.base), bs = ser.find((s) => s.band);
+      if (bs) { const xe = path(bs); ctx.lineTo(xe, yb); ctx.lineTo(X(bs.pts[0][0]), yb); ctx.closePath(); ctx.fillStyle = ORB.band; ctx.fill(); }
+      ctx.strokeStyle = ORB.ref; ctx.lineWidth = 1; ctx.setLineDash([3, 3]); ctx.beginPath(); ctx.moveTo(0, yb); ctx.lineTo(w - R, yb); ctx.stroke(); ctx.setLineDash([]);
+    }
+    for (const s of ser) { path(s); ctx.strokeStyle = s.col || ORB.up; ctx.lineWidth = s.width || (cp ? 1.4 : 1.5); ctx.setLineDash(s.dash ? [4, 3] : []); ctx.stroke(); ctx.setLineDash([]); }
+    for (const d of sp.dots || []) { ctx.fillStyle = d[2] || ORB.up; ctx.fillRect(X(d[0]) - 1.5, Y(d[1]) - 1.5, 3, 3); }
+    const hits = [], hk = window.HAWSE.tradeHot, sk = window.HAWSE.tradeSel, arc = (x, y, r) => { ctx.beginPath(); ctx.arc(x, y, r, 0, 2 * Math.PI); };
+    for (const m of [...(sp.marks || [])].sort((a, b) => (a.loss ? 1 : 0) - (b.loss ? 1 : 0))) {
+      const x = X(m.x), y = Y(m.y), on = m.key === hk || m.key === sk, r = m.loss ? 5 : 2.8; hits.push({ x, y, key: m.key });
+      if (m.loss) { arc(x, y, r + 4); ctx.strokeStyle = ORB.down; ctx.lineWidth = 2; ctx.stroke(); }
+      arc(x, y, r + (on ? 1.5 : 0)); ctx.fillStyle = m.col || (m.loss ? ORB.down : ORB.up); ctx.fill();
+      if (m.label && m.showLabel && !cp) { ctx.font = 'bold ' + ORB.font; ctx.fillStyle = m.col || ORB.label; ctx.textAlign = x > w - R - 60 ? 'right' : 'center'; ctx.fillText(String(m.label), x, y > T + 18 ? y - 10 : y + 18); ctx.textAlign = 'left'; }
+      if (on) { arc(x, y, r + 7); ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 2; ctx.stroke(); }
+    }
+    if (!cp) {
+      const f = sp.fmt || ((v) => v.toFixed(2)); ctx.font = ORB.font; ctx.fillStyle = ORB.label; ctx.textAlign = 'right'; ctx.fillText(f(hi), w - 3, 14); ctx.fillText(f(lo), w - 3, h - 12); ctx.textAlign = 'left';
+      if (sp.title) { let t = String(sp.title); const max = w - R - 10; while (t.length > 4 && ctx.measureText(t).width > max) t = t.slice(0, -2); if (t !== String(sp.title)) t = t.slice(0, -1) + '…'; ctx.fillText(t, 4, 14); }
+      let lx = 4; for (const g of sp.legend || []) { const t = '■ ' + g.name; if (lx + ctx.measureText(t).width > w - R) break; ctx.fillStyle = g.col; ctx.fillText(t, lx, 27); lx += ctx.measureText(t).width + 10; }
+    }
+    return { X, Y, L, R, T, B, lo, hi, hits };
+  }
+  function setChartStyle(v) {
+    chartStyle = v === 'classic' ? 'classic' : 'cme'; try { localStorage.setItem('hawse.chartStyle', chartStyle); } catch {}
+    window.HAWSE.chartStyle = chartStyle;
+    document.querySelectorAll('[data-cs]').forEach((b) => { const on = b.dataset.cs === chartStyle; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+    if (S) render(); try { dispatchEvent(new CustomEvent('hawse:chartstyle', { detail: chartStyle })); } catch {}
+  }
+  window.HAWSE.chartStyle = chartStyle;
+  window.HAWSE.charts = { isCme, draw: (c, sp) => { if (!c || !c.clientWidth) return; const { ctx, w, h } = sizeCanvas(c); orbDraw(ctx, w, h, sp); }, ORB, redraw: queueOrb };
+  window.HAWSE.sparkSvg = (pts, label) => sparkSvg(pts, label); // reused by the Scoreboard card (public/scoreboard.js), same chart style
+  // Trade markers for the v1/v2/v3 charts (display only). Keys match the Scoreboard card's Trades table rows (public/scoreboard.js),
+  // so hovering a marker shows that trade and clicking it scrolls to the row; hovering a row lights its marker.
+  function tradeMarks(arm) {
+    const sc = window.HAWSE.score; if (!sc || !S) return [];
+    const a = sc.h2Trades(S).arms.find((x) => x.id === arm);
+    return a ? a.rows.filter((r) => r.settleAt != null && r.after != null && r.status !== 'open').map((r) => ({ x: r.settleAt, y: r.after, loss: r.status === 'loss', key: r.key })) : [];
+  }
+  function svgMarks(ms, X, Y) {
+    const sel = window.HAWSE.tradeSel;
+    return [...ms].sort((a, b) => (a.loss ? 1 : 0) - (b.loss ? 1 : 0)).map((m) => { const x = X(m.x).toFixed(1), y = Y(m.y).toFixed(1);
+      return `<g class="tmk${m.loss ? ' loss' : ''}${m.key === sel ? ' tsel' : ''}" data-trade="${esc(m.key)}" aria-label="${m.loss ? 'losing trade' : 'winning trade'} ${esc(m.key.split('|')[1] || '')}">` +
+        `<circle class="hit" cx="${x}" cy="${y}" r="22" fill="transparent"/>${m.loss ? `<circle class="ring" cx="${x}" cy="${y}" r="14" fill="none" stroke="var(--hot,#ff3d5a)" stroke-width="3"/>` : ''}` +
+        `<circle class="dot" cx="${x}" cy="${y}" r="${m.loss ? 8 : 4}" fill="${m.loss ? 'var(--hot,#ff3d5a)' : 'var(--mint,#3dffb0)'}"/></g>`; }).join('');
+  }
+  document.querySelectorAll('[data-cs]').forEach((b) => { b.onclick = () => setChartStyle(b.dataset.cs); const on = b.dataset.cs === chartStyle; b.classList.toggle('on', on); b.setAttribute('aria-pressed', on); });
+  document.addEventListener('toggle', queueOrb, true); // a chart inside a just-opened <details> gets drawn
+  // ---------- P&L headlines (display only) ----------
+  // One big realized-P&L number per strategy/arm card + the desk header. Rules: real-data and SIM books are never summed or
+  // blended (SIM gets its own SIM badge); nothing is drawn that the server did not report: a book with no realized events
+  // shows "no trades yet" (not $0), a missing window shows n/a, and a sparkline needs >= 2 real points.
+  const fmtPnl = (v, unit = '$', d = 2) => v == null || !isFinite(v) ? '—' : unit === '¢' ? `${v > 0 ? '+' : v < 0 ? '−' : ''}${Math.abs(v).toFixed(d)}¢` : `${v > 0 ? '+' : v < 0 ? '−' : ''}$${Math.abs(v).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d })}`;
+  const toneOf = (v) => v == null || !isFinite(v) || Math.abs(v) < 1e-9 ? 'flat' : v > 0 ? 'pos' : 'neg';
+  function sparkSvg(pts, label) {
+    if (!pts || pts.length < 2) return '';
+    if (isCme()) { const last = pts[pts.length - 1][1]; return orbCanvas({ compact: 1, base: 0, aria: label || 'cumulative realized P&L', series: [{ pts, band: 1, col: last > 0 ? ORB.up : last < 0 ? ORB.down : ORB.flat }] }, 'ph-spark'); }
+    const W = 120, H = 34, p = 2, xs = pts.map((q) => q[0]), ys = pts.map((q) => q[1]).concat(0);
+    const x0 = Math.min(...xs), x1 = Math.max(x0 + 1, ...xs), y0 = Math.min(...ys), y1 = Math.max(y0 + 1e-9, ...ys);
+    const X = (t) => p + ((t - x0) / (x1 - x0)) * (W - 2 * p), Y = (v) => H - p - ((v - y0) / (y1 - y0)) * (H - 2 * p);
+    const last = pts[pts.length - 1][1], col = last > 0 ? 'var(--mint)' : last < 0 ? 'var(--hot)' : 'var(--dim)';
+    const d = pts.map((q, i) => (i ? 'L' : 'M') + X(q[0]).toFixed(1) + ',' + Y(q[1]).toFixed(1)).join(' ');
+    return `<svg class="ph-spark" viewBox="0 0 ${W} ${H}" preserveAspectRatio="none" role="img" aria-label="${esc(label || 'cumulative realized P&L')}"><line x1="0" x2="${W}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.18)" stroke-dasharray="2 3"/><path d="${d}" fill="none" stroke="${col}" stroke-width="1.6" vector-effect="non-scaling-stroke"/></svg>`;
+  }
+  /** o: { label, value, unit, n, sim, tags, pctBase, pctLabel, brk: [[label, value|null, title]], spark, sparkLabel, unreal, sub, small } */
+  function pnlHead(o) {
+    const unit = o.unit || '$', side = o.sim ? 'sim' : 'real';
+    const tagHtml = (o.sim ? '<span class="badge sim" title="Simulated/mock inputs: never added to the real-data book">SIM</span>' : '') + (o.tags || '');
+    const top = `<div class="ph-top"><span class="ph-label">${esc(o.label || (o.sim ? 'SIM P&L' : 'Realized P&L'))}</span>${tagHtml}</div>`;
+    if (!o.n) return `<div class="pnlhead empty${o.small ? ' small' : ''}" data-pnl="${side}">${top}<div class="ph-row"><div class="ph-big ph-none mono">no trades yet</div></div>${o.sub ? `<div class="ph-sub dim mono">${o.sub}</div>` : ''}</div>`;
+    const pctTxt = o.pctBase > 0 ? `<span class="ph-pct mono ${toneOf(o.value)}">${pct(100 * o.value / o.pctBase)} <small>${esc(o.pctLabel || 'of sleeve')}</small></span>` : '';
+    const brk = (o.brk || []).map(([k, v, t]) => `<span${t ? ` title="${esc(t)}"` : ''}><small>${esc(k)}</small><b class="${v == null ? 'dim' : toneOf(v)}">${v == null ? 'n/a' : fmtPnl(v, unit)}</b></span>`).join('');
+    const un = o.unreal ? `<span class="ph-unreal mono" title="Open positions marked to market: not in the realized number"><small>open (unrealized)</small> <b class="${toneOf(o.unreal)}">${fmtPnl(o.unreal, unit)}</b></span>` : '';
+    return `<div class="pnlhead ${toneOf(o.value)}${o.sim ? ' sim' : ''}${o.small ? ' small' : ''}" data-pnl="${side}">${top}` +
+      `<div class="ph-row"><div class="ph-num"><div class="ph-big mono ${toneOf(o.value)}">${fmtPnl(o.value, unit)}</div>${pctTxt}</div>${sparkSvg(o.spark, o.sparkLabel)}</div>` +
+      (brk || un ? `<div class="ph-brk mono">${brk}${un}</div>` : '') + (o.sub ? `<div class="ph-sub dim mono">${o.sub}</div>` : '') + `</div>`;
+  }
+  const upFor = (ms) => ms < 3600e3 ? Math.max(1, Math.round(ms / 60e3)) + 'm' : ms < 86400e3 ? (ms / 3600e3).toFixed(1) + 'h' : (ms / 86400e3).toFixed(1) + 'd';
+  /** Desk-ledger book (S.pnlBoard row side) -> pnlHead options. The desk ledger is in memory: "since start" = since this desk process started. */
+  function bookHead(v, { sim, alloc, label, small }) {
+    const since = S.pnlBoard ? S.pnlBoard.since : S.now - S.uptimeMs;
+    return { label, sim, small, value: v.realized, n: v.events, pctBase: alloc, pctLabel: 'of sleeve', unreal: v.unrealized,
+      brk: [['today', v.today], ['7d', v.d7Covered ? v.d7 : null, v.d7Covered ? '' : `desk up ${upFor(S.now - since)}: no 7-day history yet`], ['since start', v.realized, 'since this desk process started (in-memory paper ledger)']],
+      spark: v.spark, sparkLabel: `${sim ? 'SIM' : 'real-data'} cumulative realized P&L since desk start`,
+      sub: v.events && !v.trades ? `${v.events} fee/funding event(s), 0 closed trades` : '' };
+  }
+  /** Sum a settled-P&L series [[t, amount]] into today (viewer's local day) and the last 7 days. Exact sums of reported rows. */
+  function windows(rows, now = Date.now()) {
+    const d = new Date(now); d.setHours(0, 0, 0, 0); const day = d.getTime(), w7 = now - 7 * 86400e3; let today = 0, d7 = 0;
+    for (const [t, a] of rows) { if (t >= day) today += a; if (t >= w7) d7 += a; }
+    return { today, d7 };
+  }
+  const h2State = () => { const out = []; const F = S.feeds || {};
+    const v1 = F.kalshiH2, v2 = F.kalshiH2v2, v3 = F.kalshiH2v3;
+    if (v1 && v1.pnl && v1.stats) out.push({ k: 'v1', label: 'H2 v1', unit: '¢', value: v1.pnl.realizedCents.total, n: v1.pnl.realizedCents.n, tag: v1.stats.enough && !v1.stats.failStops.length ? '' : 'UNVERIFIED' });
+    if (v2 && v2.stats && v2.stats.v2) out.push({ k: 'v2', label: 'H2 v2', unit: '¢', value: v2.stats.v2.totalNetCents, n: v2.stats.v2.settled, tag: v2.stats.passTest ? v2.stats.passTest.label : 'UNPROVEN' });
+    if (v3 && v3.stats) for (const L of v3.stats.lines || []) out.push({ k: 'v3' + L.id, label: 'H2 v3 ' + L.id, unit: '$', value: L.pnl, n: L.settled, tag: v3.stats.passTest ? v3.stats.passTest.label : 'UNPROVEN', pctBase: L.start });
+    return out; };
+  function renderDeskPnl() {
+    const el = $('deskPnl'); if (!el) return;
+    const B = S.pnlBoard, t = S.totals;
+    if (!B) { el.innerHTML = `<div class="dim mono sm">desk P&amp;L board not reported by this server</div>`; return; }
+    const rows = B.strategies, traded = (side) => rows.filter((r) => r[side].events).length;
+    const real = { ...B.desk.real, d7Covered: B.d7Covered, spark: null, trades: rows.reduce((a, r) => a + r.real.trades, 0) };
+    const sim = { ...B.desk.sim, d7Covered: B.d7Covered, spark: null, trades: rows.reduce((a, r) => a + r.sim.trades, 0) };
+    const realH = bookHead(real, { sim: false, alloc: t.start, label: 'Paper desk P&L · real-data book · not real money' }); realH.pctLabel = 'of start equity'; realH.sparkLabel = '';
+    const simH = bookHead(sim, { sim: true, alloc: t.start, label: 'SIM book · mock/simulated inputs', small: true }); simH.pctLabel = 'of start equity';
+    const h2 = h2State();
+    const h2Html = h2.length ? `<div class="dp-h2"><div class="ph-label">Kalshi H2 arms <span class="dim">· own paper ledgers, not added to the desk total</span></div><div class="dp-chips">` +
+      h2.map((x) => `<span class="dp-chip mono"><small>${esc(x.label)}</small><b class="${x.n ? toneOf(x.value) : 'dim'}">${x.n ? fmtPnl(x.value, x.unit) : 'no trades yet'}</b>${x.n && x.pctBase ? `<i class="${toneOf(x.value)}">${pct(100 * x.value / x.pctBase)}</i>` : ''}${x.unit === '¢' ? '<i class="dim">per 1-ct test</i>' : ''}${x.tag ? `<span class="badge stale">${esc(x.tag)}</span>` : ''}</span>`).join('') + `</div></div>` : '';
+    el.innerHTML = `<div class="dp-main">${pnlHead(realH)}<div class="dim mono sm dp-note">${traded('real')} of ${rows.length} strategies have realized real-data P&amp;L · paper only</div></div>` +
+      `<div class="dp-side">${pnlHead(simH)}${h2Html}</div>`;
+  }
+
+  // ---------- mode switch ----------
+  document.querySelectorAll('.mode').forEach((b) => b.onclick = () => setMode(b.dataset.mode));
+  function setMode(m) {
+    document.querySelectorAll('.mode').forEach((b) => { const on = b.dataset.mode === m; b.classList.toggle('on', on); b.setAttribute('aria-selected', on); });
+    $('liveView').hidden = m !== 'live'; $('demoView').hidden = m !== 'demo';
+    if (m === 'demo' && $('demoFrame').src === 'about:blank') $('demoFrame').src = 'demo/index.html';
+    try { localStorage.setItem('hawse.mode', m); } catch {}
+    if (m === 'live') requestAnimationFrame(() => { sizeCanvas($('curve')); drawAllCharts(); });
+  }
+  const qMode = new URLSearchParams(location.search).get('mode');
+  if (qMode === 'demo' || (!qMode && (() => { try { return localStorage.getItem('hawse.mode') === 'demo'; } catch { return false; } })())) setMode('demo');
+
+  // ---------- controls ----------
+  $('haltBtn').onclick = () => post('/api/halt');
+  $('resumeBtn').onclick = () => post('/api/resume');
+  $('resetBrk').onclick = () => post('/api/reset-breaker');
+  $('riskForm').onsubmit = (e) => { e.preventDefault(); post('/api/risk', { dailyLossPct: +$('dailyIn').value, maxDrawdownPct: +$('ddIn').value }).then(loadExplain); }; // explainers quote the risk gate
+  $('tapeChips').onclick = (e) => { const b = e.target.closest('.chip'); if (!b) return; tapeFilter = b.dataset.f; document.querySelectorAll('.chip').forEach((c) => c.classList.toggle('on', c === b)); renderTape(true); };
+  $('strats').onclick = (e) => {
+    const b = e.target.closest('[data-arm]'); if (!b) return;
+    const s = S && S.strategies.find((x) => x.id === b.dataset.arm); if (!s) return;
+    const want = !s.armed; post(`/api/strategy/${encodeURIComponent(s.id)}/arm`, { armed: want }).then((r) => { if (r && r.ok) { s.armed = want; renderStrats(); } });
+  };
+
+  // ---------- stream ----------
+  function connect() {
+    const es = new EventSource('/api/stream');
+    es.onopen = () => { $('conn').className = 'conn ok'; $('conn').querySelector('b').textContent = 'stream live'; };
+    es.onmessage = (ev) => { S = JSON.parse(ev.data); render(); };
+    es.onerror = () => { $('conn').className = 'conn bad'; $('conn').querySelector('b').textContent = 'reconnecting'; fetch('/api/health').then((r) => { if (r.status === 401) location.href = '/login'; }).catch(() => {}); };
+  }
+  connect();
+  setInterval(() => { $('clock').textContent = new Date().toLocaleTimeString('en-US', { hour12: false, timeZoneName: 'short' }); }, 1000);
+
+  function render() {
+    renderDeskPnl(); renderHero(); renderTicker(); renderStrats(); renderRisk(); renderFunding(); renderAttr(); renderHealth(); renderTape();
+    renderWhales(); renderFollow(); renderMev(); renderGaps(); renderRecorder(); renderStorage(); renderH2(); renderH2v2(); renderH2v3(); renderOnePct(); renderPerps(); renderFutures(); (window.HAWSE.onState || []).forEach((f) => { try { f(S); } catch (e) { console.error(e); } }); // module UIs (public/betting/)
+    drawAllCharts();
+  }
+
+  // ---------- hero + animated curve ----------
+  let shownEq = null;
+  function renderHero() {
+    const t = S.totals, r = S.risk.real;
+    const target = t.realEquity;
+    if (shownEq == null) shownEq = target;
+    const from = shownEq, t0 = performance.now();
+    const anim = (now) => { const k = Math.min(1, (now - t0) / 700); shownEq = from + (target - from) * (1 - Math.pow(1 - k, 3)); $('equity').textContent = money(shownEq); if (k < 1) requestAnimationFrame(anim); };
+    requestAnimationFrame(anim);
+    $('pnlTotal').innerHTML = signed(t.realPnl);
+    $('pnlDay').innerHTML = signed(r.dayPnl);
+    $('ddNow').innerHTML = `<span class="${r.drawdownPct > 0 ? 'neg' : 'dim'}">${r.drawdownPct.toFixed(2)}%</span>`;
+    $('simBook').innerHTML = `SIM BOOK (mock/simulated inputs, separate) · ${signed(t.simPnl)}`;
+    const gate = S.risk.real.ok && S.risk.sim.ok;
+    $('gateChip').className = 'gatechip ' + (gate ? 'ok' : 'bad');
+    $('gateChip').textContent = gate ? 'GATE OPEN' : 'GATE HALTED';
+    renderStaleChip();
+    curveTarget = S.curve;
+    if (S.curve.length) $('curveSpan').textContent = `· ${S.curve.length} samples · ${ago(S.now - S.curve[0].t)} window`;
+  }
+  let curveTarget = [], curvePhase = 0;
+  function sizeCanvas(c) { const dpr = devicePixelRatio || 1; const w = c.clientWidth, h = c.clientHeight; if (c.width !== w * dpr || c.height !== h * dpr) { c.width = w * dpr; c.height = h * dpr; } const ctx = c.getContext('2d'); ctx.setTransform(dpr, 0, 0, dpr, 0, 0); return { ctx, w, h }; }
+  let hoverX = null;
+  $('curve').addEventListener('pointermove', (e) => { const r = e.target.getBoundingClientRect(); hoverX = e.clientX - r.left; });
+  $('curve').addEventListener('pointerleave', () => { hoverX = null; $('curveTip').hidden = true; });
+  function drawCurve(ts) {
+    requestAnimationFrame(drawCurve);
+    const c = $('curve'); if (!c.clientWidth || $('liveView').hidden) return;
+    const { ctx, w, h } = sizeCanvas(c);
+    ctx.clearRect(0, 0, w, h);
+    const data = curveTarget; const padL = 8, padR = 64, padT = 10, padB = 18;
+    if (isCme()) { drawCurveCme(ctx, w, h, data, ts); return; }
+    // grid
+    ctx.strokeStyle = 'rgba(255,255,255,0.04)'; ctx.lineWidth = 1;
+    for (let i = 0; i <= 4; i++) { const y = padT + (h - padT - padB) * i / 4; ctx.beginPath(); ctx.moveTo(padL, y); ctx.lineTo(w - padR, y); ctx.stroke(); }
+    if (!data || data.length < 2) { ctx.fillStyle = '#6b7a89'; ctx.font = '11px IBM Plex Mono'; ctx.fillText('collecting equity samples…', padL + 6, h / 2); return; }
+    const vals = data.flatMap((d) => [d.real, d.sim]);
+    let min = Math.min(...vals), max = Math.max(...vals);
+    const span = Math.max(max - min, S.totals.start * 0.002); const mid = (max + min) / 2; min = mid - span * 0.6; max = mid + span * 0.6;
+    const X = (i) => padL + (i / (data.length - 1)) * (w - padL - padR);
+    const Y = (v) => padT + (1 - (v - min) / (max - min)) * (h - padT - padB);
+    // baseline (start equity)
+    const yb = Y(S.totals.start); ctx.setLineDash([2, 4]); ctx.strokeStyle = 'rgba(255,255,255,0.15)'; ctx.beginPath(); ctx.moveTo(padL, yb); ctx.lineTo(w - padR, yb); ctx.stroke(); ctx.setLineDash([]);
+    // axis labels
+    ctx.fillStyle = '#6b7a89'; ctx.font = '10px IBM Plex Mono';
+    for (let i = 0; i <= 4; i++) { const v = max - (max - min) * i / 4; ctx.fillText(money(v, 0), w - padR + 6, padT + (h - padT - padB) * i / 4 + 3); }
+    // sim line (dashed cyan)
+    ctx.setLineDash([4, 3]); ctx.strokeStyle = 'rgba(79,216,255,0.75)'; ctx.lineWidth = 1.4; ctx.beginPath();
+    data.forEach((d, i) => i ? ctx.lineTo(X(i), Y(d.sim)) : ctx.moveTo(X(i), Y(d.sim))); ctx.stroke(); ctx.setLineDash([]);
+    // real area + line with glow
+    const up = data[data.length - 1].real >= S.totals.start;
+    const col = up ? '61,255,176' : '255,61,90';
+    const g = ctx.createLinearGradient(0, padT, 0, h); g.addColorStop(0, `rgba(${col},0.28)`); g.addColorStop(1, 'rgba(0,0,0,0)');
+    ctx.beginPath(); data.forEach((d, i) => i ? ctx.lineTo(X(i), Y(d.real)) : ctx.moveTo(X(i), Y(d.real)));
+    ctx.lineTo(X(data.length - 1), h - padB); ctx.lineTo(X(0), h - padB); ctx.closePath(); ctx.fillStyle = g; ctx.fill();
+    ctx.beginPath(); data.forEach((d, i) => i ? ctx.lineTo(X(i), Y(d.real)) : ctx.moveTo(X(i), Y(d.real)));
+    ctx.strokeStyle = `rgb(${col})`; ctx.lineWidth = 2; ctx.shadowColor = `rgba(${col},0.6)`; ctx.shadowBlur = 10; ctx.stroke(); ctx.shadowBlur = 0;
+    // scanning sweep + pulsing head
+    curvePhase = (ts / 1000) % 1;
+    const lx = X(data.length - 1), ly = Y(data[data.length - 1].real);
+    ctx.beginPath(); ctx.arc(lx, ly, 3 + 5 * curvePhase, 0, Math.PI * 2); ctx.strokeStyle = `rgba(${col},${1 - curvePhase})`; ctx.lineWidth = 1.5; ctx.stroke();
+    ctx.beginPath(); ctx.arc(lx, ly, 3.5, 0, Math.PI * 2); ctx.fillStyle = `rgb(${col})`; ctx.fill();
+    const sx = padL + ((ts / 4000) % 1) * (w - padL - padR); const sg = ctx.createLinearGradient(sx - 40, 0, sx, 0); sg.addColorStop(0, 'rgba(61,255,176,0)'); sg.addColorStop(1, 'rgba(61,255,176,0.06)');
+    ctx.fillStyle = sg; ctx.fillRect(sx - 40, padT, 40, h - padT - padB);
+    // hover
+    if (hoverX != null) {
+      const i = Math.max(0, Math.min(data.length - 1, Math.round((hoverX - padL) / (w - padL - padR) * (data.length - 1))));
+      const d = data[i]; ctx.strokeStyle = 'rgba(255,255,255,0.25)'; ctx.beginPath(); ctx.moveTo(X(i), padT); ctx.lineTo(X(i), h - padB); ctx.stroke();
+      const tip = $('curveTip'); tip.hidden = false; tip.style.left = Math.min(X(i) + 10, w - 190) + 'px'; tip.style.top = '24px';
+      tip.innerHTML = `${hhmmss(d.t)}<br>real ${money(d.real)}<br><span style="color:var(--cyan)">sim ${money(d.sim)}</span>`;
+    }
+  }
+  // CME-style hero curve: ORB look (dashed purple start-equity line + faint band, hi/lo at the right), keeps the pulsing head and hover tooltip.
+  function drawCurveCme(ctx, w, h, data, ts) {
+    if (!data || data.length < 2) { ctx.fillStyle = ORB.label; ctx.font = ORB.font; ctx.fillText('collecting equity samples…', 8, h / 2); return; }
+    const n = data.length, up = data[n - 1].real >= S.totals.start, col = up ? ORB.up : ORB.down;
+    const g = orbDraw(ctx, w, h, { base: S.totals.start, minSpan: S.totals.start * 0.0024, fmt: (v) => money(v, 0), title: 'REAL-DATA EQUITY · SIM dashed', x0: 0, x1: n - 1,
+      series: [{ pts: data.map((d, i) => [i, d.sim]), col: 'rgba(79,216,255,0.75)', dash: 1, width: 1.3 }, { pts: data.map((d, i) => [i, d.real]), col, band: 1, width: 1.6 }] });
+    if (!g) return;
+    const ph = (ts / 1000) % 1, lx = g.X(n - 1), ly = g.Y(data[n - 1].real), rgb = up ? '61,255,176' : '255,61,90';
+    ctx.beginPath(); ctx.arc(lx, ly, 2.5 + 4 * ph, 0, Math.PI * 2); ctx.strokeStyle = `rgba(${rgb},${1 - ph})`; ctx.lineWidth = 1.2; ctx.stroke();
+    ctx.beginPath(); ctx.arc(lx, ly, 2.5, 0, Math.PI * 2); ctx.fillStyle = col; ctx.fill();
+    if (hoverX != null) {
+      const i = Math.max(0, Math.min(n - 1, Math.round((hoverX - g.L) / (w - g.R - g.L) * (n - 1)))), d = data[i];
+      ctx.strokeStyle = 'rgba(169,139,255,0.35)'; ctx.lineWidth = 1; ctx.beginPath(); ctx.moveTo(g.X(i), g.T); ctx.lineTo(g.X(i), h - g.B); ctx.stroke();
+      const tip = $('curveTip'); tip.hidden = false; tip.style.left = Math.max(0, Math.min(g.X(i) + 10, w - 190)) + 'px'; tip.style.top = '24px';
+      tip.innerHTML = `${hhmmss(d.t)}<br>real ${money(d.real)}<br><span style="color:var(--cyan)">sim ${money(d.sim)}</span>`;
+    }
+  }
+  requestAnimationFrame(drawCurve);
+
+  function renderTicker() {
+    const items = Object.entries(S.prices).sort();
+    const extra = (S.feeds.dex && S.feeds.dex.ticker) || [];
+    const html = items.map(([s, p]) => `<span><b>${esc(s)}</b>${pxFmt(p.px)}<i>${esc(p.venue)}</i></span>`).concat(extra.map((x) => `<span><b>${esc(x.label)}</b>${pxFmt(x.px)}<i>${esc(x.src)}</i></span>`)).join('');
+    const tr = $('ticker'); const next = html + html; if (tr.dataset.h !== html) { tr.innerHTML = next || '<span class="dim">waiting for prices…</span>'; tr.dataset.h = html; }
+  }
+
+  // ---------- strategies ----------
+  // Explainers are fetched once (they derive from server config, not ticks) and re-fetched rarely.
+  let XP = {}, xpAt = 0;
+  const loadExplain = () => { xpAt = Date.now(); fetch('/api/explain').then((r) => r.json()).then((j) => { XP = Object.fromEntries((j.strategies || []).map((x) => [x.id, x])); renderStrats(); }).catch(() => { xpAt = 0; }); };
+  function renderStrats() {
+    if (!xpAt || Date.now() - xpAt > 300e3) loadExplain();
+    const attr = Object.fromEntries(S.attribution.map((a) => [a.id, a]));
+    const pnlRow = Object.fromEntries(((S.pnlBoard && S.pnlBoard.strategies) || []).map((r) => [r.id, r]));
+    const root = $('strats');
+    // Keyed cards: the live part re-renders each tick; the explainer <details> is only rebuilt when its text changes,
+    // so an open box stays open and keeps keyboard focus.
+    const want = S.strategies.map((s) => s.id);
+    for (const el of [...root.children]) if (!want.includes(el.dataset.sid)) el.remove();
+    S.strategies.forEach((s, i) => {
+      let card = root.querySelector(`:scope > .strat[data-sid="${CSS.escape(s.id)}"]`);
+      if (!card) { card = document.createElement('div'); card.className = 'strat'; card.dataset.sid = s.id; card.innerHTML = '<div class="strat-live"></div><div class="strat-x"></div><div class="strat-skip"></div>'; }
+      if (root.children[i] !== card) root.insertBefore(card, root.children[i] || null);
+      const a = attr[s.id] || { real: 0, sim: 0, realStats: {}, simStats: {} };
+      // Headline book: SIM when the strategy runs on mock/sim inputs (or only the SIM book has booked anything); the other book, if it has events, is shown separately below it.
+      const b = pnlRow[s.id], simFirst = s.dataMode === 'mock' || s.dataMode === 'sim' || (b && !b.real.events && b.sim.events > 0);
+      const side = simFirst ? 'sim' : 'real', other = simFirst ? 'real' : 'sim';
+      const st = simFirst ? a.simStats : a.realStats;
+      const tr = (st.trades || 0); const wr = tr ? Math.round((st.wins || 0) / tr * 100) + '%' : '—';
+      const head = b ? pnlHead(bookHead(b[side], { sim: simFirst, alloc: s.alloc, label: simFirst ? 'SIM P&L · simulated inputs' : 'Realized P&L · real-data book' })) +
+          (b[other].events ? pnlHead(bookHead(b[other], { sim: !simFirst, alloc: s.alloc, small: true, label: simFirst ? 'Real-data book (separate)' : 'SIM book (separate)' })) : '')
+        : pnlHead({ label: simFirst ? 'SIM P&L' : 'Realized P&L', sim: simFirst, value: simFirst ? a.sim : a.real, n: tr, pctBase: s.alloc });
+      const skip = s.lastSkip ? `<div class="skip">⟂ ${esc(s.lastSkip.reason)}${s.lastSkip.detail ? ' — ' + esc(s.lastSkip.detail) : ''}</div>` : `<div class="skip" style="border-color:var(--line2)">${s.armed ? 'evaluating…' : 'disarmed · scanning only, no paper entries'}</div>`;
+      card.classList.toggle('armed', !!s.armed);
+      const live = `<div class="strat-top"><span class="strat-name">${esc(s.name)}</span><button type="button" class="toggle ${s.armed ? 'on' : ''}" data-arm="${esc(s.id)}" aria-pressed="${s.armed}">${s.armed ? 'ARMED' : 'DISARMED'}</button></div>
+        <div class="badges">${badge(s.dataMode)}${(s.chains || []).map((c) => `<span class="badge">${esc(c)}</span>`).join('')}</div>
+        ${head}
+        <div class="strat-desc">${esc(s.desc)}</div>
+        <div class="stats"><div><small>closed · win</small>${tr} · ${wr}</div><div><small>fees paid</small>${st.fees ? money(st.fees) : '<span class="dim">—</span>'}</div><div><small>open pos</small>${(s.positions || []).length}</div></div>`;
+      const L = card.children[0]; if (L.dataset.h !== live) { L.innerHTML = live; L.dataset.h = live; }
+      const xh = window.HAWSE.explain.html(XP[s.id], 'desk:' + s.id); const XE = card.children[1]; if (XE.dataset.h !== xh) { window.HAWSE.explain.swap(XE, xh); XE.dataset.h = xh; }
+      const K = card.children[2]; if (K.dataset.h !== skip) { K.innerHTML = skip; K.dataset.h = skip; }
+    });
+  }
+
+  // ---------- risk ----------
+  function renderRisk() {
+    const r = S.risk.real, sm = S.risk.sim;
+    const meter = (label, v, lim, unit = '%') => { const k = Math.min(1, Math.max(0, v / lim)); const col = k > 0.8 ? 'var(--hot)' : k > 0.5 ? 'var(--amber)' : 'var(--mint)';
+      return `<div class="meter"><div class="label">${label}</div><div class="v mono">${v.toFixed(2)}${unit} <span class="dim sm">/ ${lim}${unit}</span></div><div class="bar"><i style="left:0;width:${k * 100}%;background:${col}"></i></div></div>`; };
+    const dayLoss = Math.max(0, -r.dayPnl / r.dayStart * 100);
+    $('riskBody').innerHTML = `<div class="riskgrid">${meter('Day loss (real)', dayLoss, r.dailyLossPct)}${meter('Drawdown (real)', r.drawdownPct, r.maxDrawdownPct)}</div>
+      <div class="tbl" style="margin-bottom:10px">
+        <div class="row" style="grid-template-columns:90px 1fr"><span class="dim">real book</span><span class="${r.ok ? 'pos' : 'neg'}">${r.ok ? 'OPEN · new risk allowed' : 'HALTED · ' + esc(r.reason)}</span></div>
+        <div class="row" style="grid-template-columns:90px 1fr"><span class="dim">sim book</span><span class="${sm.ok ? 'pos' : 'neg'}">${sm.ok ? 'OPEN' : 'HALTED · ' + esc(sm.reason)}</span></div>
+        <div class="row" style="grid-template-columns:90px 1fr"><span class="dim">live orders</span><span class="neg">DISABLED (stub refuses)</span></div>
+      </div>`;
+    if (document.activeElement !== $('dailyIn')) $('dailyIn').value = r.dailyLossPct;
+    if (document.activeElement !== $('ddIn')) $('ddIn').value = r.maxDrawdownPct;
+    $('riskTs').textContent = 'peak ' + money(r.peak, 0);
+  }
+
+  // ---------- funding ----------
+  function renderFunding() {
+    const f = S.funding; const by = {};
+    for (const r of f.rows) by[r.symbol + '|' + r.venue] = r;
+    const cols = f.venues.length + 1;
+    let h = `<div class="heat" style="grid-template-columns:64px repeat(${f.venues.length},minmax(84px,1fr))"><div class="h"></div>` + f.venues.map((v) => `<div class="h">${esc(v)}</div>`).join('');
+    for (const s of f.symbols) {
+      h += `<div class="rh">${esc(s)}</div>`;
+      for (const v of f.venues) {
+        const r = by[s + '|' + v];
+        if (!r) { h += `<div class="c na">n/a</div>`; continue; }
+        const apr = r.hourly * 24 * 365 * 100;
+        h += `<div class="c" style="background:${heatColor(apr, 30)}" title="${esc(v)} ${esc(s)} rate ${(r.rate * 100).toFixed(4)}% per ${r.intervalH}h · mark ${r.mark}">${apr.toFixed(1)}%<br><span class="dim" style="font-size:9px">${r.intervalH}h · ${(r.rate * 100).toFixed(4)}%</span></div>`;
+      }
+    }
+    $('fundHeat').innerHTML = h + '</div>';
+    void cols;
+    const fs = S.strategies.find((x) => x.id === 'funding');
+    const v = (fs && fs.view) || {}, best = v.best || [], g = v.gates || {};
+    const G = 'grid-template-columns:44px 1fr 58px 50px 62px 62px 62px 66px';
+    const pct = (x, d = 1) => (x == null ? '—' : x.toFixed(d) + '%');
+    const fundRow = (b) => `<div class="row ${b.ok ? 'ok' : ''}" style="${G}" title="${esc(b.reason || 'passes every v2 gate')}${b.predSrc ? ' · forecast: ' + esc(b.predSrc) : ''}${b.liqCapped ? ' · size cut by liquidity rule' : ''}"><span>${esc(b.symbol)}</span><span>${b.long ? esc(b.long) + ' / ' + esc(b.short) : '<span class="dim">' + esc(b.reason) + '</span>'}</span><span>${pct(b.spreadApr)}</span><span class="${b.persistCount >= (g.persistPrints || 3) ? 'pos' : 'dim'}">${b.persistCount == null ? '—' : b.persistCount + '/' + (g.persistPrints || 3)}</span><span class="${b.predictedApr > 0 ? 'pos' : b.predictedApr == null ? 'dim' : 'neg'}">${pct(b.predictedApr)}</span><span class="${b.netBps > 0 ? 'pos' : 'neg'}">${b.netBps == null ? '—' : b.netBps.toFixed(1) + 'bp'}</span><span class="${b.aprPct > 0 ? 'pos' : 'neg'}">${pct(b.aprPct)}</span><span class="${b.ok ? 'pos' : 'dim'}">${b.ok ? 'QUALIFIES' : 'skip'}</span></div>`;
+    const head = (first) => `<div class="row head" style="${G}"><span>sym</span><span>${first}</span><span>spread APR</span><span>persist</span><span>pred APR</span><span>net</span><span>net APR</span><span>status</span></div>`;
+    $('fundGates').textContent = `Perp↔perp v2 · net ≥ ${v.minNetBps ?? 8}bp/${v.holdHours ?? 24}h · APR ≥ ${g.minApr ?? 10}% · basis ≤ ${g.maxEntryBasisBps ?? 15}bp · ${g.persistPrints ?? 3} positive obs (1 per ${Math.round((g.obsSec || 900) / 60)} min) · forecast ${g.usePredicted === false ? 'off' : 'on'}`;
+    $('fundBest').innerHTML = head('long / short') + (best.map(fundRow).join('') || '<div class="dim mono sm">waiting for 2+ live venues…</div>');
+    const carry = v.carry || [];
+    $('fundCarry').innerHTML = g.carry && g.carry.enabled ? `<div class="subh">Cash &amp; carry v2 · long spot / short perp on one venue · net ≥ ${g.carry.minNetBps}bp/${g.carry.holdHours}h</div>` + head('spot / perp') + (carry.map(fundRow).join('') || '<div class="dim mono sm">no fresh spot + perp book on the same venue yet</div>') : '<div class="dim mono sm">carry mode off (CARRY_ENABLED=false)</div>';
+    const sc = v.score;
+    if (sc) {
+      const P = sc.plan, cell = (m, k, f) => (m && m[k] != null ? f(m[k]) : '—');
+      const line = (label, m, tag) => !m ? '' : `<div class="row" style="grid-template-columns:1.4fr .6fr .8fr .8fr .8fr .8fr .7fr 1fr"><span>${label} ${tag}</span><span>${m.n}</span><span>${(m.n ? signed(m.realized) : '—')}</span><span>${cell(m, 'ratio', (x) => x.toFixed(2))}</span><span>${cell(m, 'netApr', (x) => x.toFixed(1) + '%')}</span><span>${cell(m, 'maxDdPct', (x) => x.toFixed(2) + '%')}</span><span>${cell(m, 'stopPct', (x) => x.toFixed(0) + '%')}</span><span class="${m.verdict === 'pass' ? 'pos' : m.verdict === 'fail' ? 'neg' : 'dim'}">${esc(m.verdict)}<br><span class="dim sm">${esc(m.progress)}</span></span></div>`;
+      $('fundScore').innerHTML = `<div class="subh">Realized vs expected scoreboard · pass: ratio ≥ ${P.passRatio}, APR ≥ ${P.passApr}%, pair loss ≤ ${P.maxPairLossPct}%, DD &lt; ${P.maxDdPct}% after ${P.minClosed} pairs / ${P.minDays} days</div>` +
+        `<div class="row head" style="grid-template-columns:1.4fr .6fr .8fr .8fr .8fr .8fr .7fr 1fr"><span>book</span><span>closed</span><span>realized</span><span>real/exp</span><span>net APR</span><span>max DD</span><span>stops</span><span>verdict</span></div>` +
+        line('v2 booked', sc.booked, '<span class="badge live">LIVE DATA · PAPER</span>') + line('v2 shadow', sc.shadowV2, '<span class="badge">not booked</span>') + line('naive v1 shadow', sc.shadowV1, '<span class="badge">control · not booked</span>') +
+        `<div class="dim sm">Shadows open now: v2 ${sc.shadowOpen.v2} · v1 ${sc.shadowOpen.v1}. Shadows use the same real quotes and accrue funding continuously (an approximation); they never touch desk equity.</div>`;
+    }
+    const live = S.health.filter((x) => x.id.startsWith('funding.') && x.status === 'live').length;
+    $('fundTs').textContent = `${live}/${f.venues.length} venues live`;
+  }
+
+  // ---------- attribution + positions ----------
+  function renderAttr() {
+    const rows = S.attribution; const names = Object.fromEntries(S.strategies.map((s) => [s.id, s.name]));
+    const max = Math.max(1, ...rows.map((r) => Math.max(Math.abs(r.real), Math.abs(r.sim))));
+    $('attr').innerHTML = rows.map((r) => {
+      const w = (v) => Math.abs(v) / max * 50;
+      const bar = (v, col) => `<div class="bar"><i style="${v >= 0 ? 'left:50%' : 'right:50%'};width:${w(v)}%;background:${col}"></i></div>`;
+      return `<div class="attr-row"><span>${esc(names[r.id] || r.id)}</span><div>${bar(r.real, r.real >= 0 ? 'var(--mint)' : 'var(--hot)')}<div style="height:3px"></div>${bar(r.sim, 'rgba(79,216,255,.7)')}</div><span style="text-align:right">${signed(r.real)}<br><span class="sm" style="color:var(--cyan)">sim ${r.sim >= 0 ? '+' : '-'}$${Math.abs(r.sim).toFixed(2)}</span></span></div>`;
+    }).join('');
+    const pos = S.strategies.flatMap((s) => s.positions.map((p) => ({ s, p })));
+    $('positions').innerHTML = pos.length ? pos.map(({ s, p }) => `<div class="row" style="grid-template-columns:90px 1fr auto"><span>${esc(s.name)}</span><span>${esc(describePos(p))}</span><span>${signed(p.upnl ?? (p.mtm != null ? p.mtm + (p.funding || 0) - (p.exitCost || 0) : null))}</span></div>`).join('') : '<div class="dim mono sm">no open paper positions</div>';
+  }
+  function describePos(p) {
+    if (p.legs) return `${p.symbol} ${p.legs.map((l) => l.side + ' ' + l.venue).join(' / ')} · $${p.notional.toFixed(0)}/leg${p.stale ? ' · STALE' : ''}`;
+    return `${p.symbol || ''} ${p.side || ''} ${p.qty ? p.qty.toFixed(4) : ''} @ ${p.entry ? pxFmt(p.entry) : ''}${p.simulated ? ' · SIM' : ''}`;
+  }
+
+  // ---------- health ----------
+  let dtab = 'providers';
+  document.querySelectorAll('[data-dtab]').forEach((b) => b.onclick = () => { dtab = b.dataset.dtab; document.querySelectorAll('[data-dtab]').forEach((x) => x.classList.toggle('on', x === b)); $('providers').hidden = dtab !== 'providers'; $('health').hidden = dtab !== 'feeds'; });
+  const sb = $('settingsBtn'); if (sb) sb.onclick = () => $('dataSources').scrollIntoView({ behavior: 'smooth', block: 'start' });
+  const openConnect = new Set();
+  // Top-bar warning: any source that delivered before but not within its staleMs (watchdog restarts it; see Data sources → Feeds).
+  function renderStaleChip() {
+    const el = $('staleChip'); if (!el) return; const st = S.stale || [];
+    el.hidden = !st.length; if (!st.length) return;
+    const worst = st.reduce((a, b) => (b.ageMs > a.ageMs ? b : a));
+    el.textContent = `⚠ ${st.length} STALE · ${ago(worst.ageMs)}`;
+    el.title = 'Stale feeds (no update within their window):\n' + st.map((x) => `${x.label}${x.mock ? ' [MOCK]' : ''}: last update ${ago(x.ageMs)} ago (window ${Math.round(x.staleMs / 1000)}s)`).join('\n');
+    el.onclick = () => { const b = document.querySelector('[data-dtab="feeds"]'); if (b) b.click(); $('dataSources').scrollIntoView({ behavior: 'smooth', block: 'start' }); };
+  }
+  function renderHealth() {
+    const h = S.health; const cnt = (st) => h.filter((x) => x.status === st).length;
+    const wd = S.watchdog; const wdTxt = wd ? ` · watchdog ${wd.restarts} restart(s)${wd.clockJumps && wd.clockJumps.length ? ` · last clock jump +${Math.round(wd.clockJumps[wd.clockJumps.length - 1].ms / 1000)}s` : ''}` : '';
+    $('healthSum').innerHTML = `<span class="pos">${cnt('live')} live</span> · <span class="warn">${cnt('stale')} stale</span> · <span class="warn">${cnt('mock')} mock</span> · <span class="neg">${cnt('down')} down</span>${cnt('blocked') ? ` · <span class="warn">${cnt('blocked')} blocked from this host</span>` : ''}${esc(wdTxt)}`;
+    const cols = 'grid-template-columns:1.4fr 44px 62px 56px 48px';
+    $('health').innerHTML = `<div class="row head" style="${cols}"><span>feed</span><span>via</span><span>status</span><span>latency</span><span>age</span></div>` +
+      h.map((x) => { const st = x.status === 'stale' ? 'stale' : x.kind === 'mock' ? 'mock' : x.status === 'live' ? 'live' : x.status === 'down' ? 'down' : x.status === 'blocked' ? 'blocked' : 'pending';
+        return `<div class="row${st === 'stale' ? ' stale-row' : ''}" style="${cols}" title="${esc(x.error || x.note || '')}"><span>${esc(x.label)}<br><span class="dim sm">${esc(x.error ? x.error.slice(0, 70) : x.note || x.group)}</span></span><span class="dim">${esc(x.transport || 'rest')}</span><span>${badge(st)}${st === 'stale' && x.kind === 'mock' ? ' ' + badge('mock') : ''}${st === 'blocked' && x.blockedHttp ? `<br><span class="dim sm">HTTP ${esc(x.blockedHttp)}</span>` : ''}</span><span>${x.latencyMs == null ? '—' : x.latencyMs + 'ms'}</span><span class="${st === 'stale' ? 'warn' : ''}">${ago(x.ageMs)}</span></div>`; }).join('');
+    renderProviders();
+  }
+  const staleFeeds = (p) => { const rows = (p.feeds || []).map((f) => (S.health || []).find((h) => h.id === f.id)).filter((h) => h && h.status === 'stale');
+    return rows.length ? `<br><span class="warn">⚠ STALE: ${rows.map((h) => esc(h.id) + ' ' + esc(ago(h.ageMs))).join(' · ')}</span>` : ''; };
+  function renderProviders() {
+    const P = S.providers || []; if (!P.length) { $('providers').innerHTML = '<div class="dim">provider registry unavailable</div>'; return; }
+    const cols = 'grid-template-columns:1.5fr 92px 56px 1.6fr 78px';
+    $('providers').innerHTML = `<div class="row head" style="${cols}"><span>provider</span><span>status</span><span>latency</span><span>unlocks</span><span></span></div>` + P.map((p) => {
+      const vars = p.env.length ? p.env.map((v) => `<code class="${v.set ? 'pos' : v.required ? 'warn' : 'dim'}">${esc(v.name)}</code> ${v.set ? '✓ set' : v.required ? 'not set' : 'optional'}`).join('<br>') : '<span class="dim">no env vars</span>';
+      const how = p.keyless ? 'Works without a key.' : p.connect.anyOf ? 'Set any one of these env vars (server-side .env), then restart:' : 'Set these env vars (server-side .env), then restart:';
+      const open = openConnect.has(p.id);
+      return `<div class="row prov" style="${cols}"><span>${esc(p.name)}<br><span class="dim sm">${esc(p.category)}${p.fallback ? ' · fallback: ' + esc(p.fallback) : ''}</span></span><span>${badge(p.status)}</span><span>${p.latencyMs == null ? '—' : Math.round(p.latencyMs) + 'ms'}</span>
+        <span class="sm">${p.unlocks.map(esc).join(' · ')}${pythInfo(p)}${creditInfo(p)}${staleFeeds(p)}</span><span><button type="button" class="btn sm" data-connect="${esc(p.id)}">${open ? 'Close' : p.keyless ? 'Details' : 'Connect'}</button></span>
+        ${open ? `<div class="connect sm" style="grid-column:1/-1"><div>${how}</div><div class="mono">${vars}</div>${p.connect.signup ? `<div>Sign up / docs: <a href="${esc(p.connect.signup)}" target="_blank" rel="noopener">${esc(p.connect.signup)}</a></div>` : ''}${p.placeholder ? '<div class="warn">Placeholder: no adapter yet. Add one file in server/providers/adapters/ (see README).</div>' : ''}<div class="dim">feeds: ${p.feeds.map((f) => esc(f.id) + ' ' + esc(f.status) + ' via ' + esc(f.transport || 'rest')).join(' · ') || 'none'}</div></div>` : ''}</div>`; }).join('');
+    $('providers').querySelectorAll('[data-connect]').forEach((b) => b.onclick = () => { const id = b.dataset.connect; openConnect.has(id) ? openConnect.delete(id) : openConnect.add(id); renderProviders(); });
+  }
+  // Credit-usage estimate + budget guard (Helius, The Odds API). Numbers are local counters / estimates, not provider invoices.
+  function creditInfo(p) {
+    const c = p.extra && p.extra.credits; if (!c) return '';
+    const n = (x) => (x == null ? '—' : Math.round(x).toLocaleString());
+    const pct = c.budget ? Math.min(100, (100 * (c.used || 0)) / c.budget) : 0;
+    const over = c.overBudget || (c.estMonthly != null && c.planMonthly && c.estMonthly > c.planMonthly);
+    const bits = [`<b>Credits ${esc(c.month || '')}</b>: ${n(c.used)} / ${n(c.budget)} budget used (guard)`, `free plan ${n(c.planMonthly)}/mo`,
+      `est. ${n(c.estMonthly)}/mo${c.estBasis ? ` (${esc(c.estBasis)})` : ''}`];
+    if (c.mode) bits.unshift(`mode <b>${esc(c.mode)}</b>`);
+    if (c.enabled === false) bits.unshift('<span class="warn">DEMO: WHALES_ENABLED=false, no Helius calls</span>');
+    if (c.dailyBudget != null) bits.splice(1, 0, `<b>today</b> ${n(c.usedToday)} / ${n(c.dailyBudget)} daily cap (auto-pause at ${n(c.pauseAtPct)}%)`);
+    if (c.paused) bits.push(`<span class="neg">AUTO-PAUSED${c.autoPaused && c.autoPaused.remote ? ': ' + esc(c.autoPaused.remote) : ''}</span>`);
+    if (c.mode === 'inbox') bits.push(`watching ${n(c.watching)} accounts${c.watchConfigured ? '' : ' (proposed list)'}`);
+    if (c.inbox) bits.push(inboxInfo(c.inbox, c.delivery));
+    if (c.schedule) bits.unshift(`schedule <b>${esc(c.schedule)}</b> · ${n(c.costPerCall)} cr/call`);
+    if (c.legacyPerDay) bits.push(`<span class="dim">old default ≈ ${n(c.legacyPerDay)}/day</span>`);
+    if (c.apiRemaining != null) bits.push(`API reports ${n(c.apiRemaining)} left`);
+    if (c.next24h != null && c.schedule === 'snapshots') bits.push(`${c.next24h} snapshot(s) next 24h`);
+    if (c.refused) bits.push(`<span class="warn">${n(c.refused)} call(s) refused by guard</span>`);
+    if (c.closingOnly) bits.push('<span class="warn">closing-only throttle</span>');
+    if (over) bits.push('<span class="neg">estimate exceeds free plan</span>');
+    const dpct = c.dailyBudget ? Math.min(100, (100 * (c.usedToday || 0)) / c.dailyBudget) : null;
+    return `<br><span class="sm mono credits" data-credits="${esc(p.id)}">${bits.join(' · ')}</span><span class="credit-bar" title="month"><i style="width:${pct.toFixed(1)}%"></i></span>` +
+      (dpct == null ? '' : `<span class="credit-bar daily${c.paused ? ' paused' : ''}" title="today"><i style="width:${dpct.toFixed(1)}%"></i></span>`);
+  }
+  // HAWSE webhook inbox health (counters only; the URL and token never reach the browser).
+  function inboxInfo(x, d) {
+    if (!x.configured) return '<span class="warn">inbox not configured (HAWSE_WEBHOOK_URL / HAWSE_READ_TOKEN missing): MOCK events</span>';
+    const ago = (ms) => (ms == null ? 'never' : ms < 90e3 ? Math.round(ms / 1000) + 's ago' : ms < 5400e3 ? Math.round(ms / 60e3) + 'm ago' : (ms / 3.6e6).toFixed(1) + 'h ago');
+    const b = [`<b>inbox</b> ${x.lastOkAt ? (x.stale ? '<span class="warn">STALE</span>' : '<span class="pos">ok</span>') : 'pending'} · last poll ${ago(x.lastOkAgoMs)} every ${x.pollSec}s`,
+      `cursor ${x.cursor}`, `rtt ${x.lastRttMs == null ? '—' : x.lastRttMs + 'ms'}`, `${x.txs} tx in ${x.events} deliveries · ${x.dupes} dupes`];
+    b.push(`last delivery ${ago(x.lastEventAgoMs)}`);
+    if (d && d.lastLagMs != null) b.push(`chain→inbox ${Math.round(d.lastLagMs / 1000)}s`);
+    if (d && d.test) b.push(`<span class="dim">${d.test} test payload(s), not billed</span>`);
+    if (x.backoffMs) b.push(`<span class="warn">backing off ${Math.round(x.backoffMs / 1000)}s</span>`);
+    if (x.lastError && (!x.lastOkAt || x.lastError.at > x.lastOkAt)) b.push(`<span class="neg">${esc(x.lastError.msg)}</span>`);
+    if (x.gapCount) b.push(`<span class="neg">${x.gapCount} GAP(s): offline &gt; 24 h, deliveries may be missing (last ${esc(String(x.gaps[x.gaps.length - 1].hours))} h)</span>`);
+    return b.join(' · ');
+  }
+  function pythInfo(p) {
+    if (!p.extra || !p.extra.checks) return '';
+    return '<br>' + p.extra.checks.map((c) => `<span class="dim mono">${esc(c.symbol)} ${fmtPx(c.pyth)}${c.devBps == null ? '' : ` · ${esc(c.venue)} ${c.devBps >= 0 ? '+' : ''}${c.devBps.toFixed(1)}bp`}</span>`).join(' ');
+  }
+  const fmtPx = (v) => (v >= 1000 ? v.toLocaleString('en-US', { maximumFractionDigits: 0 }) : v.toFixed(v >= 10 ? 2 : 4));
+
+  // ---------- tape ----------
+  function renderTape(force) {
+    const rows = S.tape.filter((r) => tapeFilter === 'all' || r.kind === tapeFilter).slice(0, 120);
+    const top = rows[0] ? rows[0].id : 0; if (!force && top === lastTapeId) return; lastTapeId = top;
+    const names = Object.fromEntries(S.strategies.map((s) => [s.id, s.name]));
+    $('tape').innerHTML = rows.map((r) => `<div class="tape-row"><span class="dim">${hhmmss(r.t)}</span><span class="k k-${esc(r.kind)} s">${esc(r.kind)}${r.simulated ? ' · sim' : ''}</span><span>${r.strategy ? '<span class="dim">' + esc(names[r.strategy] || r.strategy) + ' · </span>' : ''}${esc(r.msg)}</span><span>${r.pnl == null ? '' : signed(r.pnl)}</span></div>`).join('') || '<div class="dim">no events</div>';
+  }
+
+  // ---------- stage panels (render only when the server provides them) ----------
+  function renderWhales() {
+    const s = S.strategies.find((x) => x.id === 'whale'); $('whaleCard').hidden = !s; if (!s) return;
+    const v = s.view; $('whaleMode').innerHTML = Object.entries(v.modes || {}).map(([k, m]) => `${esc(k)} ${badge(m)}`).join(' ');
+    $('whaleNet').innerHTML = (v.net || []).map((n) => `<div class="meter"><div class="label">${esc(n.chain)} · ${esc(n.window)}</div><div class="v mono ${n.netUsd >= 0 ? 'pos' : 'neg'}">${n.netUsd >= 0 ? '+' : '-'}$${compact(Math.abs(n.netUsd))}</div><div class="dim sm mono">${n.count} tx · ${n.mock ? 'MOCK' : 'live'}</div></div>`).join('');
+    $('whales').innerHTML = (v.flows || []).slice(0, 40).map((f) => `<div class="row" style="grid-template-columns:58px 70px 1fr 80px"><span class="dim">${hhmmss(f.t)}</span><span>${esc(f.chain)}${f.mock ? ' <span class="badge mock">mock</span>' : ''}</span><span>${f.url ? `<a href="${esc(f.url)}" target="_blank" rel="noopener" style="color:inherit">${esc(f.desc)}</a>` : esc(f.desc)}</span><span class="${f.dir === 'buy' ? 'pos' : f.dir === 'sell' ? 'neg' : ''}">$${compact(f.usd)}</span></div>`).join('') || '<div class="dim mono sm">waiting for large transactions…</div>';
+  }
+  function renderFollow() {
+    const s = S.strategies.find((x) => x.id === 'wfollow'); $('followCard').hidden = !s; if (!s) return;
+    const v = s.view || {}, hl = v.hl || {}, r = v.rules || {}, sc = v.score || {};
+    const sw = (a) => (a ? esc(a.slice(0, 6) + '…' + a.slice(-4)) : '?');
+    $('followMode').innerHTML = `HL ${badge(hl.mode === 'live' ? 'live' : 'down')} ${(hl.wallets || []).length} wallet(s) · SOL ${badge(v.sol && v.sol.mode === 'mock' ? 'mock' : v.sol && v.sol.wallets ? 'live' : 'down')}`;
+    const fp = (x, d = 2) => (x == null ? '—' : (x >= 0 ? '+' : '') + x.toFixed(d) + '%');
+    const G = 'grid-template-columns:58px 70px 86px 1fr 70px';
+    const pos = (s.positions || []).filter((p) => p.kind === 'follow');
+    $('followSig').innerHTML = `<div class="subh">Rules: ≥ $${compact(r.minUsdHl || 0)} HL / $${compact(r.minUsdSol || 0)} SOL · delay ${r.delaySecHl}s / ${r.delaySecSol}s · chase ≤ ${r.maxChasePct}% · TP ${(r.tp * 100).toFixed(1)}% · SL ${(r.sl * 100).toFixed(1)}% · ${r.maxHoldHHl}h / ${r.maxHoldHSol}h · <span class="badge live">REAL FILLS · PAPER</span></div>` +
+      (pos.length ? `<div class="subh">Open follows (controls are SIM)</div>` + pos.map((p) => `<div class="row" style="${G}"><span>${esc(p.symbol)}</span><span class="${p.side === 'long' ? 'pos' : 'neg'}">${esc(p.side)}</span><span>${sw(p.wallet)}</span><span class="dim">${esc(p.chain)} · delay ${p.delaySec}s · chase ${(p.chasePct || 0).toFixed(2)}% · ${p.controlId ? p.controlId.filter(Boolean).length : 0} controls</span><span class="${(p.upnl || 0) >= 0 ? 'pos' : 'neg'}">${signed(p.upnl || 0)}</span></div>`).join('') : '') +
+      ((v.pending || []).length ? `<div class="dim sm mono">queued (latency delay): ${(v.pending || []).map((q) => `${esc(q.asset)} ${esc(q.side)} in ${q.dueInSec}s`).join(' · ')}</div>` : '') +
+      `<div class="subh">Wallet signals (public fills; history before add date ignored)</div><div class="row head" style="${G}"><span>time</span><span>asset</span><span>wallet</span><span>kind</span><span>size</span></div>` +
+      ((v.signals || []).slice(0, 12).map((x) => `<div class="row" style="${G}"><span class="dim">${hhmmss(x.t)}</span><span>${esc(x.asset)}</span><span>${sw(x.wallet)}</span><span class="${x.kind === 'reduce' ? 'neg' : 'pos'}">${esc(x.kind)} ${esc(x.side)}${x.frac != null ? ' ' + (x.frac * 100).toFixed(0) + '%' : ''}</span><span>$${compact(x.usd)}</span></div>`).join('') || `<div class="dim mono sm">${hl.mode === 'live' ? 'waiting for a tracked wallet to trade…' : 'no wallets configured: set FOLLOW_WALLETS_HL or run scripts/score-wallets.js'}</div>`);
+    const o = sc.overall, P = sc.plan || {}, W = 'grid-template-columns:1.2fr .5fr .8fr 1.2fr .6fr .8fr .8fr .9fr 1fr';
+    const line = (label, m) => `<div class="row" style="${W}"><span>${label}</span><span>${m.n}</span><span>${fp(m.mean)}</span><span>${m.ci ? fp(m.ci[0]) + ' … ' + fp(m.ci[1]) : '—'}</span><span>${m.hitPct == null ? '—' : m.hitPct.toFixed(0) + '%'}</span><span>${fp(m.meanRandom)}</span><span>${fp(m.meanHold)}</span><span>${fp(m.mean0)} / ${fp(m.mean60)}</span><span class="${m.verdict.status === 'pass' ? 'pos' : m.verdict.status === 'fail' ? 'neg' : 'dim'}">${esc(m.verdict.status)}<br><span class="dim sm">${esc(m.verdict.text)}</span></span></div>`;
+    $('followScore').innerHTML = o ? `<div class="subh">Scoreboard · net % per follow after 2× taker + slippage · pass after ${P.minSignals}: CI &gt; 0 and ≥ ${P.passEdgeVsRandomPct}%/trade over random</div>` +
+      `<div class="row head" style="${W}"><span>wallet</span><span>n</span><span>mean</span><span>95% CI</span><span>hit</span><span>random <span class="badge">SIM</span></span><span>hold <span class="badge">SIM</span></span><span>0s / 60s delay</span><span>verdict</span></div>` +
+      line('<b>all wallets</b>', o) + (sc.wallets || []).slice(0, 10).map((w) => line(`${sw(w.wallet)} <span class="dim sm">${esc(w.chain)}</span>`, w)).join('') : '';
+  }
+  function renderMev() {
+    const s = S.strategies.find((x) => x.id === 'mevlab'); $('mevCard').hidden = !s; if (!s) return;
+    const v = s.view || {}, f = v.feed || {}, st = f.stats || {}, m = v.metrics || {}, c = v.counts || {}, r = v.rules || {}, P = v.plan || {};
+    const d = (x, k = 0, suf = '%') => (x == null ? '—' : x.toFixed(k) + suf), $u = (x) => (x == null ? '—' : (x < 0 ? '-' : '') + '$' + compact(Math.abs(x)));
+    $('mevMode').innerHTML = v.mode === 'off' ? `${badge('down')} MEMPOOL_ENABLED=false · not connected` : `${badge(v.mode === 'live' ? 'live' : 'down')} ${esc(f.label || '')} · block ${v.head || '—'} · base ${v.baseFeeGwei == null ? '—' : v.baseFeeGwei.toFixed(2)} gwei`;
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const vd = m.verdict || { status: 'collecting', text: '' };
+    $('mevMetrics').innerHTML = `<div class="subh">Rules: victim ≥ $${compact(r.minUsd || 0)} · gas ${compact(r.gasSandwich || 0)} / ${compact(r.gasBackrun || 0)} units · builder bid ${d((r.bidShare || 0) * 100)} of gross (realistic) · never trades, results are <span class="badge sim">SIMULATED</span></div>` +
+      `<div class="riskgrid">` + meter('pending seen', compact(st.pendingSeen || 0), `${st.routerTxs || 0} to routers · ${st.decoded || 0} decoded · ${st.unsupported || 0} v4`) +
+      meter('large swaps simulated', `${m.observed || 0}<span class="dim sm"> / ${P.minObserved || 500}</span>`, `${c.small || 0} small · ${c.exactOut || 0} exact-out · ${c.multihop || 0} multihop · ${c.unpriced || 0} unpriced`) +
+      meter('inclusion', `${m.included || 0} in`, `${m.dropped || 0} dropped · ${m.replaced || 0} replaced`) +
+      meter('coverage', d(m.coverageVictimsPct), `of ${c.victims || 0} heuristic victims in ${c.blocks || 0} blocks · ${d(m.coverageTxsPct)} of all block txs seen`) +
+      meter('model vs truth', `P ${d(m.precisionPct)} · R ${d(m.recallPct)}`, `${m.confirmed || 0}/${P.minConfirmed || 50} confirmed · median err ${d(m.medianErrPct)} (${m.matched || 0} matched)`) +
+      meter('sim sandwich sum', `${$u(m.ceilSumUsd)} <span class="dim sm">ceil</span>`, `${$u(m.realSumUsd)} realistic · ${d(m.realPositivePct)} of swaps > 0 · back-run > 0: ${d(m.backrunPositivePct)}`) + `</div>` +
+      `<div class="subh">Error histogram (|model − attacker gross| ÷ attacker gross): ${(m.errHist || []).map((h) => `${esc(h.label)} <b>${h.n}</b>`).join(' · ')}${m.duneRows ? ` · Dune truth rows: ${m.duneRows}` : ' · no Dune import (heuristic truth only)'}</div>` +
+      `<div class="subh">Verdict: <span class="${vd.status === 'pass' ? 'pos' : vd.status === 'fail' ? 'neg' : 'dim'}">${esc(vd.status)}</span> <span class="dim sm">${esc(vd.text)}</span></div>`;
+    const G = 'grid-template-columns:58px 1fr 70px 52px 76px 76px 70px 1.1fr';
+    const truth = (e) => (e.duneSandwiched ? '<span class="neg">sandwiched (Dune)</span>' : e.observedSandwich ? `<span class="neg">sandwiched</span> <span class="dim sm">${e.attackerGrossUsd != null ? 'atk ' + $u(e.attackerGrossUsd) : ''}</span>` : e.inclusion === 'included' ? 'clean' : esc(e.inclusion || ''));
+    $('mevEvents').innerHTML = `<div class="row head" style="${G}"><span>seen</span><span>swap</span><span>size</span><span>slip</span><span>ceil <span class="badge sim">SIM</span></span><span>realistic</span><span>back-run</span><span>truth</span></div>` +
+      ((v.events || []).map((e) => `<div class="row ${e.simSandwichRealUsd > 0 ? 'ok' : ''}" style="${G}"><span class="dim">${hhmmss(e.seenAt)}</span><span><a href="https://etherscan.io/tx/${esc(e.hash)}" target="_blank" rel="noopener" style="color:inherit">${esc(e.pair || '')}</a> <span class="dim sm">${esc(e.v || '')} ${esc(e.fn || '')}${e.likelyCrossesTicks ? ' · crosses ticks?' : ''}${e.status !== 'simulated' ? ' · ' + esc(e.status || '') : ''}</span></span><span>$${compact(e.usd || 0)}</span><span>${d(e.slipTolPct, 2)}</span><span class="${(e.simSandwichCeilUsd || 0) > 0 ? 'pos' : 'dim'}">${$u(e.simSandwichCeilUsd)}</span><span class="${(e.simSandwichRealUsd || 0) > 0 ? 'pos' : 'dim'}">${$u(e.simSandwichRealUsd)}</span><span class="${(e.simBackrunUsd || 0) > 0 ? 'pos' : 'dim'}">${$u(e.simBackrunUsd)}</span><span>${truth(e)}</span></div>`).join('') ||
+        `<div class="dim mono sm">${v.mode === 'off' ? 'off by default: set MEMPOOL_ENABLED=true to observe the public mempool (free publicnode WebSocket; read-only)' : 'waiting for a large Uniswap swap in the public mempool…'}</div>`);
+  }
+  function renderRecorder() {
+    const R = S.feeds && S.feeds.recorder; $('recCard').hidden = !R; if (!R) return;
+    const st = R.store || {}, P = R.projection, K = R.kalshi || {}, PM = R.poly || {}, RF = R.ref || {}, G = R.gaps || {}, O = R.odds || {};
+    const B = (n) => (n == null ? '—' : n >= 2 ** 30 ? (n / 2 ** 30).toFixed(2) + ' GiB' : n >= 2 ** 20 ? (n / 2 ** 20).toFixed(1) + ' MiB' : n >= 1024 ? (n / 1024).toFixed(0) + ' KiB' : n + ' B');
+    const lw = st.lastWriteAt ? Date.now() - st.lastWriteAt : null;
+    $('recMode').innerHTML = `${badge(!R.running ? 'down' : st.capped ? 'stale' : lw != null && lw < 15000 ? 'live' : 'stale')} ${R.running ? 'writing' : 'not running'} · last write ${ago(lw)}`;
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const pct = st.capBytes && st.usedBytes != null ? (100 * st.usedBytes) / st.capBytes : null;
+    const markets = (K.live || []).length + (K.extra || 0) + (PM.live || []).length + (PM.top || 0);
+    $('recMetrics').innerHTML = `<div class="subh">Public read-only endpoints; append-only JSONL under <code>data/recorder/</code> (gitignored, never committed). Every row: local receive time + monotonic clock, plus the venue's own timestamp when it sends one (Kalshi REST books do not). Gaps are written, never filled.</div>` +
+      `<div class="riskgrid">` + meter('markets tracked', markets, `Kalshi ${(K.live || []).length} 15m + ${K.extra || 0} other · Poly ${(PM.live || []).length} 15m + ${PM.top || 0} top`) +
+      meter('rows / min', compact(st.rowsPerMin || 0), `${compact(st.rows || 0)} rows this session · ${st.dropped || 0} dropped`) +
+      meter('bytes written', B(st.bytes || 0), `${st.rotations || 0} rotations · ${st.gzipped || 0} gzipped${st.gzRatio ? ' · gzip ×' + (1 / st.gzRatio).toFixed(1) : ''}`) +
+      meter('disk', `${B(st.usedBytes)} <span class="dim sm">/ ${B(st.capBytes)}</span>`, `${pct == null ? '—' : pct.toFixed(1) + '%'} of cap · ${st.files ?? '—'} files · ${st.evicted || 0} evicted${st.capped ? ' · <span class="neg">CAPPED</span>' : ''}`) +
+      meter('projection / day', P ? B(P.gzBytesPerDay) : '—', P ? `${B(P.rawBytesPerDay)} raw · ${compact(P.rowsPerDay)} rows · cap ≈ ${P.daysToCap ?? '—'} days${P.gzRatioMeasured ? '' : ' (gzip ratio assumed)'}` : 'after 1 min of data') +
+      meter('gaps', G.n || 0, Object.entries(G.byReason || {}).map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || 'none') + `</div>` +
+      `<div class="subh">Reference (1 s BRTI-like median of last trades; research only, <b>not</b> the CF index or Kalshi's settlement source): ${Object.entries(RF.latest || {}).map(([a, x]) => `${esc(a)} ${x.med == null ? '—' : x.med} <span class="dim sm">n=${x.n}</span>`).join(' · ') || '—'}` +
+      ` · venues ${Object.entries(RF.venues || {}).map(([v, x]) => `<span class="${x.open ? 'pos' : 'neg'}">${esc(v)}</span>`).join(' ')}</div>` +
+      `<div class="subh">Kalshi WebSocket (optional, read-only key): ${!R.kalshiWs ? 'off (<code>KALSHI_WS=true</code> + a read-only key turns it on; see docs/kalshi-api-key.md)' : R.kalshiWs.problem ? '<span class="neg">' + esc(R.kalshiWs.problem) + '</span>' : `${R.kalshiWs.socket && R.kalshiWs.socket.open ? '<span class="pos">open</span>' : '<span class="neg">closed</span>'} · ${R.kalshiWs.markets} markets · ${compact(R.kalshiWs.counts.snap)} snapshots · ${compact(R.kalshiWs.counts.delta)} deltas · ${compact(R.kalshiWs.counts.trade)} trades · Kalshi ${esc(R.kalshiWs.env || 'prod')} · ${R.kalshiWs.counts.seqGaps} book seq gaps · ${R.kalshiWs.counts.tradeSeqGaps || 0} trade seq skips · ${(R.kalshiWs.socket && R.kalshiWs.socket.reconnects) || 0} reconnects${R.kalshiWs.cfIndex ? ' · CF index ' + Object.entries(R.kalshiWs.cf || {}).map(([k, x]) => esc(k) + ' ' + (x.v ?? '—')).join(' · ') : ''}`}</div>` +
+      `<div class="subh">Rebuilt index vs Kalshi official 15m outcomes (miro, target &gt; ${R.agree ? (100 * R.agree.target).toFixed(1) : '99.5'}%): ${!R.agree ? 'off (needs the ref median + Kalshi recorder)' : Object.keys(R.agree.sources).length ? Object.entries(R.agree.sources).map(([k, a]) => `<span class="badge ${a.status === 'met' ? 'live' : a.status === 'not met' ? 'down' : 'stale'}">${esc(a.status.toUpperCase())}</span> ${k === 'cf' ? 'Kalshi CF feed' : '6-venue median'} ${a.agree}/${a.compared}${a.rate == null ? '' : ` = ${(100 * a.rate).toFixed(2)}%`}${a.ci95 ? ` <span class="dim">(95% CI ${(100 * a.ci95.lo).toFixed(1)}–${(100 * a.ci95.hi).toFixed(1)}%)</span>` : ''} · ${a.insufficient} with &lt; ${R.agree.minSamples} s coverage`).join(' · ') : '<span class="badge stale">PENDING</span> no settled crypto 15m market seen since desk start'} <span class="dim">· pending until ${R.agree ? R.agree.minSettled : 200} compared · display only</span></div>` +
+      cfLine(S.feeds && S.feeds.cfRecorder) +
+      `<div class="subh">Sports odds tap: ${esc(O.note || '')} · ${O.rows || 0} rows${O.credits ? ` · Odds API credits remaining ${O.credits.remaining}` : ''}</div>` +
+      `<div class="subh">Requests: ${[['Kalshi', K], ['Poly', PM]].map(([n, x]) => `${n} ${x.errors || 0} errors${Object.keys(x.errKinds || {}).length ? ' (' + Object.entries(x.errKinds).map(([k, v]) => esc(k) + ' ' + v).join(', ') + ')' : ''} · ${x.rateSkipped || 0} rate-skipped · ${x.loopSkips || 0} busy-loop skips`).join(' · ')}</div>`;
+    const cols = 'grid-template-columns:1.6fr 60px 70px 70px 64px 64px';
+    const rowsK = (K.live || []).map((m) => `<div class="row" style="${cols}"><span>${esc(m.tk)} <span class="dim sm">K ${m.strike ?? ''}</span></span><span>${m.secLeft == null ? '—' : Math.floor(m.secLeft / 60) + 'm' + String(m.secLeft % 60).padStart(2, '0')}</span><span>${m.yb == null ? '—' : m.yb.toFixed(3)} / ${m.ya == null ? '—' : m.ya.toFixed(3)}</span><span>${m.books} polls</span><span>${m.bookRows} book</span><span>${m.trades} trd</span></div>`);
+    const rowsP = (PM.live || []).map((m) => `<div class="row" style="${cols}"><span>${esc(m.slug)} <span class="dim sm">Poly</span></span><span>${Math.floor(m.secLeft / 60)}m${String(m.secLeft % 60).padStart(2, '0')}</span><span class="dim">—</span><span></span><span>${m.bookRows} book</span><span>${m.trades} trd</span></div>`);
+    $('recMarkets').innerHTML = `<div class="row head" style="${cols}"><span>live 15m market</span><span>left</span><span>YES bid/ask</span><span>polls</span><span>rows</span><span>trades</span></div>` + ([...rowsK, ...rowsP].join('') || '<div class="dim mono sm">no live 15-minute market right now</div>');
+    const gc = 'grid-template-columns:70px 110px 1.2fr 70px';
+    $('recGaps').innerHTML = (G.recent || []).length ? `<div class="row head" style="${gc}"><span>at</span><span>reason</span><span>stream · key</span><span>length</span></div>` + G.recent.map((g) => `<div class="row" style="${gc}"><span class="dim">${hhmmss(g.to)}</span><span class="warn">${esc(g.reason)}</span><span class="sm">${esc(g.stream)} · ${esc(String(g.key))}</span><span>${ago(g.ms)}</span></div>`).join('') : '';
+  }
+  // H7 Stage L: one honest line for the always-on Cloudflare recorder. STALE whenever the remote is not writing or unreachable.
+  function cfLine(C) {
+    if (!C || C.state === 'off') return '';
+    const st = C.state === 'live' ? 'live' : C.state === 'pending' ? 'pending' : 'stale'; // anything not writing is STALE, never LIVE
+    const lbl = C.state === 'live' ? '' : ` <span class="warn">${esc(C.staleReason || '')}</span>`;
+    const pct = (x) => (100 * (x || 0)).toFixed(2) + '%';
+    const rows = C.stored ? C.stored.rows.toLocaleString() : '—';
+    return `<div class="subh">Cloudflare recorder ${badge(st)}${lbl} · ${esc(C.host || '')} · last write ${C.lastWriteAgeS == null ? '—' : C.lastWriteAgeS + 's ago'} · ${rows} rows stored · 429s ${C.s429 || 0}/${(C.req || 0).toLocaleString()} (${pct(C.share429)}) · ${C.gaps || 0} gaps · ${C.restarts || 0} restarts · synced ${C.sync ? C.sync.files : 0} chunks${C.sync && C.sync.error ? ' <span class="neg">sync: ' + esc(C.sync.error) + '</span>' : ''}</div>`;
+  }
+  function renderStorage() {
+    const V = S.feeds && S.feeds.storage; $('storCard').hidden = !V; if (!V || !V.bars) return;
+    const B = (n) => (n == null ? '—' : n >= 2 ** 30 ? (n / 2 ** 30).toFixed(2) + ' GiB' : n >= 2 ** 20 ? (n / 2 ** 20).toFixed(1) + ' MiB' : n >= 1024 ? (n / 1024).toFixed(0) + ' KiB' : n + ' B');
+    const col = { ok: 'var(--mint)', warn: 'var(--amber)', crit: 'var(--hot)', 'n/a': 'var(--dim)' };
+    const worst = V.bars.some((b) => b.level === 'crit') ? 'down' : V.bars.some((b) => b.level === 'warn') ? 'stale' : 'live';
+    $('storMode').innerHTML = `${badge(worst)} measured ${ago(Date.now() - V.at)}`;
+    $('storBars').innerHTML = V.bars.map((b) => `<div style="margin:6px 0"><div class="dim sm mono" style="display:flex;justify-content:space-between"><span><b style="color:var(--fg,inherit)">${esc(b.label)}</b> · ${esc(b.note || '')}</span><span class="${b.level === 'crit' ? 'neg' : b.level === 'warn' ? 'warn' : ''}">${B(b.used)}${b.limit ? ' / ' + B(b.limit) + ' · ' + b.pct.toFixed(1) + '%' : ''} ${b.level === 'n/a' ? '' : esc(b.level.toUpperCase())}</span></div><div class="bar"><i style="left:0;width:${Math.min(100, Math.max(b.pct ? 0.6 : 0, b.pct || 0)).toFixed(1)}%;background:${col[b.level]}"></i></div></div>`).join('');
+    const cb = V.bars.find((b) => b.id === 'cf'); if (cb && cb.cf) $('storBars').innerHTML += cfLine(cb.cf);
+    const inp = $('storCap'), rb = V.bars.find((b) => b.id === 'recorder');
+    if (inp && document.activeElement !== inp) { if (rb && rb.limit) inp.value = +(rb.limit / 2 ** 30).toFixed(1); inp.min = V.limits.minGb; inp.max = V.limits.maxGb; }
+    $('storCtl').hidden = !(rb && rb.limit);
+    if (!$('storApply').dataset.wired) { $('storApply').dataset.wired = '1'; $('storApply').onclick = () => { const v = +$('storCap').value; $('storMsg').textContent = 'applying…';
+      post('/api/storage/recorder-cap', { capGb: v }).then((r) => { $('storMsg').innerHTML = r.ok ? `<span class="pos">cap ${r.prevGb} → ${r.capGb} GiB, live${r.pruned ? ` · pruned ${r.pruned} oldest file(s)` : ''}</span>` : `<span class="neg">${esc(r.error || 'refused')}</span>`; }).catch((e) => { $('storMsg').textContent = e.message; }); }; }
+    $('storLog').innerHTML = `<div class="dim sm mono">allowed ${V.limits.minGb}–${V.limits.maxGb} GiB · persisted in <code>${esc(V.capFile)}</code> (gitignored) · shrinking prunes the oldest closed recorder files only (whole files; paper ledgers and config/frozen are never touched)</div>` +
+      (V.changes || []).map((c) => `<div class="row" style="grid-template-columns:70px 1fr"><span class="dim">${hhmmss(c.at)}</span><span class="sm mono">cap ${c.prevGb} → ${c.capGb} GiB (${esc(c.by)})${c.pruned ? ' · pruned ' + c.pruned : ''}</span></div>`).join('');
+  }
+  function renderH2() {
+    const H = S.feeds && S.feeds.kalshiH2; $('h2Card').hidden = !H; if (!H) return;
+    if (H.error || !H.stats) { $('h2Mode').innerHTML = badge('down'); $('h2Body').innerHTML = `<div class="neg mono sm">${esc(H.error || 'not started')}</div>`; $('h2Rows').innerHTML = ''; return; }
+    const st = H.stats, p = st.progress, ok = st.enough && !st.failStops.length;
+    const c = (x) => (x == null ? '—' : (x > 0 ? '+' : '') + x.toFixed(2) + '¢'), pc = (x) => (x == null ? '—' : (100 * x).toFixed(1) + '%');
+    $('h2Mode').innerHTML = `${badge(H.running ? 'live' : 'down')} v${esc(String(H.version).replace(/^v/, ''))} · sha256 ${esc((H.hash || '').slice(0, 12))}… · started ${H.startAt ? new Date(H.startAt).toISOString().slice(0, 10) : '—'}`;
+    const vcls = st.verdict.startsWith('PASS') ? 'pos' : st.verdict.startsWith('FAIL') ? 'neg' : 'warn';
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const bar = (frac, label) => `<div class="dim sm mono" style="margin:6px 0 3px">${label}</div><div class="bar"><i style="left:0;width:${(100 * Math.min(1, frac)).toFixed(1)}%;background:var(--accent,#5b8def)"></i></div>`;
+    const R1 = H.pnl && H.pnl.realizedCents, cv1 = (H.pnl && H.pnl.curve) || [];
+    const head1 = R1 ? pnlHead({ label: 'Realized P&L · v1 forward test', unit: '¢', value: R1.total, n: R1.n, tags: `<span class="badge live">PAPER</span>${ok ? '' : '<span class="badge stale">UNVERIFIED</span>'}`,
+      brk: [['today', R1.today, 'box-local day, by settle time'], ['test week', R1.thisWeek, 'current test week'], ['total', R1.total]], unreal: H.pnl.unrealized && H.pnl.unrealized.totalCents,
+      spark: cv1.length ? [[Math.min(H.startAt || cv1[0].at, cv1[0].at), 0], ...cv1.map((q) => [q.at, q.cumCents])] : null, sparkLabel: 'v1 cumulative realized ¢',
+      sub: `${R1.n} settled · ¢ per 1-contract test (${fmtPnl(R1.total / 100)} on 1 contract per signal) · no sleeve` }) : '';
+    $('h2Body').innerHTML = head1 + `<div class="subh">Paper ledger only (<code>data/paper/kalshi-h2/${esc(H.version)}/</code>); no order path exists. Rules come from a hashed, frozen config; the stats are read-only, with no tuning. Fills take the ask on the <b>next</b> book (≤ 5 s, limit +1¢). Settlement uses Kalshi's official result.</div>` +
+      `<div class="mono" style="margin:6px 0"><b class="${vcls}">${esc(st.verdict)}</b>${ok ? '' : ' <span class="badge stale">UNVERIFIED</span>'} ${st.failStops.map((f) => `<span class="neg sm">· ${esc(f)}</span>`).join(' ')}</div>` +
+      bar(p.signalPct, `signals ${p.signals.toLocaleString()} / ${p.targetSignals.toLocaleString()} (${pc(p.signalPct)})`) + bar(p.weeks / p.targetWeeks, `weeks ${p.weeks.toFixed(2)} / ${p.targetWeeks}`) +
+      `<div class="riskgrid" style="margin-top:8px">` +
+      meter('fills / settled', `${st.fills} / ${st.settled}`, `${st.unsettled} awaiting result · ${H.pending} pending fill`) +
+      meter('win rate', st.winRate ? pc(st.winRate.p) : '—', st.winRate ? `95% CI ${pc(st.winRate.lo)}–${pc(st.winRate.hi)} · implied ${pc(st.impliedProb)}` : 'no settled fills yet') +
+      meter('mean net / signal', c(st.meanPnlCents.oneLotFee), `1-lot fee · large-order fee ${c(st.meanPnlCents.largeOrderFee)} · at signal ask ${c(st.meanPnlCents.atSignalAskShadow)}`) +
+      meter('95% CI (day bootstrap)', st.ci95Cents.dayBootstrap.lo == null ? '—' : `${c(st.ci95Cents.dayBootstrap.lo)} … ${c(st.ci95Cents.dayBootstrap.hi)}`, `${st.ci95Cents.dayBootstrap.days} day(s)${st.ci95Cents.normal ? ` · normal ${c(st.ci95Cents.normal.lo)} … ${c(st.ci95Cents.normal.hi)}` : ''}`) +
+      meter('ask size ≥ 10', pc(st.askSize.share), `${st.askSize.measured} signals measured · pass needs ≥ 80%`) +
+      meter('skips (logged)', Object.values(st.skips).reduce((a, b) => a + b, 0), Object.entries(st.skips).map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || 'none') + `</div>` +
+      `<div class="subh">miro's pass criteria <span class="dim">(display only; frozen v1 rule and hash unchanged)</span></div>` +
+      (st.miro || []).map((m) => `<div class="mono sm" style="margin:2px 0"><span class="badge ${m.status === 'met' ? 'live' : m.status === 'not met' ? 'down' : 'stale'}">${esc(m.status.toUpperCase())}</span> ${esc(m.label)} · now ${m.value == null ? '—' : m.unit === 'share' ? pc(m.value) : m.unit === '¢' ? c(m.value) : esc(String(m.value) + m.unit)} <span class="dim">· ${esc(m.so)}</span></div>`).join('') +
+      h2Pnl(H, c, pc) +
+      `<div class="subh">Per asset: ${Object.entries(st.perAsset).map(([a, x]) => `${esc(a)} n=${x.n} ${c(x.meanCents)}`).join(' · ') || '—'} · markets with no touch ${H.observed.noTouch}/${H.observed.markets} · shadow 1% bankroll ×${st.shadowBankroll.multiple} (reporting only)</div>`;
+    const cols = 'grid-template-columns:70px 80px 1.4fr 1.6fr';
+    const desc = (r) => r.t === 'signal' ? `ask ${r.ya} ×${r.yas} · ${r.secLeft}s left` : r.t === 'fill' ? `px ${r.px} (next ask ${r.nextAsk}, lag ${r.lagMs} ms) fee ${r.fee1}` : r.t === 'skip' ? `${r.reason}${r.ya ? ' · ask ' + r.ya : ''}` : r.t === 'settle' ? `${r.result.toUpperCase()} · ${c(r.pnl1 * 100)}` : r.t === 'observed' ? r.outcome : r.t === 'flag' ? r.reason : r.t === 'session' ? 'session start' : '';
+    $('h2Rows').innerHTML = `<div class="row head" style="${cols}"><span>at</span><span>event</span><span>market</span><span>detail</span></div>` + (H.recent || []).map((r) => `<div class="row" style="${cols}"><span class="dim">${hhmmss(r.at)}</span><span class="${r.t === 'skip' || r.t === 'flag' ? 'warn' : r.t === 'settle' ? (r.win ? 'pos' : 'neg') : ''}">${esc(r.t)}</span><span class="sm">${esc(r.tk || '')}</span><span class="sm mono">${esc(desc(r))}</span></div>`).join('');
+  }
+  // Frozen v2 arm (config/frozen/kalshi-h2-v2.json): a paper filter on v1's signals; display only. UNPROVEN until the pre-registered test is met.
+  function renderH2v2() {
+    const H = S.feeds && S.feeds.kalshiH2v2; $('h2v2Card').hidden = !H; if (!H) return;
+    if (H.error || !H.stats) { $('h2v2Mode').innerHTML = badge('down'); $('h2v2Body').innerHTML = `<div class="neg mono sm">${esc(H.error || 'not started')}</div>`; $('h2v2Rows').innerHTML = ''; return; }
+    const st = H.stats, P = st.passTest, v = st.v2, K = st.kept, Sk = st.skipped;
+    const c = (x) => (x == null ? '—' : (x > 0 ? '+' : '') + x.toFixed(2) + '¢'), pc = (x) => (x == null ? '—' : (100 * x).toFixed(1) + '%'), ci = (w) => (w && w.lo != null ? `95% CI ${pc(w.lo)}–${pc(w.hi)}` : '');
+    const tone = (x) => (x == null ? '' : x > 0 ? 'pos' : x < 0 ? 'neg' : '');
+    $('h2v2Badge').textContent = P.label; $('h2v2Badge').className = 'badge ' + (P.status === 'met' ? 'live' : P.status === 'not met' ? 'down' : 'stale');
+    $('h2v2Mode').innerHTML = `${badge(H.running ? 'live' : 'down')} ${esc(H.name || '')} · sha256 ${esc((H.hash || '').slice(0, 12))}… · on v1 ${esc(((H.base && H.base.sha256) || '').slice(0, 12))}…`;
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const B = H.backfill;
+    let svg = '<div class="dim sm mono">no settled v2 trades yet</div>'; const cv = st.curve || [];
+    if (cv.length) {
+      const W = 900, Hh = 260, pad = 6, xs = cv.map((p) => p.at), ys = [0, ...cv.map((p) => p.cumCents)];
+      const x0 = xs[0] - 60e3, x1 = Math.max(Date.now(), xs[xs.length - 1]), y0 = Math.min(...ys), y1 = Math.max(...ys, y0 + 1);
+      const X = (t) => pad + ((t - x0) / Math.max(1, x1 - x0)) * (W - 2 * pad), Y = (q) => Hh - pad - ((q - y0) / (y1 - y0)) * (Hh - 2 * pad);
+      let d = `M${X(x0).toFixed(1)},${Y(0).toFixed(1)}`; for (const p of cv) d += ` H${X(p.at).toFixed(1)} V${Y(p.cumCents).toFixed(1)}`; d += ` H${X(x1).toFixed(1)}`;
+      const last = cv[cv.length - 1].cumCents;
+      if (isCme()) svg = orbCanvas({ title: `v2 kept · ${c(last)} · ${cv.length} settled`, aria: 'v2 cumulative net P&L after fees', base: 0, x0, x1, fmt: c, series: [{ pts: [[x0, 0], ...cv.map((p) => [p.at, p.cumCents])], step: 1, extendTo: x1, band: 1, col: last >= 0 ? ORB.up : ORB.down }], marks: tradeMarks('v2') }, 'orb-big');
+      else svg = `<svg id="h2v2Curve" viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:none;height:auto;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="v2 cumulative net P&L after fees">` +
+        `<line x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>` +
+        `<path d="${d}" fill="none" stroke="${last >= 0 ? 'var(--mint,#3dffb0)' : 'var(--hot,#ff3d5a)'}" stroke-width="1.6"/>` +
+        svgMarks(tradeMarks('v2'), X, Y) +
+        `<text x="${W - pad}" y="12" text-anchor="end" fill="currentColor" font-size="15" class="mono">${esc(c(last))} · ${cv.length} settled</text></svg>`;
+    }
+    setH2Chart('h2cV2', 'v2 · cumulative net P&amp;L after the 1-contract fee (¢, kept trades only)', svg);
+    const w2 = windows(cv.map((q) => [q.at, q.pnlCents]));
+    const head2 = pnlHead({ label: 'Realized P&L · v2 kept trades', unit: '¢', value: v.totalNetCents, n: v.settled, tags: `<span class="badge live">PAPER</span><span class="badge ${P.status === 'met' ? 'live' : P.status === 'not met' ? 'down' : 'stale'}">${esc(P.label)}</span>`,
+      brk: [['today', w2.today, 'your local day, by settle time'], ['7d', w2.d7], ['total', v.totalNetCents]], spark: cv.length ? [[cv[0].at - 60e3, 0], ...cv.map((q) => [q.at, q.cumCents])] : null, sparkLabel: 'v2 cumulative net ¢',
+      sub: `${v.settled} settled · ${v.wins}W / ${v.losses}L · ¢ per 1-contract test after fees · no sleeve` });
+    $('h2v2Body').innerHTML = head2 + `<div class="subh">Paper only, own ledger (<code>data/paper/kalshi-h2/v2/</code>); no order path. Every v1 signal is logged here with <code>max_earlier_ask</code> and the v2 decision, skipped ones included. v2 reuses v1's paper fill and Kalshi's official result, so both arms are compared on the same signals. v1 is unchanged. <b>Unknown</b> = the recorded books do not cover every earlier minute (not traded, not in the test).</div>` +
+      `<div class="mono" style="margin:6px 0"><span class="badge ${P.status === 'met' ? 'live' : P.status === 'not met' ? 'down' : 'stale'}">${esc(P.label)}</span> <span class="dim sm">pre-registered test: ${P.have.toLocaleString()} / ${P.need.toLocaleString()} settled signals with a known decision</span></div>` +
+      `<div class="bar"><i style="left:0;width:${(100 * P.progress).toFixed(1)}%;background:var(--accent,#5b8def)"></i></div>` +
+      P.parts.map((m) => `<div class="mono sm" style="margin:2px 0"><span class="badge ${m.status === 'met' ? 'live' : m.status === 'not met' ? 'down' : 'stale'}">${esc(m.status.toUpperCase())}</span> ${esc(m.label)} · now ${m.value == null ? '—' : m.key === 'kept' ? c(m.value) : m.key === 'fisher' ? 'p=' + m.value : m.value.toLocaleString()}</div>`).join('') +
+      `<div class="riskgrid" style="margin-top:8px">` +
+      meter('v2 trades taken', `${v.taken}`, `${v.settled} settled · ${v.open} open · v1 signals ${st.v1Signals}`) +
+      meter('v2 win rate', v.winRate && v.winRate.p != null ? pc(v.winRate.p) : '—', `${v.wins}W / ${v.losses}L · ${ci(v.winRate)}`) +
+      meter('v2 net / contract', `<span class="${tone(v.meanNetCents)}">${c(v.meanNetCents)}</span>`, `after the fee charged · total ${c(v.totalNetCents)}`) +
+      meter('kept loss rate', pc(K.lossRate), `${K.losses}/${K.n} · ${ci(K.lossCi)}`) +
+      meter('skipped loss rate', pc(Sk.lossRate), `${Sk.losses}/${Sk.n} · ${ci(Sk.lossCi)}`) +
+      meter('Fisher p (one-sided)', st.fisherP == null ? '—' : String(st.fisherP), 'H1: skipped lose more often') +
+      meter('decisions', `${st.decisions.take} take · ${st.decisions.skip} skip`, `${st.decisions.unknown || 0} unknown · ${st.backfilled} backfilled from recorded books`) +
+      meter('watch only', `${st.watch.dBpsBelow} · ${st.watch.dask1Above}`, `d_bps &lt; 16 · dask1 &gt; 9¢ (not a rule)`) + `</div>` +
+      '' +
+      (B ? `<div class="dim sm mono" style="margin-top:4px">backfill at start: ${B.needed} of ${B.v1Signals} v1 signal(s) decided from ${B.files} recorded file(s)${B.annotated ? ` · ${B.annotated} older row(s) annotated` : ''}${B.settleValues ? ` · ${B.settleValues} settle value(s)` : ''}${B.truncated ? ' · <span class="warn">read cap hit</span>' : ''}</div>` : '') +
+      h2v2Audit(st, c, pc, ci);
+    const cols = 'grid-template-columns:1.5fr 46px 62px 56px 58px 52px 44px 58px 62px 64px 56px 74px';
+    const dc = (d) => (d === 'take' ? 'pos' : d === 'skip' ? 'warn' : 'dim');
+    const fl = (x) => [x.watch && x.watch.thinCushion ? '<span class="warn" title="watch only: d_bps < 16">cush</span>' : '', x.watch && x.watch.jumped ? '<span class="warn" title="watch only: dask1 > 9c">jump</span>' : ''].filter(Boolean).join(' ') || '<span class="dim">—</span>';
+    $('h2v2Rows').innerHTML = `<div class="row head" style="${cols}"><span>market</span><span>ask</span><span>max earlier</span><span>dask1</span><span>d_bps</span><span>depth</span><span>m</span><span>quotes</span><span>flags</span><span>v2</span><span>miro shadow</span><span>result · settle bps</span></div>` +
+      (H.signals || []).map((x) => `<div class="row" style="${cols}" title="${esc(x.why || '')}${x.coverage ? ' · books ' + esc(x.coverage) : ''}${x.backfill ? ' · backfill' : ''}"><span class="sm">${esc(x.tk)}</span><span>${x.ya}</span><span>${x.maxEarlierAsk == null ? 'none' : x.maxEarlierAsk}</span><span>${x.dask1 == null ? '—' : x.dask1}</span><span>${x.dBps == null ? '—' : x.dBps.toFixed(1)}</span><span>${x.askDepth == null ? '—' : Math.round(x.askDepth)}</span>` +
+        `<span>${x.entryM == null ? '—' : x.entryM}</span><span class="${x.partialHistory ? 'warn' : ''}" title="earlier minute-boundary quotes seen / expected (14 - entry m)">${x.nEarlierQuotes == null ? '—' : `${x.nEarlierQuotes}/${x.expectedEarlier}`}${x.partialHistory ? ' partial' : ''}</span><span class="sm">${fl(x)}</span>` +
+        `<span class="${dc(x.decision)}">${esc(String(x.decision).toUpperCase())}</span><span class="sm ${x.miroAgrees === false ? 'warn' : 'dim'}" title="display only: as-of ask at each minute boundary, valid two-sided quotes">${x.miroDecision ? esc(x.miroDecision) + (x.miroMaxEarlierAsk == null ? '' : ' ' + x.miroMaxEarlierAsk) + (x.miroAgrees === false ? ' ≠' : '') : '—'}</span>` +
+        `<span class="${x.pnlCents == null ? 'dim' : tone(x.pnlCents)}">${x.result ? esc(x.result) : 'open'}${x.pnlCents == null ? '' : ' ' + c(x.pnlCents)}${x.settleBps == null ? '' : ` <span class="dim sm">${x.settleBps > 0 ? '+' : ''}${x.settleBps.toFixed(1)}bp</span>`}</span></div>`).join('');
+  }
+  // Frozen v3 arm (config/frozen/kalshi-h2-v3.json): v2's decisions sized by caps, two paper lines (3% / 7%). Display only; UNPROVEN.
+  function renderH2v3() {
+    const H = S.feeds && S.feeds.kalshiH2v3; $('h2v3Card').hidden = !H; if (!H) return;
+    if (H.error || !H.stats) { $('h2v3Mode').innerHTML = badge('down'); $('h2v3Body').innerHTML = `<div class="neg mono sm">${esc(H.error || 'not started')}</div>`; $('h2v3Cap').innerHTML = ''; $('h2v3Rows').innerHTML = ''; return; }
+    const st = H.stats, P = st.passTest, Ls = st.lines || [], CP = st.capacity || {}, R = CP.reference || {};
+    const c = (x) => (x == null ? '—' : (x > 0 ? '+' : '') + x.toFixed(2) + '¢'), pc = (x) => (x == null ? '—' : (100 * x).toFixed(1) + '%');
+    const usd = (x) => (x == null ? '—' : (x < 0 ? '−$' : '$') + Math.abs(x).toLocaleString('en-US', { maximumFractionDigits: 2 })), tone = (x) => (x == null ? '' : x > 0 ? 'pos' : x < 0 ? 'neg' : '');
+    const cls = (s) => (s === 'met' ? 'live' : s === 'not met' ? 'down' : 'stale');
+    $('h2v3Badge').textContent = P.label; $('h2v3Badge').className = 'badge ' + cls(P.status);
+    $('h2v3Mode').innerHTML = `${badge(H.running ? 'live' : 'down')} ${esc(H.name || '')} · sha256 ${esc((H.hash || '').slice(0, 12))}… · trade feed ${H.tradeFeed ? 'on' : '<span class="warn">off (volume unknown → no paper size)</span>'}`;
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const col = { '3pct': 'var(--mint,#3dffb0)', '7pct': 'var(--accent,#5b8def)' };
+    let svg = '<div class="dim sm mono">no settled v3 trades yet</div>';
+    const pts = Ls.flatMap((L) => L.curve.filter((p) => p.at != null));
+    if (Ls.some((L) => L.curve.length > 1)) {
+      const W = 900, Hh = 260, pad = 6, xs = pts.map((p) => p.at), ys = pts.map((p) => p.balance), x0 = Math.min(...xs) - 60e3, x1 = Math.max(Date.now(), ...xs), y0 = Math.min(...ys, 10000), y1 = Math.max(...ys, y0 + 1);
+      const X = (t) => pad + ((t - x0) / Math.max(1, x1 - x0)) * (W - 2 * pad), Y = (q) => Hh - pad - ((q - y0) / (y1 - y0)) * (Hh - 2 * pad);
+      const hex = { '3pct': ORB.up, '7pct': '#5b8def' }, LL = Ls.filter((L) => L.curve.some((p) => p.at != null));
+      if (isCme()) svg = orbCanvas({ title: 'v3 · ' + LL.map((L) => `${L.id} ${usd(L.balance)} (${L.settled})`).join(' · '), aria: 'v3 paper balance, 3% and 7% lines', base: 10000, x0, x1, fmt: (v) => usd(Math.round(v)),
+        legend: LL.map((L) => ({ name: L.id, col: hex[L.id] || '#ccc' })), series: LL.map((L, i) => ({ pts: L.curve.filter((p) => p.at != null).map((p) => [p.at, p.balance]), step: 1, extendTo: x1, band: i === 0, col: hex[L.id] || '#ccc' })), marks: LL.flatMap((L) => tradeMarks('v3-' + L.id)) }, 'orb-big');
+      else svg = `<svg id="h2v3Curve" viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:none;height:auto;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="v3 paper balance, 3% and 7% lines">` +
+        `<line x1="${pad}" x2="${W - pad}" y1="${Y(10000).toFixed(1)}" y2="${Y(10000).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>` +
+        Ls.map((L, i) => { const cv = L.curve.filter((p) => p.at != null); if (!cv.length) return ''; let d = `M${X(cv[0].at).toFixed(1)},${Y(cv[0].balance).toFixed(1)}`; for (const p of cv.slice(1)) d += ` H${X(p.at).toFixed(1)} V${Y(p.balance).toFixed(1)}`; d += ` H${X(x1).toFixed(1)}`;
+          return `<path d="${d}" fill="none" stroke="${col[L.id] || '#ccc'}" stroke-width="1.6"/><text x="${W - pad}" y="${12 + i * 12}" text-anchor="end" fill="${col[L.id] || '#ccc'}" font-size="15" class="mono">${esc(L.id)} ${esc(usd(L.balance))} · ${L.settled} settled</text>`; }).join('') + svgMarks(Ls.flatMap((L) => tradeMarks('v3-' + L.id)), X, Y) + `</svg>`;
+    }
+    setH2Chart('h2cV3', 'v3 · paper balance, 3% and 7% lines (settled trades only)', svg);
+    const capTxt = (L) => Object.entries(L.capBound || {}).filter(([k]) => k !== 'pct').map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || 'none';
+    const B = H.backfill;
+    const heads3 = Ls.map((L) => { const cv3 = L.curve.filter((q) => q.at != null), steps = []; let prev = L.start;
+      for (const q of cv3) { steps.push([q.at, q.balance - prev]); prev = q.balance; }
+      const w = windows(steps);
+      return pnlHead({ label: `Realized P&L · ${L.id} line`, value: L.pnl, n: L.settled, pctBase: L.start, pctLabel: `of ${usd(L.start)} paper`, tags: `<span class="badge live">PAPER</span><span class="badge ${cls(P.status)}">${esc(P.label)}</span>`,
+        brk: [['today', w.today, 'your local day, by settle time'], ['7d', w.d7], ['total', L.pnl]], spark: cv3.length ? [[cv3[0].at - 60e3, 0], ...cv3.map((q) => [q.at, q.balance - L.start])] : null, sparkLabel: `v3 ${L.id} cumulative P&L $`,
+        sub: `${L.settled} settled · ${L.wins}W / ${L.losses}L · balance ${usd(L.balance)} · ${L.open} open` }); });
+    $('h2v3Body').innerHTML = (heads3.length ? `<div class="ph-grid">${heads3.join('')}</div>` : '') + `<div class="subh">Paper only, own ledgers (<code>data/paper/kalshi-h2/v3/</code>); no order path. v3 trades exactly v2's TAKE decisions (frozen, 87¢), sized per line by min(X% of the paper balance, per-asset $ cap ${esc(Object.entries((H.sizing && H.sizing.perAssetDollarCap) || {}).map(([a, v]) => a + ' $' + v.toLocaleString()).join(' / '))} <span class="warn">(provisional)</span>, overall cap ${H.sizing && H.sizing.overallDollarCap ? '$' + H.sizing.overallDollarCap : 'none'}, ${pc(H.sizing && H.sizing.participation)} of traded volume in the 60 s before the signal <span class="dim">(both sides counted: optimistic)</span>). Fills walk the recorded ask ladder on v1's fill snapshot up to ask + 1¢; anything deeper is logged <b>unfilled</b>, not assumed. Kalshi fee rounded up per order. Balance compounds from settled P&amp;L only.</div>` +
+      `<div class="mono" style="margin:6px 0"><span class="badge ${cls(P.status)}">${esc(P.label)}</span> <span class="dim sm">edge test (same gate as v2): ${P.have.toLocaleString()} / ${P.need.toLocaleString()} settled signals with a known decision · first look only</span></div>` +
+      `<div class="bar"><i style="left:0;width:${(100 * P.progress).toFixed(1)}%;background:var(--accent,#5b8def)"></i></div>` +
+      P.parts.map((m) => `<div class="mono sm" style="margin:2px 0"><span class="badge ${cls(m.status)}">${esc(m.status.toUpperCase())}</span> ${esc(m.label)} · now ${m.value == null ? '—' : m.key === 'kept' ? c(m.value) : m.key === 'fisher' ? 'p=' + m.value : m.value.toLocaleString()}</div>`).join('') +
+      Ls.map((L) => `<div class="subh" style="margin-top:8px"><b style="color:${col[L.id] || 'inherit'}">${esc(L.id)}</b> line · ${pc(L.pct)} of balance · start ${usd(L.start)}</div><div class="riskgrid">` +
+        meter('paper balance', `<span class="${tone(L.balance - L.start)}">${usd(L.balance)}</span>`, `P&amp;L ${usd(L.pnl)} · max DD ${pc(L.maxDrawdown)} · ${L.open} open`) +
+        meter('avg $ / trade', usd(L.avgDollars), `${L.traded} traded · ${L.zeroSize} zero-size (${L.unknownVolume} volume unknown)`) +
+        meter('a cap bound', pc(L.capBoundShare), capTxt(L)) +
+        meter('avg slippage', L.avgSlippageCents == null ? '—' : L.avgSlippageCents.toFixed(2) + '¢', 'VWAP vs decision-time ask') +
+        meter('fill rate', pc(L.fillRate), `full fills ${pc(L.fullFillShare)} · ${L.unfilledContracts.toLocaleString()} contracts unfilled`) +
+        meter('net / contract', `<span class="${tone(L.netCentsPerContract)}">${c(L.netCentsPerContract)}</span>`, `${L.wins}W / ${L.losses}L · fees ${usd(L.fees)} · stress P&amp;L ${usd(L.stressPnl)}`) + `</div>`).join('') +
+      '' +
+      h2v3Compare(st.compare, c, usd) +
+      (B ? `<div class="dim sm mono" style="margin-top:4px">backfill at start: ${B.needed || 0} v1 signal(s) replayed from recorded books${B.files != null ? ' (' + B.files + ' file(s))' : ''} · ${st.bookUnknown} with no recorded book (not traded, marked unknown)</div>` : '');
+    // capacity check: observed paper fills vs the backtest's capacity assumptions (kalshi-15m-capacity-10k.md)
+    const tr = (cells, head) => `<div class="row${head ? ' head' : ''}" style="grid-template-columns:1fr 1.1fr 1.1fr 1fr 1fr">${cells.map((x) => `<span class="${head ? '' : 'mono sm'}">${x}</span>`).join('')}</div>`;
+    const BA = CP.byAsset || {}, refA = ['BTC', 'ETH', 'SOL'];
+    $('h2v3Cap').innerHTML = `<div class="subh" style="margin-top:10px">Capacity check <span class="dim">· observed vs backtest assumptions (reference only, never used in a decision)</span></div>` +
+      `<div class="dim sm mono">backtest: fillable ${esc(R.fillable || '')} · questionable ${esc(R.questionable || '')} · fiction ${esc(R.fiction || '')}</div>` +
+      tr(['asset', 'median $ ≤ ask+1¢ (seen)', 'backtest median ≤1¢', '$ at best ask (seen / bt)', 'median vol60 (contracts, both sides)'], true) +
+      refA.map((a) => { const x = BA[a] || {}; return tr([`${a} <span class="dim">n=${x.n || 0}</span>`, usd(x.medianDollarsWithin1c), usd((R.medianDollarsWithin1c || {})[a]), `${usd(x.medianDollarsAtBestAsk)} / ${usd((R.medianDollarsAtBestAsk || {})[a])}`, x.medianVol60 == null ? '—' : x.medianVol60.toLocaleString()]); }).join('') +
+      `<div class="row head" style="grid-template-columns:.6fr 1fr 1fr 1fr 1.6fr 1.4fr"><span>line</span><span>fill rate</span><span>avg slippage</span><span>cap bound</span><span>order $ bands (filled)</span><span>backtest (sim)</span></div>` +
+      (CP.lines || []).map((L) => `<div class="row" style="grid-template-columns:.6fr 1fr 1fr 1fr 1.6fr 1.4fr"><span>${esc(L.id)}</span><span class="mono sm">${pc(L.fillRate)} <span class="dim">(full ${pc(L.fullFillShare)})</span></span><span class="mono sm">${L.avgSlippageCents == null ? '—' : L.avgSlippageCents.toFixed(2) + '¢'}</span><span class="mono sm">${pc(L.capBoundShare)}</span><span class="mono sm">${Object.entries(L.bands || {}).map(([k, v]) => `${esc(k)} ${v}`).join(' · ') || '—'}</span>` +
+        `<span class="mono sm dim">${((B) => B ? `cap bound ${pc(B.capBoundShare)} · avg fill ${usd(B.avgFillDollars)} · end ${usd(B.endBalance)} (uncapped ${usd(B.endBalanceUncapped)}) · max DD ${pc(B.maxDrawdown)}` : '—')(R['sim' + L.id + 'Cap10'])}</span></div>`).join('') +
+      `<div class="dim sm mono" style="margin-top:4px">refill after the fill (median $ at ≤ ask+1¢, ${CP.refill ? CP.refill.n : 0} trades): 0 s ${usd(CP.refill && CP.refill.medianDollarsAt0s)} · 30 s ${usd(CP.refill && CP.refill.medianDollarsAt30s)} · 60 s ${usd(CP.refill && CP.refill.medianDollarsAt60s)} · within 1¢ of the then-best ask: 30 s ${usd(CP.refill && CP.refill.medianNear1cAt30s)} · 60 s ${usd(CP.refill && CP.refill.medianNear1cAt60s)} <span class="dim">(the ask often moves above the fill limit)</span></div>` +
+      `<div class="dim sm mono">${esc(CP.note || '')}${R.caveat ? ' · ' + esc(R.caveat) : ''}</div>`;
+    const cols = 'grid-template-columns:70px 80px 1.4fr 2fr';
+    const desc = (r) => r.t === 'order' ? `${r.line} req ${r.requested} → ${r.filled} filled${r.unfilled ? ', ' + r.unfilled + ' unfilled' : ''} · ${usd(r.cost)} · bound ${(r.bound || []).join('+')} · slip ${r.slippageCents == null ? '—' : r.slippageCents.toFixed(2) + '¢'} · fee ${usd(r.fee)}` : r.t === 'settle' ? `${r.line || ''} ${String(r.result || '').toUpperCase()} · ${r.pnl != null ? usd(r.pnl) + ' → ' + usd(r.balanceAfter) : c((r.pnl1 || 0) * 100)}` : r.t === 'signal' ? `${String(r.decision).toUpperCase()} · ask ${r.ya}` : r.t === 'book' ? (r.traded ? `depth ≤ ask+1¢ ${r.depthAtFill ? r.depthAtFill.contracts : '—'} · vol60 ${r.vol60 == null ? 'unknown' : r.vol60}` : (r.reason || '')) : r.t === 'refill' ? `refill 60 s · ${r.samples ? r.samples.length : 0} samples` : r.t;
+    $('h2v3Rows').innerHTML = `<div class="row head" style="${cols}"><span>at</span><span>event</span><span>market</span><span>detail</span></div>` + (H.recent || []).map((r) => `<div class="row" style="${cols}"><span class="dim" title="event time (book / settle time); logged ${esc(hhmmss(r.at))}${r.backfill ? ' · backfilled' : ''}">${hhmmss(r.bookRx || r.fillRx || r.settledAt || r.at)}</span><span class="${r.t === 'settle' ? (r.win ? 'pos' : 'neg') : r.t === 'nofill' ? 'warn' : ''}">${esc(r.t)}</span><span class="sm">${esc(r.tk || '')}</span><span class="sm mono">${esc(desc(r))}</span></div>`).join('');
+  }
+  function h2v3Compare(C, c, usd) {
+    if (!C) return '';
+    const g = (k, x, sub) => `<div class="row" style="grid-template-columns:1.2fr .6fr .6fr 1fr 1fr"><span>${k}</span><span class="mono sm">${x.n}</span><span class="mono sm">${x.wins}</span><span class="mono sm">${c(x.netCentsPerContract)}</span><span class="mono sm">${usd(x.totalDollars)}${sub ? ' <span class="dim">' + sub + '</span>' : ''}</span></div>`;
+    return `<div class="dim sm mono" style="margin:8px 0 2px">v1 / v2 / v3 on the same signals (${esc(C.note || '')})</div>` +
+      `<div class="row head" style="grid-template-columns:1.2fr .6fr .6fr 1fr 1fr"><span>arm</span><span>settled</span><span>wins</span><span>net / contract</span><span>total</span></div>` +
+      g('v1 (1 contract)', C.v1) + g('v2 take (1 contract)', C.v2) + (C.v3 || []).map((L) => g(`v3 ${esc(L.id)} (sized)`, L, `${L.contracts.toLocaleString()} contracts`)).join('');
+  }
+  // v2 audit block (display only): backtest reference lines, fee models, first-look pass test, splits, running stats, equity, caveats.
+  function h2v2Audit(st, c, pc, ci) {
+    const A = st.audit; if (!A) return '';
+    const R = A.reference, K = st.kept, Sk = st.skipped, D = st.decisions, known = (D.take || 0) + (D.skip || 0), F = A.feeModels;
+    const v1Win = st.v1Known && st.v1Known.n ? 1 - st.v1Known.lossRate : null, keptWin = K.n ? 1 - K.lossRate : null;
+    const tr = (k, live, ref) => `<div class="row" style="grid-template-columns:1.6fr 1.4fr 1fr"><span>${k}</span><span class="mono">${live}</span><span class="mono dim">${ref}</span></div>`;
+    const ref = `<div class="dim sm mono" style="margin:8px 0 2px">live vs backtest reference (miro, autopsy §5; reference only, never used in a decision)</div>` +
+      `<div class="row head" style="grid-template-columns:1.6fr 1.4fr 1fr"><span>metric</span><span>live (paper)</span><span>backtest</span></div>` +
+      tr('skip rate', known ? pc(D.skip / known) : '—', pc(R.skipRate)) +
+      tr('skipped loss rate', `${pc(Sk.lossRate)} <span class="dim">${ci(Sk.lossCi)}</span>`, pc(R.skippedLossRate)) +
+      tr('kept loss rate', `${pc(K.lossRate)} <span class="dim">${ci(K.lossCi)}</span>`, pc(R.keptLossRate)) +
+      tr('kept win vs v1 win', `${pc(keptWin)} vs ${pc(v1Win)}`, `${pc(R.keptWinRate)} vs ${pc(R.v1WinRate)}`) +
+      tr('EV/contract v1 → v2 kept (actual fee)', `${c(F.v1.actual)} → ${c(F.kept.actual)}`, `OOS ${c(R.oosEvCents.v1)} → ${c(R.oosEvCents.v2)}`) +
+      tr('v2 kept EV, flat 2¢ fee', c(F.kept.flat2), `OOS ${c(R.v2Flat2cOosEvCents)}`) +
+      tr('v2 in-sample EV', '—', c(R.v2InSampleEvCents));
+    const fee = `<div class="mono sm" style="margin:8px 0 2px">kept EV / contract: <b class="${(F.kept.actual || 0) > 0 ? 'pos' : (F.kept.actual || 0) < 0 ? 'neg' : ''}">${c(F.kept.actual)}</b> actual fee · ${c(F.kept.flat1)} flat 1¢ · ${c(F.kept.flat2)} flat 2¢ <span class="dim">| skipped ${c(F.skipped.actual)} · v1 ${c(F.v1.actual)} (actual)</span></div>` +
+      `<div class="dim sm mono">fee ${esc(F.formula)}; the pass test uses the actual fee charged${F.feeMismatch ? ` · <span class="neg">${F.feeMismatch} fill(s) disagree with the formula</span>` : ' · every paper fee matches the formula'} · depth ≥ ${A.depth.atLeast} at the ask in ${pc(A.depth.share)} of ${A.depth.measured} signals (kept ${pc(A.depth.keptShare)})</div>`;
+    const L = A.firstLook, I = A.interim;
+    const look = L ? `<div class="mono sm" style="margin:6px 0"><span class="badge ${L.met ? 'live' : 'down'}">FIRST LOOK${L.persisted ? ' (persisted)' : ''}</span> n=${L.n} · Fisher p=${L.fisherP} · kept ${pc(L.keptLossRate)} vs skipped ${pc(L.skippedLossRate)} · kept EV ${c(L.keptEvCents.actual)} → ${L.met ? 'PASS' : 'RETIRE'} · without partial_history: n=${L.withoutPartialHistory.n}, p=${L.withoutPartialHistory.fisherP}, kept EV ${c(L.withoutPartialHistory.keptEvCents.actual)} (${L.withoutPartialHistory.met ? 'would pass' : 'would not pass'})</div>`
+      : `<div class="mono sm" style="margin:6px 0"><span class="badge stale">INTERIM · display only</span> only the first look at ${st.passTest.need.toLocaleString()} counts. Now: n=${I.all.n} · Fisher p=${I.all.fisherP == null ? '—' : I.all.fisherP} · kept EV ${c(I.all.keptEvCents.actual)} · without partial_history: n=${I.withoutPartialHistory.n}, p=${I.withoutPartialHistory.fisherP == null ? '—' : I.withoutPartialHistory.fisherP}, kept EV ${c(I.withoutPartialHistory.keptEvCents.actual)}</div>`;
+    const tbl = (title, o) => { const ks = Object.keys(o || {}); if (!ks.length) return ''; const cols = 'grid-template-columns:1fr 1.5fr 1.5fr';
+      return `<div class="dim sm mono" style="margin:6px 0 2px">${title}</div><div class="row head" style="${cols}"><span></span><span>kept: n · loss · EV</span><span>skipped: n · loss · EV</span></div>` +
+        ks.map((k) => { const g = o[k], f = (x) => `${x.n} · ${pc(x.lossRate)} · ${c(x.ev.actual)}`; return `<div class="row" style="${cols}"><span>${esc(k)}</span><span class="mono">${f(g.kept)}</span><span class="mono">${f(g.skipped)}</span></div>`; }).join(''); };
+    const W = 560, Hh = 90, pad = 6;
+    const lines = (series, label, yFix) => { const pts = series.flatMap((s) => s.pts); if (!pts.length) return `<div class="dim sm mono">${label}: no data yet</div>`;
+      const x0 = Math.min(...pts.map((p) => p[0])), x1 = Math.max(x0 + 1, ...pts.map((p) => p[0])), ys = pts.map((p) => p[1]).concat(yFix || [0]), y0 = Math.min(...ys), y1 = Math.max(y0 + 1e-9, ...ys);
+      const X = (t) => pad + ((t - x0) / (x1 - x0)) * (W - 2 * pad), Y = (q) => Hh - pad - ((q - y0) / (y1 - y0 || 1)) * (Hh - 2 * pad);
+      if (isCme()) return `<div class="dim sm mono" style="margin:6px 0 2px">${label} ${series.map((s) => `<span style="color:${s.col}">■ ${esc(s.name)}</span>`).join(' ')}</div>` +
+        orbCanvas({ aria: label.replace(/<[^>]+>/g, ''), base: y0 < 0 && y1 > 0 ? 0 : null, yFix: yFix || [0], fmt: (v) => (v === 0 ? '0' : Math.abs(v) < 1 ? v.toFixed(3) : v.toFixed(1)), series: series.map((s) => ({ pts: s.pts, col: s.col, dash: s.dash })) }, 'orb-mid');
+      return `<div class="dim sm mono" style="margin:6px 0 2px">${label} ${series.map((s) => `<span style="color:${s.col}">■ ${esc(s.name)}</span>`).join(' ')}</div><svg viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:${W}px;height:${Hh}px;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)">` +
+        (y0 < 0 && y1 > 0 ? `<line x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>` : '') +
+        series.filter((s) => s.pts.length).map((s) => `<path d="${s.pts.map((p, i) => (i ? 'L' : 'M') + X(p[0]).toFixed(1) + ',' + Y(p[1]).toFixed(1)).join(' ')}" fill="none" stroke="${s.col}" stroke-width="1.5"${s.dash ? ' stroke-dasharray="4 3"' : ''}/>`).join('') + `</svg>`; };
+    const run = A.running || [], E = A.equity || {};
+    const charts = lines([{ name: 'Fisher p (one-sided)', col: '#5b8def', pts: run.filter((r) => r.p != null).map((r) => [r.n, r.p]) }, { name: 'α = 0.05', col: '#ff3d5a', dash: 1, pts: run.length ? [[run[0].n, 0.05], [run[run.length - 1].n, 0.05]] : [] }], 'running Fisher p vs signal count (display only)', [0, 1]) +
+      lines([{ name: 'actual fee', col: '#3dffb0', pts: run.filter((r) => r.actual != null).map((r) => [r.n, r.actual]) }, { name: 'flat 1¢', col: '#f5c04a', pts: run.filter((r) => r.flat1 != null).map((r) => [r.n, r.flat1]) }, { name: 'flat 2¢', col: '#ff8a3d', pts: run.filter((r) => r.flat2 != null).map((r) => [r.n, r.flat2]) }], 'running kept EV ¢/contract vs signal count') +
+      lines([{ name: 'v1 (all filled signals)', col: '#9aa4b2', pts: E.v1 || [] }, { name: 'v2 kept', col: '#3dffb0', pts: E.kept || [] }, { name: 'skipped (HYPOTHETICAL, not traded by v2)', col: '#ff3d5a', dash: 1, pts: E.skippedHypothetical || [] }], 'equity, cumulative ¢ per 1-contract test <span class="badge live">PAPER</span>');
+    const Sh = A.shadow, Wt = A.watch, SB = A.settleBps;
+    const misc = `<div class="dim sm mono" style="margin:6px 0">miro-exact shadow: ${Sh.compared - Sh.disagree} agree / ${Sh.disagree} disagree of ${Sh.compared}${Sh.disagree ? ' (' + Sh.disagreeTk.map(esc).join(', ') + ')' : ''} · partial_history ${Sh.partialHistory} · watch-only flags (not rules): d_bps &lt; 16: ${Wt.thinCushion}, dask1 &gt; 9¢: ${Wt.jumped} · settle vs strike: n=${SB.n}${SB.n ? `, median ${SB.median}bp, min ${SB.min}bp` : ''} · no-fill outcomes logged: ${A.nofillOutcomes.n}</div>`;
+    const cav = `<div class="sm" style="margin-top:6px"><b>Caveats</b><ul style="margin:2px 0 0 16px;padding:0">${A.caveats.map((x) => `<li class="dim">${esc(x)}</li>`).join('')}</ul></div>`;
+    return `<div id="h2v2Audit">` + look + fee + ref + tbl('by asset', A.byAsset) + tbl('by month (market open, UTC)', A.byMonth) + tbl('by test week (from the v1 start)', A.byWeek) + charts + misc + cav + `</div>`;
+  }
+  // Live P&L for the frozen H2 test (display only, paper fills only). Realized and unrealized are kept apart.
+  // v1-v3 charts: shown front and center, one after another, right under the real-data book (display only).
+  function setH2Chart(id, title, svg) {
+    const el = $(id), sec = el && el.closest('section'); if (!sec) return; // each chart is its own movable card (#h2cV1Card…)
+    el.innerHTML = `<div class="h2c-title mono">${title} <span class="badge live">PAPER</span></div>${svg}`; sec.hidden = false;
+  }
+  function h2Pnl(H, c, pc) {
+    const P = H.pnl, st = H.stats; if (!P) return '';
+    const R = P.realizedCents, U = P.unrealized, cv = P.curve || [];
+    let svg = '<div class="dim sm mono">no settled paper fills yet: the curve starts at the first official settlement</div>';
+    if (cv.length) {
+      const W = 900, Hh = 260, pad = 6, xs = cv.map((p) => p.at), ys = [0, ...cv.map((p) => p.cumCents)];
+      const x0 = Math.min(H.startAt || xs[0], xs[0]), x1 = Math.max(Date.now(), xs[xs.length - 1]), y0 = Math.min(...ys), y1 = Math.max(...ys, y0 + 1);
+      const X = (t) => pad + ((t - x0) / Math.max(1, x1 - x0)) * (W - 2 * pad), Y = (v) => Hh - pad - ((v - y0) / (y1 - y0)) * (Hh - 2 * pad);
+      let d = `M${X(x0).toFixed(1)},${Y(0).toFixed(1)}`; for (const p of cv) d += ` H${X(p.at).toFixed(1)} V${Y(p.cumCents).toFixed(1)}`; d += ` H${X(x1).toFixed(1)}`;
+      const last = cv[cv.length - 1].cumCents;
+      if (isCme()) svg = orbCanvas({ title: `v1 · ${c(last)} · ${cv.length} settled`, aria: 'cumulative realized net P&L after fees', base: 0, x0, x1, fmt: c, series: [{ pts: [[x0, 0], ...cv.map((p) => [p.at, p.cumCents])], step: 1, extendTo: x1, band: 1, col: last >= 0 ? ORB.up : ORB.down }], marks: tradeMarks('v1') }, 'orb-big');
+      else svg = `<svg id="h2Curve" viewBox="0 0 ${W} ${Hh}" style="width:100%;max-width:none;height:auto;background:rgba(255,255,255,.02);border:1px solid rgba(255,255,255,.08)" role="img" aria-label="cumulative realized net P&L after fees">` +
+        `<line x1="${pad}" x2="${W - pad}" y1="${Y(0).toFixed(1)}" y2="${Y(0).toFixed(1)}" stroke="rgba(255,255,255,.25)" stroke-dasharray="3 3"/>` +
+        `<path d="${d}" fill="none" stroke="${last >= 0 ? 'var(--mint,#3dffb0)' : 'var(--hot,#ff3d5a)'}" stroke-width="1.6"/>` +
+        svgMarks(tradeMarks('v1'), X, Y) +
+        `<text x="${W - pad}" y="12" text-anchor="end" fill="currentColor" font-size="15" class="mono">${esc(c(last))} · ${cv.length} settled</text></svg>`;
+    }
+    setH2Chart('h2cV1', 'v1 · cumulative realized net P&amp;L after the 1-contract fee (¢ per 1-contract test)', svg);
+    const meter = (label, val, sub) => `<div class="meter"><div class="label">${label}</div><div class="v mono">${val}</div><div class="dim sm mono">${sub}</div></div>`;
+    const tone = (x) => (x == null ? '' : x > 0 ? 'pos' : x < 0 ? 'neg' : '');
+    const unverified = st.enough && !st.failStops.length ? '' : ' <span class="badge stale">UNVERIFIED</span>';
+    const openRows = (U.open || []).map((o) => `<div class="row" style="grid-template-columns:1.6fr 60px 70px 110px 90px"><span class="sm">${esc(o.tk)}</span><span>${o.px}</span><span>${o.mark == null ? '—' : o.mark}</span><span class="dim sm">${o.markAgeMs == null ? 'no book yet' : Math.round(o.markAgeMs / 1000) + ' s ago'}</span><span class="${tone(o.unrealizedCents)}">${c(o.unrealizedCents)}</span></div>`).join('');
+    const wk = (st.weekTable || []).map((w) => `<div class="row" style="grid-template-columns:50px 90px 70px 70px 90px 90px 1fr"><span>${w.week}</span><span class="dim sm">${new Date(w.from).toISOString().slice(0, 10)}</span><span>${w.signals}</span><span>${w.settled}</span><span>${w.winRate == null ? '—' : pc(w.winRate)}</span><span class="${tone(w.netCents)}">${c(w.netCents)}</span><span class="sm ${w.complete ? (w.positive ? 'pos' : 'neg') : 'dim'}">${w.complete ? (w.positive ? 'positive' : 'not positive') : 'in progress'}</span></div>`).join('');
+    return `<div class="subh">Live P&amp;L <span class="badge live">PAPER</span>${unverified} <span class="dim">· ${esc(P.source)} · display only; frozen v1 rule unchanged</span></div>` +
+      `<div class="riskgrid" id="h2Realized">` +
+      meter('realized today', `<span class="${tone(R.today)}">${c(R.today)}</span>`, 'box-local day, by settle time') +
+      meter('realized this week', `<span class="${tone(R.thisWeek)}">${c(R.thisWeek)}</span>`, 'current test week (since first session)') +
+      meter('realized total', `<span class="${tone(R.total)}">${c(R.total)}</span>`, `${R.n} settled · official Kalshi results`) +
+      meter('unrealized (open)', `<span class="${tone(U.totalCents)}">${c(U.totalCents)}</span>`, `${(U.open || []).length} open${U.unmarked ? ` · ${U.unmarked} unmarked` : ''} · NOT in realized`) + `</div>` +
+      '' +
+      `<div class="subh">Open paper positions <span class="badge stale">UNREALIZED</span> <span class="dim">· ${esc(U.note)}</span></div>` +
+      (openRows ? `<div class="row head" style="grid-template-columns:1.6fr 60px 70px 110px 90px"><span>market</span><span>entry</span><span>bid</span><span>mark age</span><span>unrealized</span></div>${openRows}` : '<div class="dim sm mono">none open</div>') +
+      `<div class="subh">Per test week <span class="dim">(by signal time; feeds the ≥ 6 of 8 weeks positive criterion; a complete week with no settled fills counts as not positive)</span></div>` +
+      `<div class="row head" style="grid-template-columns:50px 90px 70px 70px 90px 90px 1fr"><span>week</span><span>from (UTC)</span><span>signals</span><span>settled</span><span>win rate</span><span>net</span><span>status</span></div>${wk || '<div class="dim sm mono">test not started</div>'}`;
+  }
+  function renderGaps() {
+    const s = S.strategies.find((x) => x.id === 'gaps'); $('gapCard').hidden = !s; if (!s) return;
+    const v = s.view; $('gapMode').innerHTML = Object.entries(v.modes || {}).map(([k, m]) => `${esc(k)} ${badge(m)}`).join(' ');
+    $('gapHeat').innerHTML = (v.matrices || []).map((m) => {
+      let h = `<div class="subh">${esc(m.title)} <span class="dim">· ${esc(m.source)}</span></div><div class="heat" style="grid-template-columns:96px repeat(${m.labels.length},minmax(58px,1fr))"><div class="h">buy↓ sell→</div>` + m.labels.map((l) => `<div class="h">${esc(l)}</div>`).join('');
+      m.labels.forEach((l, i) => { h += `<div class="rh" style="font-size:10px">${esc(l)}</div>` + m.labels.map((_, j) => { const b = m.bps[i] && m.bps[i][j]; return i === j || b == null ? '<div class="c na">·</div>' : `<div class="c" style="background:${heatColor(b, 25)}">${b.toFixed(1)}</div>`; }).join(''); });
+      return h + '</div>';
+    }).join('');
+    $('gapTri').innerHTML = `<div class="subh">Best opportunities after gas · tips · failure risk</div>` + (v.best || []).map((b) => `<div class="row ${b.ok ? 'ok' : ''}" style="grid-template-columns:1fr 66px 70px 70px"><span>${esc(b.label)}<br><span class="dim sm">${esc(b.note || '')}</span></span><span>${b.grossBps.toFixed(1)}bp</span><span>cost $${b.costUsd.toFixed(2)}</span><span class="${b.evUsd > 0 ? 'pos' : 'neg'}">EV ${b.evUsd >= 0 ? '+' : '-'}$${Math.abs(b.evUsd).toFixed(2)}</span></div>`).join('');
+  }
+  function renderOnePct() {
+    const s = S.strategies.find((x) => x.id === 'onepct'); $('onepctCard').hidden = !s; if (!s) return;
+    const v = s.view; $('onepctMode').innerHTML = badge(s.dataMode) + ' ' + esc(v.source || '');
+    $('onepct').innerHTML = `<div class="riskgrid"><div class="meter"><div class="label">completed cycles</div><div class="v mono">${v.cycles} <span class="dim sm">(${v.wins}W/${v.losses}L)</span></div></div><div class="meter"><div class="label">sleeve compounding</div><div class="v mono ${v.growthPct >= 0 ? 'pos' : 'neg'}">${pct(v.growthPct)}</div><div class="dim sm mono">target ${v.targetPct}% net/cycle</div></div></div>` +
+      `<div class="tbl"><div class="row head" style="grid-template-columns:50px 50px 1fr 64px"><span>sym</span><span>score</span><span>gate</span><span>price</span></div>` +
+      (v.setups || []).map((x) => `<div class="row ${x.pass ? 'ok' : ''}" style="grid-template-columns:50px 50px 1fr 64px"><span>${esc(x.symbol)}</span><span class="${x.pass ? 'pos' : 'dim'}">${x.score ?? '—'}</span><span class="${x.pass ? 'pos' : 'dim'}">${esc(x.pass ? 'TOP-QUALITY SETUP' : x.reason)}</span><span>${x.price ? pxFmt(x.price) : '—'}</span></div>`).join('') + '</div>';
+  }
+  function renderPerps() {
+    const m = S.strategies.find((x) => x.id === 'perpmom'), b = S.strategies.find((x) => x.id === 'basis'); $('perpCard').hidden = !m && !b; if (!m && !b) return;
+    $('perpMode').innerHTML = (m ? 'momentum ' + badge(m.dataMode) : '') + (b ? ' basis ' + badge(b.dataMode) : '');
+    const G = 'grid-template-columns:44px 70px 1fr 58px 58px';
+    $('perpMom').innerHTML = m ? `<div class="subh">Momentum · ${esc(m.view.bar || '')} OKX swap bars · Donchian + EMA20/50</div><div class="row head" style="${G}"><span>sym</span><span>exec</span><span>signal / skip</span><span>ATR</span><span>cost</span></div>` +
+      Object.entries(m.view.signals || {}).map(([k, x]) => `<div class="row ${x.side ? 'ok' : ''}" style="${G}"><span>${esc(k)}</span><span>${esc(x.venue || '')} <span class="dim sm">${esc(x.transport || '')}</span></span><span class="${x.side ? 'pos' : 'dim'}">${esc(x.reason)}</span><span>${x.atrPct != null ? x.atrPct.toFixed(2) + '%' : '—'}</span><span>${x.costPct != null ? x.costPct.toFixed(3) + '%' : '—'}</span></div>`).join('') || '<div class="dim mono sm">waiting for closed bars…</div>' : '';
+    const B = 'grid-template-columns:44px 1fr 62px 62px 62px 62px';
+    $('perpBasis').innerHTML = b ? `<div class="subh">Cash &amp; carry · long spot / short perp · net after 4 taker fees + slippage</div><div class="row head" style="${B}"><span>sym</span><span>spot / perp</span><span>basis</span><span>funding</span><span>costs</span><span>net</span></div>` +
+      (b.view.table || []).slice(0, 8).map((x) => `<div class="row ${x.netBps > 0 ? 'ok' : ''}" style="${B}"><span>${esc(x.symbol)}</span><span>${esc(x.spotVenue)} / ${esc(x.perpVenue)} <span class="dim sm">${esc(x.transport || '')}</span></span><span>${x.basisBps.toFixed(1)}bp</span><span>${x.fundingBps.toFixed(1)}bp</span><span>${x.costsBps.toFixed(1)}bp</span><span class="${x.netBps > 0 ? 'pos' : 'neg'}">${x.netBps.toFixed(1)}bp</span></div>`).join('') || '<div class="dim mono sm">needs fresh WS spot + perp books…</div>' : '';
+  }
+  function renderFutures() {
+    const s = S.strategies.find((x) => x.id === 'orb'); $('futCard').hidden = !s; if (!s) return;
+    const v = s.view; $('futMode').innerHTML = badge(s.dataMode) + ' ' + esc(v.session || '');
+    $('futBody').innerHTML = `<div class="tbl">` + (v.symbols || []).map((x) => `<div class="row" style="grid-template-columns:70px 1fr 1fr 1fr"><span>${esc(x.symbol)}</span><span>last ${x.last ? x.last.toFixed(2) : '—'}</span><span>OR ${x.orLow ? x.orLow.toFixed(2) + '–' + x.orHigh.toFixed(2) : 'forming'}</span><span>${esc(x.state)}</span></div>`).join('') + '</div>';
+    const sym = (v.symbols || [])[0]; const c = $('futChart'); if (!sym || !c.clientWidth) return;
+    const { ctx, w, h } = sizeCanvas(c); ctx.clearRect(0, 0, w, h);
+    const bars = (sym.bars || []).slice(-120); if (bars.length < 2) return;
+    let lo = Math.min(...bars.map((b) => b.l)), hi = Math.max(...bars.map((b) => b.h)); if (sym.orHigh) { hi = Math.max(hi, sym.orHigh); lo = Math.min(lo, sym.orLow); }
+    const Y = (p) => 8 + (1 - (p - lo) / (hi - lo || 1)) * (h - 24); const bw = (w - 50) / bars.length;
+    if (sym.orHigh) { ctx.fillStyle = 'rgba(169,139,255,0.08)'; ctx.fillRect(0, Y(sym.orHigh), w - 50, Y(sym.orLow) - Y(sym.orHigh)); ctx.strokeStyle = 'rgba(169,139,255,0.5)'; ctx.setLineDash([3, 3]); [sym.orHigh, sym.orLow].forEach((p) => { ctx.beginPath(); ctx.moveTo(0, Y(p)); ctx.lineTo(w - 50, Y(p)); ctx.stroke(); }); ctx.setLineDash([]); }
+    bars.forEach((b, i) => { const x = i * bw + bw / 2; const up = b.c >= b.o; ctx.strokeStyle = ctx.fillStyle = up ? '#3dffb0' : '#ff3d5a'; ctx.beginPath(); ctx.moveTo(x, Y(b.h)); ctx.lineTo(x, Y(b.l)); ctx.stroke(); ctx.fillRect(x - Math.max(1, bw * 0.35), Math.min(Y(b.o), Y(b.c)), Math.max(2, bw * 0.7), Math.max(1, Math.abs(Y(b.o) - Y(b.c)))); });
+    ctx.fillStyle = '#6b7a89'; ctx.font = '10px IBM Plex Mono'; ctx.fillText(hi.toFixed(2), w - 46, 14); ctx.fillText(lo.toFixed(2), w - 46, h - 12); ctx.fillText(sym.symbol, 4, 14);
+  }
+
+  addEventListener('resize', () => { if (S) renderFutures(); drawAllCharts(); });
+})();

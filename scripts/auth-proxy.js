@@ -14,6 +14,12 @@
 //   HAWSE_PROXY_ALLOW_POST      default empty = READ-ONLY. Comma list from: halt, resume, reset-breaker, risk, arm
 //                               Recommended phone setting: arm,halt,resume (strategy arm/disarm toggles + HALT/Resume
 //                               buttons). reset-breaker and risk exist but are best left desk-only.
+//                               Phone control of the LIVE pilot (opt-in, see README "Arm the pilot from the phone"):
+//                               pilot-arm (arm-check + arm), pilot-reset, pilot-disarm. Only honoured for requests that
+//                               arrive over loopback (tailscale serve) with a Tailscale-User-Login and no Funnel header;
+//                               the proxy then signs them (HMAC, per-desk-start key in data/runtime/pilot-link.key).
+//   HAWSE_PROXY_PILOT_LOGINS    optional comma list of Tailscale logins allowed to use the pilot-* phone routes
+//   HAWSE_PILOT_LINK_KEY        optional fixed signing key (>= 32 chars) instead of the auto-generated key file
 //   HAWSE_PROXY_INSECURE_COOKIE default off. "1" drops the cookie's Secure flag (plain-http LAN only; not recommended)
 //
 // Guarantees:
@@ -34,6 +40,10 @@ const http = require('http');
 const net = require('net');
 const path = require('path');
 const { createAuth, startupCheck, isLoopback, COOKIE } = require(path.join(__dirname, '..', 'server', 'auth'));
+const LINK = require(path.join(__dirname, '..', 'server', 'lib', 'pilot-link'));
+const phoneWhat = (p) => (p.startsWith(LINK.PILOT_PREFIX) ? p.slice(LINK.PILOT_PREFIX.length) : null);
+const phoneRoute = (p) => { const w = phoneWhat(p); return w ? LINK.routeOf(w) : null; };
+const BODY_MAX = 8192;
 
 const POST_ROUTES = { // name -> exact path matcher (the only mutating routes that may ever be forwarded)
   halt: (p) => p === '/api/halt',
@@ -42,10 +52,15 @@ const POST_ROUTES = { // name -> exact path matcher (the only mutating routes th
   risk: (p) => p === '/api/risk',
   arm: (p) => /^\/api\/strategy\/[\w-]+\/arm$/.test(p),
   'pilot-halt': (p) => p === '/api/live/kalshi-pilot/halt', // Stage Z: the live pilot's HALT (safe to forward: it only stops and cancels)
+  // Phone control of the live pilot: forwarded ONLY with a verified Tailscale identity (see policy ctx.phone), then signed.
+  'pilot-arm': (p) => phoneRoute(p) === 'pilot-arm',
+  'pilot-reset': (p) => phoneRoute(p) === 'pilot-reset',
+  'pilot-disarm': (p) => phoneRoute(p) === 'pilot-disarm',
 };
-// Never forwarded, whatever HAWSE_PROXY_ALLOW_POST says: arming, disarming, resetting the real-money pilot, Test key and
-// "Move cash between pools" (transfer-prepare/confirm/cancel) happen on the desk machine only.
-const PILOT_LOCAL_ONLY = (p) => p.startsWith('/api/live/') && p !== '/api/live/kalshi-pilot/halt';
+// Never forwarded, whatever HAWSE_PROXY_ALLOW_POST says: Test key, Recover, "Move cash between pools" (transfer-prepare/
+// confirm/cancel) and any other /api/live/ write happen on the desk machine only. Arm / reset / disarm are forwarded only as
+// signed phone requests (policy ctx.phone + the pilot-* allowlist names).
+const PILOT_LOCAL_ONLY = (p) => p.startsWith('/api/live/') && p !== '/api/live/kalshi-pilot/halt' && !phoneRoute(p);
 
 function parseAllow(v) {
   const names = String(v || '').split(',').map((s) => s.trim()).filter(Boolean);
@@ -67,6 +82,7 @@ function config(env = process.env) {
     host: env.HAWSE_PROXY_HOST || '127.0.0.1',
     upstream: parseUpstream(env.HAWSE_PROXY_UPSTREAM),
     allowPost: parseAllow(env.HAWSE_PROXY_ALLOW_POST),
+    pilotLogins: String(env.HAWSE_PROXY_PILOT_LOGINS || '').split(',').map((s) => s.trim().toLowerCase()).filter(Boolean),
     secureCookie: !/^(1|true|yes)$/i.test(env.HAWSE_PROXY_INSECURE_COOKIE || ''),
   };
 }
@@ -90,7 +106,7 @@ function stripCookie(h) {
 
 function upstreamHeaders(req, up, { upgrade = false } = {}) {
   const h = {};
-  for (const [k, v] of Object.entries(req.headers)) { const l = k.toLowerCase(); if (HOP.has(l) || l === 'authorization' || l === 'cookie' || l === 'host') continue; h[l] = v; }
+  for (const [k, v] of Object.entries(req.headers)) { const l = k.toLowerCase(); if (HOP.has(l) || l === 'authorization' || l === 'cookie' || l === 'host' || l.startsWith(LINK.PREFIX)) continue; h[l] = v; } // client x-hawse-link-* never pass
   const c = stripCookie(req.headers.cookie); if (c) h.cookie = c;
   h.host = `${up.host.includes(':') ? `[${up.host}]` : up.host}:${up.port}`;
   const xf = req.socket.remoteAddress || ''; h['x-forwarded-for'] = xf; h['x-forwarded-proto'] = req.socket.encrypted ? 'https' : 'http'; h['x-forwarded-host'] = req.headers.host || '';
@@ -111,11 +127,31 @@ function csrf(req, via) {
   return via === 'bearer' ? null : [403, 'POST without Origin refused for a cookie session'];
 }
 
-// Method/route policy. -> null (forward) | [status, message]
-function policy(method, p, allowPost) {
+/**
+ * Is this a phone request that came through `tailscale serve`? -> { ok, login } | { ok:false, why }.
+ * tailscale serve connects to us over loopback and REPLACES any client-sent Tailscale-User-* / Tailscale-Funnel-Request
+ * headers with its own; a LAN client (HAWSE_PROXY_HOST=0.0.0.0) is not loopback, so it can never supply them itself.
+ */
+function phoneIdentity(req, cfg) {
+  if (!isLoopback(req.socket && req.socket.remoteAddress)) return { ok: false, why: 'pilot phone control only via tailscale serve (loopback peer)' };
+  const h = req.headers || {};
+  if (h['tailscale-funnel-request'] != null) return { ok: false, why: 'pilot phone control is never allowed over Tailscale Funnel' };
+  const login = String(h['tailscale-user-login'] || '').trim();
+  if (!login || login.length > 256 || /[\x00-\x1f\x7f]/.test(login)) return { ok: false, why: 'pilot phone control needs a Tailscale identity (tailnet device, not Funnel or a tagged node)' };
+  if (cfg && cfg.pilotLogins && cfg.pilotLogins.length && !cfg.pilotLogins.includes(login.toLowerCase())) return { ok: false, why: 'this Tailscale login is not on HAWSE_PROXY_PILOT_LOGINS' };
+  return { ok: true, login };
+}
+
+// Method/route policy. -> null (forward) | [status, message]. ctx.phone: phoneIdentity() passed for this request.
+function policy(method, p, allowPost, ctx = {}) {
   if (method === 'GET' || method === 'HEAD') return null;
   if (method === 'POST') {
     if (p === '/api/live-order') return [403, 'live orders are never forwarded (paper-only desk)'];
+    const pr = phoneRoute(p);
+    if (pr) {
+      if (!ctx.phone) return [403, ctx.why || 'the live pilot can only be armed or reset on the desk PC, or from a tailnet device through tailscale serve'];
+      return allowPost.includes(pr) ? null : [403, `phone ${pr.slice(6)} is off: add ${pr} to HAWSE_PROXY_ALLOW_POST`];
+    }
     if (PILOT_LOCAL_ONLY(p)) return [403, 'the live pilot can only be armed or reset on the desk machine itself; never through the proxy'];
     if (allowPost.some((n) => POST_ROUTES[n](p))) return null;
     return [403, 'read-only proxy: this POST is not on HAWSE_PROXY_ALLOW_POST'];
@@ -123,7 +159,7 @@ function policy(method, p, allowPost) {
   return [405, 'method not allowed through the proxy'];
 }
 
-function createProxy(cfg, { log = (m) => console.log(m), now } = {}) {
+function createProxy(cfg, { log = (m) => console.log(m), now, linkKey = () => LINK.readKey() } = {}) {
   const auth = createAuth({ token: cfg.token, secure: cfg.secureCookie, now });
   const up = cfg.upstream;
   const sendJson = (res, code, obj, extra = {}) => { res.writeHead(code, { ...SEC, 'content-type': 'application/json', 'cache-control': 'no-store', ...extra }); res.end(JSON.stringify(obj)); };
@@ -138,9 +174,22 @@ function createProxy(cfg, { log = (m) => console.log(m), now } = {}) {
     try {
       if (await auth.handle(req, res, p)) { noteLock(req, { status: res.statusCode }); return; }
       const a = auth.check(req); if (!a.ok) { noteLock(req, a); return auth.deny(req, res, p, a); }
-      const pol = policy(req.method, p, cfg.allowPost); if (pol) { req.resume(); return sendJson(res, pol[0], { error: pol[1] }); }
+      const pRoute = req.method === 'POST' ? phoneRoute(p) : null;
+      const id = pRoute || (req.method === 'GET' && p === LINK.PILOT_PREFIX + 'link') ? phoneIdentity(req, cfg) : null;
+      const pol = policy(req.method, p, cfg.allowPost, { phone: !!(id && id.ok), why: id && id.why }); if (pol) { req.resume(); return sendJson(res, pol[0], { error: pol[1] }); }
       if (req.method === 'POST') { const x = csrf(req, a.via); if (x) { req.resume(); return sendJson(res, x[0], { error: x[1] }); } }
-      const pr = http.request({ host: up.host, port: up.port, method: req.method, path: req.url, headers: upstreamHeaders(req, up) }, (ur) => {
+      const headers = upstreamHeaders(req, up);
+      const allow = cfg.allowPost.filter((n) => LINK.PHONE_ROUTES[n]);
+      let sendBody = null;
+      if (id && id.ok && (pRoute || allow.length)) { // sign: buffer the (small) body so the desk can check its hash
+        const key = linkKey(); if (!key) { req.resume(); return sendJson(res, 503, { error: 'desk signing key not available (is the desk running?)' }); }
+        const raw = await new Promise((ok, bad) => { let n = 0; const parts = []; req.on('data', (c) => { n += c.length; if (n > BODY_MAX) { bad(Object.assign(new Error('too large'), { code: 413 })); req.destroy(); } else parts.push(c); }); req.on('end', () => ok(Buffer.concat(parts).toString('utf8'))); req.on('error', bad); })
+          .catch((e) => { if (!res.headersSent) sendJson(res, e.code === 413 ? 413 : 400, { error: e.code === 413 ? 'body too large' : 'bad request' }); return null; });
+        if (raw == null) return;
+        Object.assign(headers, LINK.signHeaders(key, { method: req.method, url: req.url, login: id.login, allow, body: raw, now: Date.now() }));
+        headers['content-length'] = String(Buffer.byteLength(raw)); delete headers['transfer-encoding']; sendBody = raw;
+      }
+      const pr = http.request({ host: up.host, port: up.port, method: req.method, path: req.url, headers }, (ur) => {
         const h = {}; for (const [k, v] of Object.entries(ur.headers)) if (!HOP.has(k.toLowerCase())) h[k] = v;
         if (/text\/event-stream/i.test(ur.headers['content-type'] || '')) { h['cache-control'] = 'no-store'; h['x-accel-buffering'] = 'no'; }
         res.writeHead(ur.statusCode, h); if (res.flushHeaders) res.flushHeaders();
@@ -148,7 +197,7 @@ function createProxy(cfg, { log = (m) => console.log(m), now } = {}) {
       });
       pr.on('error', () => { if (!res.headersSent) sendJson(res, 502, { error: 'desk unreachable' }); else res.destroy(); });
       req.on('aborted', () => pr.destroy()); res.on('close', () => pr.destroy());
-      req.pipe(pr);
+      if (sendBody != null) pr.end(sendBody); else req.pipe(pr);
     } catch (e) { if (!res.headersSent) sendJson(res, 400, { error: 'bad request' }); }
   });
   server.requestTimeout = 60e3; // time to receive a request; SSE responses stay open
@@ -182,4 +231,4 @@ if (require.main === module) {
   server.listen(cfg.port, cfg.host, () => console.log(`[auth-proxy] http://${cfg.host}:${cfg.port} -> http://${cfg.upstream.host}:${cfg.upstream.port} · token REQUIRED · POST allowlist: ${cfg.allowPost.length ? cfg.allowPost.join(', ') : 'none (read-only)'} · cookie ${cfg.secureCookie ? 'Secure' : 'NOT Secure (insecure-cookie mode)'}`));
   const bye = () => server.close(() => process.exit(0)); process.on('SIGINT', bye); process.on('SIGTERM', bye);
 }
-module.exports = { createProxy, config, policy, csrf, POST_ROUTES, PILOT_LOCAL_ONLY, parseUpstream, stripCookie };
+module.exports = { createProxy, config, policy, csrf, phoneIdentity, POST_ROUTES, PILOT_LOCAL_ONLY, parseUpstream, stripCookie };

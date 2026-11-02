@@ -20,6 +20,8 @@ const usd = (c) => (Number.isFinite(c) ? `${c < 0 ? '−' : ''}$${(Math.abs(c) /
 const U = 10000; // micro-dollars per cent
 const sgn = (c) => (c > 0 ? '+' : c < 0 ? '−' : '±') + '$' + (Math.abs(c) / 100).toFixed(2);
 
+/** Where an arm / disarm / reset came from (ledger `source`: pc | phone, plus the Tailscale login for phone; never a token). */
+const via = (r) => (r && r.source === 'phone' ? ' · from phone' + (r.login ? ` (${String(r.login).slice(0, 80)})` : '') : r && r.source === 'pc' ? ' · from desk PC' : '');
 /**
  * One ledger row -> one history entry (or null). Plain text, cents, no secrets.
  * tone: 'neutral' = a buy or a transfer (cash moved, not a result), 'pos' / 'neg' = a settled win / loss by its P&L, 'zero' = a settle at
@@ -41,10 +43,10 @@ function txOf(r) {
     case 'transfer': e.amountCents = r.amountCents; e.tone = r.outcome === 'accepted' ? 'neutral' : 'neg'; e.label = r.outcome === 'accepted' ? 'transfer ' + usd(r.amountCents) : 'transfer failed';
       e.text = `transfer ${usd(r.amountCents)} ${pool(r.from)} → ${pool(r.to)} · ${r.outcome}${r.error ? ': ' + err(r.error) : ''}`; break;
     case 'transfer_status': e.text = `transfer status: ${r.status}`; e.tone = 'neutral'; break;
-    case 'arm': e.text = 'ARMED' + (Number.isFinite(r.balanceCents) ? ` · pilot pool cash ${usd(r.balanceCents)}` : ''); e.tone = 'neg'; break;
-    case 'disarm': e.text = 'disarmed (shadow)'; break;
+    case 'arm': e.text = 'ARMED' + (Number.isFinite(r.balanceCents) ? ` · pilot pool cash ${usd(r.balanceCents)}` : '') + via(r); e.tone = 'neg'; break;
+    case 'disarm': e.text = 'disarmed (shadow)' + via(r); break;
     case 'stop': e.text = 'HALTED: ' + err(r.reason); e.tone = 'neg'; e.label = 'HALT'; break;
-    case 'reset': e.text = 'reset after halt'; break;
+    case 'reset': e.text = 'reset after halt' + via(r); break;
   }
   return e;
 }

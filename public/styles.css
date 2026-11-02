@@ -382,3 +382,12 @@ canvas.orb-mid{width:100%;height:110px}
 @media (max-width:640px){.a-pilot .pl-poolread{display:none}.a-pilot .pl-t.pl-poolt th,.a-pilot .pl-t.pl-poolt td{padding:3px 4px}}
 
 .a-pilot .pl-recon{margin:6px 0;border:1px solid #e5484d;border-radius:6px;padding:6px 10px}.a-pilot .pl-recon ul{margin:4px 0 0 18px;padding:0}.a-pilot .pl-recover{margin:6px 0}.a-pilot .pl-src{font-size:11px;color:#9aa;border:1px solid #556;border-radius:4px;padding:0 4px}
+/* live pilot from the phone over Tailscale: big tap targets, wraps instead of scrolling sideways */
+.a-pilot .pl-phone{margin:10px 0;padding:12px;border:1px solid rgba(255,61,90,.35);border-radius:12px;background:rgba(255,61,90,.05);max-width:100%;overflow-wrap:anywhere;word-break:break-word}
+.a-pilot .pl-phone .pl-big,.a-pilot .pl-phone button{display:block;width:100%;min-height:48px;margin:8px 0 0;font-size:16px;font-weight:600;border-radius:10px;touch-action:manipulation}
+.a-pilot .pl-phone input{display:block;width:100%;min-height:48px;font-size:16px;padding:0 12px;margin-top:8px;border-radius:10px;border:1px solid var(--line2);background:var(--bg2);color:var(--fg)}
+.a-pilot .pl-phone .pl-armbtn{color:#fff;background:rgba(255,61,90,.85);border-color:var(--hot)}
+.a-pilot .pl-phone .pl-confirm{display:grid;grid-template-columns:minmax(0,1fr);gap:2px;margin:6px 0;font-size:14px}
+.a-pilot .pl-phone .pl-confirm dt{color:var(--dim);font-size:11px;letter-spacing:.06em;text-transform:uppercase;margin-top:6px}
+.a-pilot .pl-phone .pl-confirm dd{margin:0;min-width:0}
+.a-pilot .pl-ctl{margin:6px 0;font-weight:600;color:var(--hot)}

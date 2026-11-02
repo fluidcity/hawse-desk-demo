@@ -472,7 +472,9 @@ node scripts/auth-proxy.js          # http://127.0.0.1:8789 -> http://127.0.0.1:
 | `HAWSE_PROXY_PORT` | `8789` | Port the proxy listens on. |
 | `HAWSE_PROXY_HOST` | `127.0.0.1` | Bind address. Keep it on loopback and reach it through an HTTPS tunnel. |
 | `HAWSE_PROXY_UPSTREAM` | `http://127.0.0.1:8788` | Must be a plain-http loopback origin. Anything else is refused. |
-| `HAWSE_PROXY_ALLOW_POST` | (empty = read-only) | Comma list taken from `halt, resume, reset-breaker, risk, arm, pilot-halt`. Unknown names are refused at startup. **Recommended for the phone: `arm,halt,resume`** (strategy arm toggles plus HALT / Resume). Leave `reset-breaker` and `risk` desk-only. |
+| `HAWSE_PROXY_ALLOW_POST` | (empty = read-only) | Comma list taken from `halt, resume, reset-breaker, risk, arm, pilot-halt, pilot-arm, pilot-reset, pilot-disarm`. The three `pilot-arm/reset/disarm` names work only for a Tailscale-identified request and are signed for the desk (see *Arm / reset the live pilot from the phone*). Unknown names are refused at startup. **Recommended for the phone: `arm,halt,resume`** (strategy arm toggles plus HALT / Resume). Leave `reset-breaker` and `risk` desk-only. |
+| `HAWSE_PROXY_PILOT_LOGINS` | (empty = any Tailscale user login) | Optional comma list of Tailscale logins (e.g. your own) allowed to use `pilot-arm/reset/disarm`. Recommended if you share the PC node with anyone. |
+| `HAWSE_PILOT_LINK_KEY` | (auto, per desk start) | Optional fixed proxy-to-desk signing key (at least 32 characters, never printed). Only needed if the desk and proxy do not run from the same checkout. |
 | `HAWSE_PROXY_INSECURE_COOKIE` | off | `1` drops the `Secure` flag. Use it only for plain-http testing; see below. |
 
 - **Login.** `GET /login` serves a form. A correct token gets a random session id in an `HttpOnly; Secure; SameSite=Strict` cookie (7 days). `Authorization: Bearer <token>` also works for scripts. Comparison is constant-time (sha256 + `timingSafeEqual`). The login POST refuses cross-origin `Origin` / `sec-fetch-site`. `POST /logout` ends the session.
@@ -1027,6 +1029,55 @@ without polling. Mock screenshot: `docs/screenshots/kalshi-pilot-live-chart-win.
 
 **Memory stays bounded (2026-11-01 OOM fix).** The desk died with "JavaScript heap out of memory" after 5.4 h (~12 MB/min). The main cause was `/api/stream`: it wrote a full ~300 KB snapshot every 1.5 s and ignored backpressure, so a viewer that kept the connection open but stopped reading (a sleeping tab, or a tunnel holding a dead client) made Node buffer every frame in the heap. The stream now skips a frame while more than 2 MB is still unsent and drops a client that has not drained for 60 s (`server/lib/mem.js`). Smaller per-market leaks are pruned too: recorder `extra-dropped` markets 3 h after close, pilot `asks` 1 h after their last book, and v1 undecided `mk` entries after 2 h without a book. None of this changes any decision. The desk log gets one `[mem] heap … rss … · rec.markets … · v1.mk … · pilot.asks … · sse.clients …` line every 5 min. `/api/state` → `mem` and `/api/health` report `heapUsedMB` / `rssMB`. `test/memory-bounded.test.js` runs `--expose-gc` children: the old route grows ~117 MB in 10 simulated minutes, the new one under 0.1 MB in 75, and 72 h of rollovers keep every map flat.
 
+**Arm / reset the live pilot from the phone (over Tailscale).** The phone link
+(`https://bouchergamingpc.taile2f96e.ts.net`: Tailscale Serve → auth proxy `127.0.0.1:8789` → desk `127.0.0.1:8788`) can now **ARM**, **RESET
+PILOT** after a halt, and **DISARM** the live pilot, on top of HALT. The PC (localhost) path is unchanged. Transfers, Test key and Recover stay
+PC-only. The phrases are still the exact typed `ARM LIVE` and `RESET PILOT`.
+
+- *Phone confirm step.* ARM on the phone is two steps. **Check shard 2 cash** makes a fresh signed balance read (refused if unreadable or $0) and
+  shows the cash amount and read time, the next per-trade size (7%, before any cap), the one-line sizing rules and "from phone over Tailscale".
+  Only then does the phrase box appear. The check id is single use and expires after 2 minutes ("older than 2 min: check again"). ARM then
+  runs the full preflight again (flag, key, fresh balance > $0, scope, clock), as on the PC. Large tap targets, no sideways scrolling.
+- *Who did it.* Every `arm`, `disarm` and `reset` ledger row and the pilot state feed record `source` (`pc` or `phone`) plus, for the phone, the
+  Tailscale login. Tokens are never recorded. The card shows "armed from phone at HH:MM".
+- *Unchanged safety.* HALTED still needs RESET PILOT first and comes back DISARMED. ARMED is never restored after a restart. The pilot config
+  file is not touched.
+
+*How the desk knows a request is from the phone.* For `pilot-arm|reset|disarm` (and `GET /api/live/kalshi-pilot/link`) the proxy requires:
+the access token; a loopback peer (Tailscale Serve); no `Tailscale-Funnel-Request` header; a `Tailscale-User-Login` (and, if set, membership in
+`HAWSE_PROXY_PILOT_LOGINS`); and a JSON body (else 415) of at most 8 KB (else 413). It then removes any client-sent `x-hawse-link-*` headers and
+adds its own: HMAC-SHA256 over method, path, timestamp, nonce, login, the allowed phone routes and the body hash. The key is a fresh random
+key generated at every desk start in `data/runtime/pilot-link.key` (git-ignored, mode 0600 where the OS supports it; the proxy re-reads it per
+request, so restart order doesn't matter much). The desk verifies the signature in constant time, a ±30 s window and a one-time nonce, and
+requires a loopback peer. It accepts only the action the signed allow list covers. A request carrying any `tailscale-*` header but no valid signature
+is not treated as "PC" either.
+
+*Threat model.*
+
+| Attempt | Result |
+|---|---|
+| No token | 401 at the proxy |
+| Funnel / public internet | Refused: Funnel requests carry `Tailscale-Funnel-Request` and no identity |
+| Tagged tailnet node (no user identity) | Refused: no `Tailscale-User-Login` |
+| Phone sends its own `Tailscale-User-*` headers | Tailscale Serve strips and replaces them |
+| LAN device hitting `:8789` directly | Not a loopback peer: refused (the proxy binds to loopback anyway) |
+| Client sends its own `x-hawse-link-*` headers | Stripped by the proxy; also for websocket upgrades |
+| Direct to the desk with a forged or old signature | No key: bad signature. Replay: nonce + 30 s window. Changed path, method, login, allow list or body: signature fails |
+| Non-JSON or cross-origin POST | 415 / 403 at the proxy (same CSRF rules as every forwarded POST); the desk also refuses non-JSON |
+| Transfers, Test key, Recover | Never phone actions: the proxy hard-blocks them and the desk refuses signed requests for them |
+
+Residual risks:
+- A local process running as the same Windows user can read the key file. That process could already arm through localhost, so this adds no
+  new power.
+- Anyone you share the PC node with gets a Tailscale identity. They still need the access token. Set `HAWSE_PROXY_PILOT_LOGINS` to your own
+  login to shut them out.
+- A stolen, unlocked phone with a live session can arm. It still has to pass the cash check and type `ARM LIVE`. HALT works from any device.
+- Disarm from the phone is allowed when `pilot-disarm` is listed. That is deliberate, because it only reduces risk.
+
+*Setup (desk PC).* Add `pilot-halt,pilot-arm,pilot-reset,pilot-disarm` to `HAWSE_PROXY_ALLOW_POST` (in `C:\HAWSE\hawse-run.ps1` or
+`hawse.env`). Optionally set `HAWSE_PROXY_PILOT_LOGINS=<your tailscale login>`. Restart the desk, then the proxy. No secret is needed by hand.
+Leave out `pilot-arm`/`pilot-reset`/`pilot-disarm` and the phone stays at view + HALT, as before.
+
 **Sizing follows the current balance (no restart).** Every decision, shadow or live, is 7% of the bankroll *at that moment*. ARMED re-reads the
 shard 2 balance before every slice; DISARMED/shadow does a read-only signed `GET /portfolio/balance?exchange_index=2` before each decision (only when the key and
 `LIVE_PILOT_ENABLED` are present), throttled to once per 20 s with a 4 s timeout. A failed read never halts: the balance is marked **stale** and the
@@ -1071,7 +1122,7 @@ If the desk key is read-only, the first armed order gets a 401/403 and the pilot
 
 **Routes:** `POST /api/live/kalshi-pilot/halt` (works from the phone through the proxy when `pilot-halt` is in `HAWSE_PROXY_ALLOW_POST`; the desk
 HALT also halts an ARMED pilot). `POST /api/live/kalshi-pilot/arm|disarm|reset|test-key|transfer-prepare|transfer-confirm|transfer-cancel`: loopback socket only, refused if any forwarding header is
-present, JSON + same-origin; the proxy hard-blocks them whatever the allowlist says. **Test key (read-only balance check)** (`test-key`, card button
+present, JSON + same-origin; the proxy hard-blocks them whatever the allowlist says. Exception: `arm-check`, `arm`, `reset` and `disarm` are also accepted with a valid proxy signature from a Tailscale-identified phone when `pilot-arm` / `pilot-reset` / `pilot-disarm` are allowed (see *Arm / reset the live pilot from the phone*). Test key, transfers and Recover never are. **Test key (read-only balance check)** (`test-key`, card button
 on the desk machine) makes signed GETs only (balance, plus the key list to read scopes), places no orders, writes no ledger rows and works while
 DISABLED: it shows the shard 2 balance, the all-shard total and the per-shard breakdown and, if Kalshi reveals scopes, whether trade scope is present; otherwise "trade scope can't be verified until the
 first armed order". Arming also needs the flag, the key, a read-only preflight (balance, scope if visible, clock) and the typed phrase `ARM LIVE` (exact, from the frozen config).

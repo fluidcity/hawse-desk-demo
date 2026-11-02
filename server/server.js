@@ -14,9 +14,24 @@ const { isLoopback } = require('./auth');
 /** Pilot arm/reset gate: loopback socket, no proxy headers at all, plus the same-origin JSON checks as other local-only routes. */
 function pilotLocal(req) {
   const h = req.headers || {};
-  if (h['x-forwarded-for'] != null || h['x-forwarded-host'] != null || h['forwarded'] != null || h['x-real-ip'] != null) return { ok: false, why: 'forwarded requests can never arm the live pilot' };
+  if (h['x-forwarded-for'] != null || h['x-forwarded-host'] != null || h['forwarded'] != null || h['x-real-ip'] != null || Object.keys(h).some((k) => /^tailscale-/i.test(k))) return { ok: false, why: 'forwarded requests can never arm the live pilot' };
   if (!isLoopback(String(req.socket.remoteAddress || '').replace(/^::ffff:/, ''))) return { ok: false, why: 'not loopback' };
   return localOnly(req.socket.remoteAddress, h);
+}
+const LINK = require('./lib/pilot-link');
+/**
+ * Who may control the live pilot? -> { ok:true, source:'pc' } | { ok:true, source:'phone', login } | { ok:false, why }.
+ * pc: loopback, no forwarding / Tailscale headers, same-origin JSON (unchanged). phone: a request the auth proxy signed
+ * (HMAC over method, url, time, nonce, Tailscale login, allowlist and body hash) arriving over loopback, and only for
+ * arm-check / arm / reset / disarm. Transfers, Test key and Recover are never phone actions.
+ */
+function pilotGate(req, raw, verify) {
+  if (!LINK.hasLinkHeaders(req.headers)) { const g = pilotLocal(req); return g.ok ? { ok: true, source: 'pc' } : g; }
+  let what = ''; try { what = new URL(req.url, 'http://x').pathname.slice(LINK.PILOT_PREFIX.length); } catch { /* bad url */ }
+  const route = LINK.routeOf(what); if (!route) return { ok: false, why: `${what || 'this action'} is desk-PC only` };
+  const v = verify ? verify(req, raw) : { ok: false, why: 'phone link not available' }; if (!v.ok) return { ok: false, why: v.why };
+  if (!v.allow.includes(route)) return { ok: false, why: `${route} is not enabled on the proxy` };
+  return { ok: true, source: 'phone', login: v.login };
 }
 const { resolveStatic } = require('./static');
 const { sseStream, memInfo } = require('./lib/mem');
@@ -41,12 +56,14 @@ async function labRoute(lab, req, p, url, body) {
   return null;
 }
 
-function createServer(engine, flags) {
+function createServer(engine, flags, { linkKey = null } = {}) {
+  const linkVerify = LINK.createVerifier({ key: linkKey }); // linkKey null (tests, no key) -> every phone request refused
   const send = (res, code, obj) => { res.writeHead(code, { 'content-type': 'application/json', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); };
-  const body = (req) => new Promise((resolve, reject) => {
+  const rawBody = (req) => new Promise((resolve, reject) => {
     let d = ''; req.on('data', (c) => { d += c; if (d.length > 2e5) { reject(new Error('body too large')); req.destroy(); } });
-    req.on('end', () => { try { resolve(d ? JSON.parse(d) : {}); } catch (e) { reject(e); } });
+    req.on('end', () => resolve(d));
   });
+  const body = async (req) => { const d = await rawBody(req); return d ? JSON.parse(d) : {}; };
   return http.createServer(async (req, res) => {
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
@@ -64,19 +81,28 @@ function createServer(engine, flags) {
       if (p === '/schema/strategy.schema.json') { res.writeHead(200, { 'content-type': 'application/json' }); return fs.createReadStream(path.join(__dirname, '..', 'schema', 'strategy.schema.json')).pipe(res); }
       if (p.startsWith('/api/live/kalshi-pilot/')) { // Stage Z. halt: forwardable. arm/disarm/reset/recover/test-key/transfer-*: this machine only, never through the proxy.
         const pl = engine.kalshiPilot; if (!pl) return send(res, 404, { ok: false, error: 'pilot not loaded' });
-        if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'POST only' });
         const what = p.slice('/api/live/kalshi-pilot/'.length);
+        if (what === 'link' && req.method === 'GET') { // what this browser may do: pc (everything), phone (signed by the proxy), or view (HALT only)
+          if (!LINK.hasLinkHeaders(req.headers)) return send(res, 200, pilotLocal(req).ok ? { source: 'pc', can: ['arm', 'reset', 'disarm', 'transfer', 'test-key', 'recover'] } : { source: 'view', can: [] });
+          const v = linkVerify(req, ''); if (!v.ok) return send(res, 200, { source: 'view', can: [], why: v.why });
+          return send(res, 200, { source: 'phone', login: v.login, can: v.allow.map((n) => n.slice('pilot-'.length)) });
+        }
+        if (req.method !== 'POST') return send(res, 405, { ok: false, error: 'POST only' });
         if (what === 'halt') { const r = await pl.halt('HALT button'); return send(res, 200, r); }
-        if (!['arm', 'disarm', 'reset', 'test-key', 'transfer-prepare', 'transfer-confirm', 'transfer-cancel', 'recover'].includes(what)) return send(res, 404, { ok: false, error: 'not found' });
-        const g = pilotLocal(req); if (!g.ok) return send(res, 403, { ok: false, error: 'refused: ' + g.why });
-        const b = await body(req);
+        if (!['arm-check', 'arm', 'disarm', 'reset', 'test-key', 'transfer-prepare', 'transfer-confirm', 'transfer-cancel', 'recover'].includes(what)) return send(res, 404, { ok: false, error: 'not found' });
+        const raw = await rawBody(req);
+        const g = pilotGate(req, raw, linkVerify); if (!g.ok) return send(res, 403, { ok: false, error: 'refused: ' + g.why });
+        let b; try { b = raw ? JSON.parse(raw) : {}; } catch { return send(res, 400, { ok: false, error: 'bad JSON' }); }
+        if (!b || typeof b !== 'object') b = {};
+        const src = { source: g.source, login: g.login || null };
         if (what === 'test-key') { const r = await pl.testKey(); return send(res, 200, { ok: r.ok, keyTest: pl.snapshot().keyTest }); } // signed GETs only, no orders
         if (what.startsWith('transfer-')) { // Move cash between Bryan's own pools: desk PC only, two steps, never automatic
           const r = what === 'transfer-prepare' ? await pl.transferPrepare(b) : what === 'transfer-confirm' ? await pl.transferConfirm(b) : pl.transferCancel();
           return send(res, r.ok ? 200 : 422, r);
         }
         if (what === 'recover') return send(res, 200, await pl.recoverTrades('desk PC button')); // read-only recovery of missed fills/settlements
-        const r = what === 'arm' ? await pl.arm(b.phrase) : what === 'disarm' ? pl.disarm() : pl.reset(b.phrase);
+        if (what === 'arm-check') { const r = await pl.armCheck(src); return send(res, r.ok ? 200 : 422, r); } // fresh read-only shard read for the confirm step
+        const r = what === 'arm' ? await pl.arm(b.phrase, { ...src, checkId: typeof b.checkId === 'string' ? b.checkId : null }) : what === 'disarm' ? pl.disarm(src) : pl.reset(b.phrase, src);
         return send(res, r.ok ? 200 : 403, r);
       }
       for (const r of engine.routes || []) if (p.startsWith(r.prefix)) { // module-owned routes (e.g. server/betting/routes.js)
@@ -116,9 +142,11 @@ if (require.main === module) {
   const cfg = config.build();
   const engine = new Engine(cfg, { modules });
   engine.start();
-  const server = createServer(engine, config.publicFlags(cfg));
+  let linkKey = null; // per-start phone-link signing key (file 0600, never printed); without it the phone can only view + HALT
+  try { linkKey = LINK.ensureKey({ log: (m) => console.log(m) }); } catch (e) { console.log('[pilot-link] phone arm/reset off: ' + String(e && e.message || e).slice(0, 160)); }
+  const server = createServer(engine, config.publicFlags(cfg), { linkKey });
   server.listen(cfg.port, cfg.host, () => console.log(`HAWSE paper desk on http://${cfg.host}:${cfg.port}  (PAPER ONLY)`));
   const bye = () => { engine.stop(); server.close(); process.exit(0); };
   process.on('SIGINT', bye); process.on('SIGTERM', bye);
 }
-module.exports = { createServer, pilotLocal };
+module.exports = { createServer, pilotLocal, pilotGate };

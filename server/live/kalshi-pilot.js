@@ -17,6 +17,7 @@ const PILOT_FILE = path.join(__dirname, '..', '..', 'config', 'frozen', 'kalshi-
 const PILOT_SHA256 = 'a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7';
 const U = 10000; // u$ per cent
 const BALANCE_REFRESH_MS = 20000, BALANCE_TIMEOUT_MS = 4000; // shadow balance refresh: at most once per 20 s, 4 s timeout
+const ARM_CHECK_MS = 120000; // phone confirm step: the fresh cash read it showed is good for 2 min, once
 const INFO_REFRESH_MS = 60000; // display-only reads (pending deposits, all-shard balance): at most once a minute
 const READ_GAP_MS = 1500; // display reads (deposits, all pools) are spaced at least 1.5 s from each other and from the shard read before them
 const FILL_RETRY_MS = [500, 1000, 1500, 2000, 2500]; // Kalshi's fills list can lag the order ack: re-read (each wait >= READ_GAP_MS, so ~9 s in all)
@@ -150,6 +151,8 @@ class KalshiPilot {
     if (r.t === 'shadow') { this.shadow.push(r); if (this.shadow.length > 50) this.shadow.shift(); }
     if (r.t === 'stop') { this.state = 'HALTED'; this.haltReason = r.reason; }
     if (r.t === 'reset') { this.haltReason = null; this.state = this.enabled ? 'DISARMED' : 'DISABLED'; }
+    // who armed / disarmed / reset, for the card ("armed from phone at 14:05"). Display only: replay never re-arms.
+    if (r.t === 'arm' || r.t === 'disarm' || r.t === 'reset') this.lastControl = { t: r.t, at: r.at, source: r.source || 'pc', login: r.login || null };
   }
   replay() {
     if (!fs.existsSync(this.ledgerFile)) return;
@@ -205,18 +208,50 @@ class KalshiPilot {
     return null;
   }
   checkSkew() { const s = this.client && this.client.lastSkewMs; if (s != null && Math.abs(s) > this.cfg.halts.maxClockSkewMs) { this.halt(`clock skew ${s} ms vs Kalshi`, 'clock'); return false; } return true; }
-  // ---- arm / reset (server.js only calls these after its localhost + no-forwarding checks) --------------------------
-  async arm(phrase) {
+  // ---- arm / reset (server.js calls these only after pilotGate: desk PC on loopback, or a proxy-signed phone request) -----
+  /** src = { source: 'pc' | 'phone', login?: Tailscale login, checkId?: from armCheck } (never a token or key). */
+  static src(src) { const s = src && src.source === 'phone' ? 'phone' : 'pc'; const login = src && typeof src.login === 'string' && src.login ? src.login.slice(0, 256) : null; return { source: s, login }; }
+  sizingLine() {
+    const c = this.cfg, xi = c.balanceExchangeIndex, usd0 = (x) => '$' + (x / 100).toLocaleString('en-US', { maximumFractionDigits: 0 });
+    const caps = Object.entries(c.perAssetCapCents || {}).map(([a, v]) => `${a} ${usd0(v)}`).join(' / ');
+    return `${Math.round(c.perTradePct * 10000) / 100}% of shard ${xi} cash + open cost (compounds, no cap) · at most ${Math.round(c.participationShare * 100)}% of visible volume · asset caps ${caps} · open risk <= bankroll · limit <= ask + ${c.order.limitAboveAskCents}c (max ${c.order.maxPriceCents}c)`;
+  }
+  /** Phone confirm step: a fresh READ-ONLY shard read, shown before the phrase box. Issues a one-time check id good for 2 min. */
+  async armCheck(src) {
+    const { source, login } = KalshiPilot.src(src);
+    if (this.state === 'HALTED') return { ok: false, error: 'HALTED: type RESET PILOT first (' + this.haltReason + ')' };
+    if (this.state === 'ARMED') return { ok: false, error: 'already ARMED' };
+    if (!this.enabled) return { ok: false, error: 'DISABLED: ' + this.inert.join('; ') };
+    if (this.killed()) return { ok: false, error: 'kill file present' };
+    const xi = this.cfg.balanceExchangeIndex; let b;
+    try { b = await this.readShard(this.client); } catch (e) { return { ok: false, error: `shard ${xi} cash unreadable right now (${String(e.message || e).slice(0, 120)}); nothing armed` }; }
+    const at = this.now(), cents = b && b.cents;
+    if (!Number.isFinite(cents)) return { ok: false, error: `shard ${xi} cash unreadable; nothing armed` };
+    if (!(cents > 0)) return { ok: false, error: `shard ${xi} cash is $0.00: nothing to trade; nothing armed` };
+    const perTradeCents = Math.floor(((cents + this.openRiskCents()) * Math.round(this.cfg.perTradePct * 10000)) / 10000);
+    const checkId = crypto.randomBytes(16).toString('hex');
+    this.armCheckPending = { checkId, at, source, login };
+    return { ok: true, checkId, readAt: at, expiresAt: at + ARM_CHECK_MS, balanceCents: cents, exchangeIndex: xi, perTradeCents,
+      sizing: this.sizingLine(), source: source === 'phone' ? 'from phone over Tailscale' + (login ? ` (${login})` : '') : 'from the desk PC', phrase: this.cfg.armPhrase };
+  }
+  async arm(phrase, src) {
+    const { source, login } = KalshiPilot.src(src);
     if (this.state === 'HALTED') return { ok: false, error: 'HALTED: reset first (' + this.haltReason + ')' };
     if (this.state === 'ARMED') return { ok: true, state: 'ARMED' };
     if (!this.enabled) return { ok: false, error: 'DISABLED: ' + this.inert.join('; ') };
     if (phrase !== this.cfg.armPhrase) return { ok: false, error: 'type the exact phrase to arm' };
+    if (source === 'phone') { // the phone must have just seen the fresh cash read (confirm step); one use per check
+      const c = this.armCheckPending, id = src && src.checkId;
+      if (!c || !id || typeof id !== 'string' || c.checkId !== id || c.source !== 'phone') return { ok: false, error: 'confirm step missing: tap "Check shard cash" first' };
+      this.armCheckPending = null;
+      if (this.now() - c.at > ARM_CHECK_MS) return { ok: false, error: 'the cash read expired (older than 2 min): check again' };
+    }
     if (this.killed()) return { ok: false, error: 'kill file present' };
     const pf = await this.runPreflight(); if (!pf.ok) return { ok: false, error: 'preflight failed: ' + pf.error, preflight: pf };
-    this.state = 'ARMED'; this.write({ t: 'arm', balanceCents: pf.balanceCents, scopes: pf.scopes, scopeNote: pf.scopeNote, subaccount: pf.subaccount, keySource: pf.keySource });
-    return { ok: true, state: 'ARMED', preflight: pf };
+    this.state = 'ARMED'; this.write({ t: 'arm', balanceCents: pf.balanceCents, scopes: pf.scopes, scopeNote: pf.scopeNote, subaccount: pf.subaccount, keySource: pf.keySource, source, login });
+    return { ok: true, state: 'ARMED', preflight: pf, source };
   }
-  disarm() { if (this.state === 'ARMED') { this.state = 'DISARMED'; this.write({ t: 'disarm' }); } return { ok: true, state: this.state }; }
+  disarm(src) { if (this.state === 'ARMED') { this.state = 'DISARMED'; this.write({ t: 'disarm', ...KalshiPilot.src(src) }); } return { ok: true, state: this.state }; }
   async runPreflight() {
     const pf = { at: this.now(), ok: false };
     try {
@@ -286,11 +321,11 @@ class KalshiPilot {
     return r;
   }
   transferCancel() { return this.transfers.cancel(); }
-  reset(phrase) {
+  reset(phrase, src) {
     if (this.state !== 'HALTED') return { ok: true, state: this.state };
     if (phrase !== this.cfg.resetPhrase) return { ok: false, error: 'type the exact reset phrase' };
     if (this.killed()) return { ok: false, error: 'remove the kill file first' };
-    this.write({ t: 'reset', by: 'localhost' }); return { ok: true, state: this.state };
+    const s = KalshiPilot.src(src); this.write({ t: 'reset', by: s.source === 'phone' ? 'phone' : 'localhost', ...s }); return { ok: true, state: this.state };
   }
   // ---- money view ---------------------------------------------------------------------------------------------
   openRiskCents() { let s = 0; for (const x of this.signals.values()) if (!x.settle && x.filled) s += Math.ceil((x.costMicros + x.feeMicros) / U); return s; }
@@ -700,6 +735,7 @@ class KalshiPilot {
         slippageCents: s.filled ? Math.round((s.costMicros / s.filled / U - s.decisionAsk) * 100) / 100 : null, unfilled: i0Unfilled(s) };
     });
     return { title: `LIVE · REAL MONEY · Kalshi pilot (v3 7% of shard ${c ? c.balanceExchangeIndex : '?'} cash)`, state: this.state, statusChip: this.state === 'DISARMED' ? 'DISARMED-SHADOW' : this.state, inert: this.inert, error: this.error,
+      control: { armed: this.state === 'ARMED' && this.lastControl && this.lastControl.t === 'arm' ? this.lastControl : null, last: this.lastControl || null }, // who armed/disarmed/reset (pc|phone + Tailscale login)
       env: this.presence, hash: this.hash, haltReason: this.haltReason, killFile: this.killed(), preflight: this.preflight ? { ok: this.preflight.ok, error: this.preflight.error, warn: this.preflight.warn, scopeNote: this.preflight.scopeNote, at: this.preflight.at } : null,
       keyTest: this.keyTest ? { at: this.keyTest.at, ok: this.keyTest.ok, balanceCents: this.keyTest.balanceCents, exchangeIndex: this.keyTest.exchangeIndex, aggregateCents: this.keyTest.aggregateCents, otherShardCents: this.keyTest.otherShardCents, shards: this.keyTest.shards || null, tradeScope: this.keyTest.tradeScope, scopeNote: this.keyTest.scopeNote, error: this.keyTest.error, warn: this.keyTest.warn, keySource: this.keyTest.keySource } : null,
       mainAccount: this.client ? this.client.subaccount == null : !this.presence.subaccount,

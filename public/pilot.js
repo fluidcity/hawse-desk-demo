@@ -4,6 +4,8 @@
 //   ARM (only shown on this machine; the server refuses it from anywhere else): POST /api/live/kalshi-pilot/arm {phrase}
 //   Move cash between pools (this machine only; hidden on the phone, refused by the server and the proxy from anywhere else):
 //     transfer-prepare {amount, from, to} -> confirm text + one-time token; transfer-confirm {confirm:true, token, amountCents, from, to}; transfer-cancel
+//   From the phone over Tailscale (only when GET /api/live/kalshi-pilot/link says source "phone"; the proxy signs, the desk checks):
+//     arm-check -> fresh shard cash read + next trade size + one-time check id; then arm {phrase, checkId}; reset {phrase}; disarm.
 // No keys, no exchange calls: the browser only talks to the desk.
 (function (root) {
   'use strict';
@@ -14,6 +16,35 @@
   const tone = (v) => (!fin(v) || !v ? '' : v > 0 ? 'pos' : 'neg');
   const ct = (c) => (fin(c) ? `${Math.round(c * 100) / 100}¢` : '—');
   const t = (ms, tz) => (ms ? new Date(ms).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit', second: '2-digit', timeZone: tz }) : '—');
+  const hm24 = (ms) => (ms ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false }) : '—');
+  const hms24 = (ms) => (ms ? new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }) : '—');
+  const ARM_CHECK_MS = 120000;
+  const srcName = (x) => (x && x.source === 'phone' ? 'phone' : 'desk PC');
+  /** Who armed (shown to everyone): "armed from phone at 14:05 (bryan@…)". */
+  function controlLine(P) {
+    const k = P.control && P.control.armed; if (!k) return '';
+    return `<div class="pl-ctl sm">armed from ${esc(srcName(k))} at ${esc(hm24(k.at))}${k.login ? ` <span class="dim">(${esc(k.login)})</span>` : ''}</div>`;
+  }
+  /** Phone over Tailscale: two-step arm (fresh cash read, then the phrase), reset after a halt, disarm. Big tap targets. */
+  function phoneBlock(P, o, chip, c) {
+    const L = o.link; if (o.local || !L || L.source !== 'phone') return '';
+    const can = new Set(L.can || []), xi = c.balanceExchangeIndex != null ? c.balanceExchangeIndex : 2, who = `from phone over Tailscale${L.login ? ` (${esc(L.login)})` : ''}`;
+    const checkBtn = (label) => `<button type="button" class="pl-btn pl-big" data-pilot="arm-check">${label}</button>`;
+    if (chip === 'ARMED') return can.has('disarm') ? `<div class="pl-phone"><button type="button" class="pl-btn pl-big" data-pilot="disarm">DISARM (back to shadow)</button><p class="sm dim">${who}. HALT above also stops it.</p>${actRes(o, 'disarm')}</div>` : '';
+    if (chip === 'HALTED' && can.has('reset')) return `<div class="pl-phone pl-reset"><div class="pl-reset-h"><b class="neg">Pilot is HALTED: ${esc(P.haltReason || 'stopped')}</b></div><p class="sm">Nothing trades while HALTED. Type <code>${esc(c.resetPhrase || '')}</code> and press RESET; it comes back <b>DISARMED</b> (shadow, no money). Source: ${who}.${P.killFile ? ' <b class="neg">Remove the KILL file on the PC first.</b>' : ''}</p><input type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" data-pilot="reset-phrase" aria-label="reset phrase" placeholder="type ${esc(c.resetPhrase || '')}"><button type="button" class="pl-btn pl-big" data-pilot="reset">RESET</button>${actRes(o, 'reset')}</div>`;
+    if (chip !== 'DISARMED-SHADOW' || !can.has('arm')) return '';
+    const k = o.armCheck, now = o.now || Date.now();
+    const intro = `<p class="sm">Step 1: read shard ${esc(xi)} cash now. Step 2: check the numbers and type <code>${esc(c.armPhrase)}</code>. No loss limit: it trades until HALT or a safety stop.</p>`;
+    let body;
+    if (!k) body = intro + checkBtn(`Check shard ${esc(xi)} cash (step 1 of 2)`);
+    else if (!k.ok) body = `<p class="neg sm">Can't arm: ${esc(k.error || 'refused')}</p>` + checkBtn('Check again');
+    else if (!fin(k.readAt) || now - k.readAt > ARM_CHECK_MS) body = `<p class="sm neg">That cash read is older than 2 min: check again before arming.</p>` + checkBtn('Check again');
+    else body = `<dl class="pl-confirm"><dt>shard ${esc(k.exchangeIndex != null ? k.exchangeIndex : xi)} available cash</dt><dd><b>${$c(k.balanceCents)}</b> <span class="dim">read at ${esc(hms24(k.readAt))}</span></dd>`
+      + `<dt>next trade (7% target)</dt><dd><b>${$c(k.perTradeCents)}</b> <span class="dim">or less if a cap binds</span></dd><dt>sizing</dt><dd class="sm">${esc(k.sizing)}</dd><dt>source</dt><dd>${esc(k.source || 'from phone over Tailscale')}</dd></dl>`
+      + `<p class="sm">Type <code>${esc(c.armPhrase)}</code> to arm. A fresh preflight read runs again on ARM.</p><input type="text" autocomplete="off" autocapitalize="characters" spellcheck="false" data-pilot="phrase" aria-label="arm phrase" placeholder="type ${esc(c.armPhrase)}">`
+      + `<button type="button" class="pl-btn pl-big pl-armbtn" data-pilot="arm-phone">ARM (real money)</button><button type="button" class="pl-btn pl-big" data-pilot="arm-cancel">Cancel</button>`;
+    return `<div class="pl-phone pl-arm"><div class="pl-reset-h"><b>Arm from phone</b></div>${body}${actRes(o, 'arm')}</div>`;
+  }
   const CHIP = { DISABLED: 'pl-off', 'DISARMED-SHADOW': 'pl-shadow', ARMED: 'pl-armed', HALTED: 'pl-halted' };
   /** Sizing cell: bankroll used × percent → contracts × limit = order dollars; the 7% target and the cap that bound, if any. */
   function sz(z) {
@@ -159,25 +190,29 @@
 <li>fills read: <b>${esc(R.fills && R.fills.count)}</b> filled</li>
 <li>order lookup: ${!OL || OL.error ? 'unavailable (' + esc(OL ? OL.error : 'no answer') + ')' : `<b>${esc(OL.count)}</b> filled @ ${cc(OL.avgPriceMicros)} · ${esc(OL.status || 'status ?')}${OL.feeMicros != null ? ' · fee ' + cc(OL.feeMicros) : ''}`}</li></ul></div>` : '';
     const rv = P.recovery, recover = o.local && chip !== 'DISABLED' ? `<div class="pl-recover sm"><button type="button" data-pilot="recover">Recover missed trades (read-only)</button> <span class="dim">reads Kalshi's order, fills and settlements for any acked order the ledger is missing; never trades, never arms, never clears a HALT</span>${actRes(o, 'recover')}${rv ? `<div class="dim">last run ${esc(t(rv.at, o.tz))} (${esc(rv.why)}): ${rv.ok ? '' : 'stopped: ' + esc(rv.error) + ' · '}checked ${esc(rv.checked)}, fills booked ${esc(rv.fillsBooked)}, settled ${esc(rv.settled)}, waiting for settlement ${esc(rv.unsettled)}</div>` : ''}</div>` : '';
-    const deskOnly = !o.local && (chip === 'HALTED' || chip === 'DISARMED-SHADOW') ? `<div class="pl-deskonly sm dim">Arm and reset only on the desk PC; this link can HALT only.</div>` : '';
-    const lastAct = o.local && o.act && !((o.act.what === 'arm' && arm) || (o.act.what === 'reset' && resetBox) || (o.act.what === 'recover' && recover)) ? `<div class="pl-actline">${actRes(o, o.act.what)}</div>` : '';
+    const phone = phoneBlock(P, o, chip, c), ctl = controlLine(P);
+    const deskOnly = !o.local && !phone && (chip === 'HALTED' || chip === 'DISARMED-SHADOW') ? `<div class="pl-deskonly sm dim">Arm and reset only on the desk PC; this link can HALT only.</div>` : '';
+    const lastAct = (o.local || (o.link && o.link.source === 'phone')) && o.act && !phone.includes('pl-actres') && !((o.act.what === 'arm' && arm) || (o.act.what === 'reset' && resetBox) || (o.act.what === 'recover' && recover)) ? `<div class="pl-actline">${actRes(o, o.act.what)}</div>` : '';
     const rows = (P.trades || []).map((r) => `<tr><td>${esc(t(r.at, o.tz))}</td><td>${esc(r.tk)}${r.source ? ` <span class="pl-src">source ${esc(r.source)}</span>` : ''}<div class="pl-szm">${sz(r.sizing)}</div></td><td>${ct(r.limit)}</td><td>${ct(r.fillPx)}</td><td>${r.contracts}/${r.requested}</td><td>${ct(r.feeCents)}</td><td>${r.result == null ? 'open' : esc(r.result)}</td><td class="${tone(r.pnlCents)}">${$s(r.pnlCents)}</td><td>${$c(r.balanceBeforeCents)} → ${$c(r.balanceAfterCents)}</td><td class="pl-szc">${sz(r.sizing)}${(r.sliceSizing || []).length > 1 ? ` <span class="dim">(+${r.sliceSizing.length - 1} slice${r.sliceSizing.length > 2 ? 's' : ''})</span>` : ''}</td></tr>`).join('');
     const trades = `<h3 class="pl-h3">Live trades <span class="dim">(real money)</span></h3><div class="pl-scroll"><table class="pl-t mono"><thead><tr><th>time</th><th>market</th><th>limit</th><th>fill</th><th>size</th><th>fee</th><th>result</th><th>P&amp;L</th><th>balance</th><th>sizing (bankroll × % → order $)</th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="dim">no live trades yet</td></tr>'}</tbody></table></div>`;
     const cmp = (P.compare || []).map((r) => `<tr${r.shadow && !r.live ? ' class="pl-shadowrow"' : ''}><td>${esc(r.tk)}<div class="pl-szm">${sz(r.sizing)}</div></td><td>${ct(r.decisionAsk)}</td><td>${r.paper ? `${r.paper.filled} @ ${ct(r.paper.vwapCents)}` : '—'}</td><td>${r.live ? `${r.live.filled} @ ${ct(r.live.vwapCents)}` : r.shadow ? `<span class="pl-nomoney">SHADOW · NO MONEY</span> ${r.shadow.skipped ? esc(r.shadow.skipped) : `${r.shadow.contracts} @ ≤${ct(r.shadow.limit)}`}` : '—'}</td><td>${ct(r.slippageCents)}</td><td>${r.unfilled == null ? '—' : r.unfilled}</td><td class="pl-szc">${sz(r.sizing)}</td></tr>`).join('');
     const compare = `<h3 class="pl-h3">Paper v3 7% vs live <span class="dim">(fill, slippage, unfilled)</span></h3><div class="pl-scroll"><table class="pl-t mono"><thead><tr><th>market</th><th>ask</th><th>paper fill</th><th>live fill</th><th>slip</th><th>unfilled</th><th>sizing (bankroll × % → order $)</th></tr></thead><tbody>${cmp || '<tr><td colspan="7" class="dim">no v3 takes yet</td></tr>'}</tbody></table></div>`;
-    return head + banner + why + recBox + resetBox + deskOnly + lastAct + oom + facts + env + ktest + arm + recover + xferBlock(P, o) + (chip === 'DISABLED' ? '' : liveChart(P, o) + txList(P, o)) + trades + compare;
+    return head + banner + why + ctl + recBox + resetBox + phone + deskOnly + lastAct + oom + facts + env + ktest + arm + recover + xferBlock(P, o) + (chip === 'DISABLED' ? '' : liveChart(P, o) + txList(P, o)) + trades + compare;
   }
   const API = { render, POOLS, liveData, liveSpec };
   if (typeof module === 'object' && module.exports) { module.exports = API; return; }
   const H = (root.HAWSE = root.HAWSE || { onState: [] }); H.onState = H.onState || [];
   const local = /^(localhost|127(\.\d+){3}|\[::1\])$/.test(location.hostname);
+  let link = null, armCheck = null; // phone only: what the desk says this link may do (signed by the proxy), and the confirm-step read
+  if (!local) fetch('/api/live/kalshi-pilot/link', { credentials: 'same-origin' }).then((r) => (r.ok ? r.json() : null)).then((j) => { link = j; paint(true); }).catch(() => {});
+  setInterval(() => { if (armCheck) paint(false); }, 5000); // the confirm step goes stale after 2 min
   // after an ARM/RESET the server answers with the new state: show it at once (the next stream push replaces this copy)
   const confirmed = (r) => { if (r && r.ok && r.state && lastP) lastP = Object.assign({}, lastP, { state: r.state, statusChip: r.state === 'DISARMED' ? 'DISARMED-SHADOW' : r.state, haltReason: r.state === 'HALTED' ? lastP.haltReason : null }); };
   let last = '', lastP = null, act = null; const xf = { form: { amount: '', from: 0, to: 2 }, confirm: null, retry: null };
   const paint = (force) => { const el = document.getElementById('pilotBody'); if (!el) return;
     const a = document.activeElement; if (!force && a && a.dataset && /^(phrase|reset-phrase|xfer-amount|xfer-from|xfer-to)$/.test(a.dataset.pilot || '')) return; // do not repaint while typing
     const C = H.charts, cme = !C || !C.isCme || C.isCme();
-    const h = render(lastP, { local, cme, act, xferForm: xf.form, xferConfirm: xf.confirm, xferRetry: xf.retry }); if (h !== last) { last = h; el.innerHTML = h; } drawLive(); };
+    const h = render(lastP, { local, link, armCheck, cme, act, xferForm: xf.form, xferConfirm: xf.confirm, xferRetry: xf.retry }); if (h !== last) { last = h; el.innerHTML = h; } drawLive(); };
   // the live chart canvas is drawn by the shared chart code (public/app.js loads after this file, so look it up at paint time)
   const drawLive = () => { const c = document.querySelector('#pilotBody canvas[data-pilot-chart]'), C = H.charts; if (!c || !C || !C.draw) return; const sp = liveSpec(lastP); if (sp) requestAnimationFrame(() => C.draw(c, sp)); };
   addEventListener('hawse:chartstyle', () => paint(true)); addEventListener('resize', drawLive); document.addEventListener('toggle', drawLive, true);
@@ -186,7 +221,7 @@
   document.addEventListener('change', (e) => { const d = e.target && e.target.dataset && e.target.dataset.pilot; if (d === 'xfer-from') xf.form.from = +e.target.value; if (d === 'xfer-to') xf.form.to = +e.target.value; });
   const post = (what, body) => fetch('/api/live/kalshi-pilot/' + what, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then((r) => r.json()).catch((e) => ({ ok: false, error: e.message }));
   document.addEventListener('keydown', (e) => { const d = e.key === 'Enter' && e.target && e.target.dataset && e.target.dataset.pilot; const btn = d === 'phrase' ? 'arm' : d === 'reset-phrase' ? 'reset' : null;
-    if (btn) { const b = e.target.parentNode.querySelector(`[data-pilot="${btn}"]`); if (b) { e.preventDefault(); b.click(); } } });
+    if (btn) { const b = e.target.parentNode.querySelector(btn === 'arm' ? '[data-pilot="arm"],[data-pilot="arm-phone"]' : `[data-pilot="${btn}"]`); if (b) { e.preventDefault(); b.click(); } } });
   document.addEventListener('click', async (e) => { const b = e.target.closest && e.target.closest('[data-pilot]'); if (!b || !b.closest('#pilotBody')) return;
     if (b.dataset.pilot === 'halt') { b.disabled = true; const r = await post('halt'); b.disabled = false; if (!r.ok) alert('HALT: ' + (r.error || 'failed')); }
     if (b.dataset.pilot === 'test-key') { b.disabled = true; await post('test-key'); b.disabled = false; }
@@ -198,6 +233,12 @@
       xf.confirm = null; xf.retry = r.retryToken ? { ...x, token: r.retryToken } : null; if (r.ok) xf.form.amount = ''; paint(true); }
     if (b.dataset.pilot === 'arm') { const i = b.parentNode.querySelector('[data-pilot="phrase"]'); b.disabled = true; const r = await post('arm', { phrase: i ? i.value : '' }); b.disabled = false; if (i) i.value = '';
       confirmed(r); act = { what: 'arm', ok: !!r.ok, text: r.ok ? 'ARMED: the pilot is now sending real orders.' : 'Not armed: ' + (r.error || 'refused') }; paint(true); }
+    if (b.dataset.pilot === 'arm-check') { b.disabled = true; armCheck = await post('arm-check'); b.disabled = false; act = null; paint(true); }
+    if (b.dataset.pilot === 'arm-cancel') { armCheck = null; paint(true); }
+    if (b.dataset.pilot === 'arm-phone') { const i = b.parentNode.querySelector('[data-pilot="phrase"]'); const k = armCheck; b.disabled = true;
+      const r = await post('arm', { phrase: i ? i.value : '', checkId: k && k.checkId }); b.disabled = false; if (i) i.value = ''; armCheck = null;
+      confirmed(r); act = { what: 'arm', ok: !!r.ok, text: r.ok ? 'ARMED from phone: the pilot is now sending real orders.' : 'Not armed: ' + (r.error || 'refused') }; paint(true); }
+    if (b.dataset.pilot === 'disarm') { b.disabled = true; const r = await post('disarm'); b.disabled = false; confirmed(r); act = { what: 'disarm', ok: !!r.ok, text: r.ok ? 'Disarmed: shadow only, no money.' : 'Not disarmed: ' + (r.error || 'refused') }; paint(true); }
     if (b.dataset.pilot === 'recover') { b.disabled = true; const r = await post('recover', {}); b.disabled = false;
       act = { what: 'recover', ok: !!r.ok, text: r.ok ? `Recovery done: fills booked ${r.fillsBooked || 0}, settled ${r.settled || 0}${r.unsettled ? `, ${r.unsettled} not settled by Kalshi yet` : ''}.` : 'Recovery stopped: ' + (r.error || 'refused') }; paint(true); }
     if (b.dataset.pilot === 'reset') { const i = b.parentNode.querySelector('[data-pilot="reset-phrase"]'); b.disabled = true; const r = await post('reset', { phrase: i ? i.value : '' }); b.disabled = false; if (i) i.value = '';

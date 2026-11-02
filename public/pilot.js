@@ -131,6 +131,8 @@
     const times = series.length ? series[series.length > 1 ? 1 : 0].pts.map((q) => q[0]) : [];
     return { series, marks, realized: R, x0, x1, n: L.count || 0, tf: LC.defaultTf(times), ok: (L.count || 0) >= 2 && x1 > x0 && series.some((x) => x.pts.length >= 2) };
   }
+  const PERIODS = ['all', 'week', 'month', 'year'], PERIOD_NAME = { all: 'all time', week: 'this week', month: 'this month', year: 'this year' }, PERIOD_SHORT = { all: 'all time', week: 'week', month: 'month', year: 'year' };
+  const nextPeriod = (k) => PERIODS[(PERIODS.indexOf(k) + 1) % PERIODS.length] || 'all';
   /** Per-asset per-trade ceilings straight from the frozen config (p6: $5,000 each). */
   const assetCaps = (c) => { const e = c && c.perAssetCapCents && Object.entries(c.perAssetCapCents); if (!e || !e.length) return 'asset caps —';
     return 'asset caps ' + e.map(([a, v]) => esc(a) + ' $' + (v / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })).join(' / '); };
@@ -139,14 +141,20 @@
    * Big REAL MONEY P&L header (above the live chart): realized total and today (America/Los_Angeles day), from the ledger's settle lines
    * (fees included, computed on the desk). "—" when there is no settle behind a number: never a made-up $0.00.
    */
-  function pnlHeader(P) {
-    const L = (P && P.live) || {}, S = L.pnl || {}, m = (P && P.money) || {}, num = (c) => `<div class="pl-pnl-num${tone(c) ? ' ' + tone(c) : ''}">${esc($s(c))}</div>`;
-    const rec = S.settled ? `${esc(S.wins)}W–${esc(S.losses)}L · ${fin(S.winRate) ? Math.round(S.winRate * 100) + '% win rate' : '—'} · ${esc(S.settled)} settled` : 'no settled trades yet';
+  function pnlHeader(P, period) {
+    const L = (P && P.live) || {}, S = L.pnl || {}, m = (P && P.money) || {}, num = (c, tag = 'div') => `<${tag} class="pl-pnl-num${tone(c) ? ' ' + tone(c) : ''}">${esc($s(c))}</${tag}>`;
+    // the TOTAL number cycles all time -> week -> month -> year (PT calendar, computed on the desk); an older feed without periods = all time only
+    const PS = S.periods && typeof S.periods === 'object' ? S.periods : null, k = PS && PS[period] ? period : 'all';
+    const A = (PS && PS[k]) || { key: 'all', label: 'all time', cents: S.totalCents, settled: S.settled, wins: S.wins, losses: S.losses, fills: S.fills, winRate: S.winRate };
+    const nx = PS ? nextPeriod(k) : 'all', lbl = k === 'all' ? 'all time' : String(A.label || k) + ' PT', pre = k === 'all' ? '' : PERIOD_NAME[k] + ': ';
+    const rec = pre + (A.settled ? `${esc(A.wins)}W–${esc(A.losses)}L · ${fin(A.winRate) ? Math.round(A.winRate * 100) + '% win rate' : '—'} · ${esc(A.settled)} settled` : 'no settled trades yet');
+    const total = `<button type="button" class="pl-pnl-box pl-pnl-cyc" data-pilot="pnl-period" data-period="${k}" data-next="${nx}" aria-label="TOTAL P&amp;L ${esc(lbl)}: ${esc($s(A.cents))}. Tap to show ${esc(PERIOD_NAME[nx])}">` +
+      `<span class="pl-pnl-lbl">TOTAL P&amp;L <span class="dim">· ${esc(lbl)}</span></span>${num(A.cents, 'span')}<span class="pl-pnl-hint dim">${PS ? `tap to change · next: ${esc(PERIOD_SHORT[nx])}` : 'all time'}</span></button>`;
     const days = (Array.isArray(S.daily) ? S.daily : []).slice().reverse().map((d) => `<tr data-pl-day="${esc(d.day)}"><td>${esc(dayName(d.day))}${d.day === S.today ? ' <span class="dim">today</span>' : ''}</td><td>${esc(d.trades)}</td><td>${d.trades ? `${esc(d.wins)}–${esc(d.losses)}` : '—'}</td><td class="${tone(d.pnlCents)}">${esc($s(d.pnlCents))}</td></tr>`).join('');
     return `<div class="pl-pnl" data-pl-pnl="1" role="group" aria-label="real money realized P&amp;L"><div class="pl-pnl-tag">REAL MONEY (Kalshi) <span class="dim">· realized from settled trades, fees included</span></div>` +
-      `<div class="pl-pnl-row"><div class="pl-pnl-box"><div class="pl-pnl-lbl">TOTAL P&amp;L <span class="dim">all time</span></div>${num(S.totalCents)}</div>` +
+      `<div class="pl-pnl-row">${total}` +
       `<div class="pl-pnl-box"><div class="pl-pnl-lbl">TODAY <span class="dim">${S.today ? esc(dayName(S.today)) + ' PT' : 'PT'}</span></div>${num(S.todayCents)}<div class="pl-pnl-sub dim">${esc(S.todaySettled || 0)} settled today</div></div></div>` +
-      `<div class="pl-pnl-rec mono">${rec} · ${fin(S.fills) ? esc(S.fills) : '—'} fills${fin(m.openRiskCents) && m.openRiskCents > 0 ? ` · <span class="pl-pnl-risk">open risk now <b>${esc($c(m.openRiskCents))}</b></span>` : ''}</div>` +
+      `<div class="pl-pnl-rec mono">${rec} · ${fin(A.fills) ? esc(A.fills) : '—'} fills${fin(m.openRiskCents) && m.openRiskCents > 0 ? ` · <span class="pl-pnl-risk">open risk now <b>${esc($c(m.openRiskCents))}</b></span>` : ''}</div>` +
       (days ? `<div class="pl-scroll"><table class="pl-t mono pl-days"><caption class="dim sm">last 7 days (PT)</caption><thead><tr><th>date</th><th>trades</th><th>W–L</th><th>P&amp;L</th></tr></thead><tbody>${days}</tbody></table></div>` : '') + '</div>';
   }
   /** Same look as the paper cards: CME (interactive canvas, public/livechart.js) or Classic (inline SVG step lines), per the chart-style toggle. */
@@ -223,9 +231,9 @@
     const trades = `<h3 class="pl-h3">Live trades <span class="dim">(real money)</span></h3><div class="pl-scroll"><table class="pl-t mono"><thead><tr><th>time</th><th>market</th><th>limit</th><th>fill</th><th>size</th><th>fee</th><th>result</th><th>P&amp;L</th><th>balance</th><th>sizing (bankroll × % → order $)</th></tr></thead><tbody>${rows || '<tr><td colspan="10" class="dim">no live trades yet</td></tr>'}</tbody></table></div>`;
     const cmp = (P.compare || []).map((r) => `<tr${r.shadow && !r.live ? ' class="pl-shadowrow"' : ''}><td>${esc(r.tk)}<div class="pl-szm">${sz(r.sizing)}</div></td><td>${ct(r.decisionAsk)}</td><td>${r.paper ? `${r.paper.filled} @ ${ct(r.paper.vwapCents)}` : '—'}</td><td>${r.live ? `${r.live.filled} @ ${ct(r.live.vwapCents)}` : r.shadow ? `<span class="pl-nomoney">SHADOW · NO MONEY</span> ${r.shadow.skipped ? esc(r.shadow.skipped) : `${r.shadow.contracts} @ ≤${ct(r.shadow.limit)}`}` : '—'}</td><td>${ct(r.slippageCents)}</td><td>${r.unfilled == null ? '—' : r.unfilled}</td><td class="pl-szc">${sz(r.sizing)}</td></tr>`).join('');
     const compare = `<h3 class="pl-h3">Paper v3 7% vs live <span class="dim">(fill, slippage, unfilled)</span></h3><div class="pl-scroll"><table class="pl-t mono"><thead><tr><th>market</th><th>ask</th><th>paper fill</th><th>live fill</th><th>slip</th><th>unfilled</th><th>sizing (bankroll × % → order $)</th></tr></thead><tbody>${cmp || '<tr><td colspan="7" class="dim">no v3 takes yet</td></tr>'}</tbody></table></div>`;
-    return head + banner + why + ctl + recBox + resetBox + phone + deskOnly + lastAct + oom + facts + env + ktest + arm + recover + xferBlock(P, o) + (chip === 'DISABLED' ? '' : pnlHeader(P) + liveChart(P, o) + txList(P, o)) + trades + compare;
+    return head + banner + why + ctl + recBox + resetBox + phone + deskOnly + lastAct + oom + facts + env + ktest + arm + recover + xferBlock(P, o) + (chip === 'DISABLED' ? '' : pnlHeader(P, o.pnlPeriod) + liveChart(P, o) + txList(P, o)) + trades + compare;
   }
-  const API = { render, POOLS, liveData, liveSpec, pnlHeader };
+  const API = { render, POOLS, liveData, liveSpec, pnlHeader, nextPeriod };
   if (typeof module === 'object' && module.exports) { module.exports = API; return; }
   const H = (root.HAWSE = root.HAWSE || { onState: [] }); H.onState = H.onState || [];
   const local = /^(localhost|127(\.\d+){3}|\[::1\])$/.test(location.hostname);
@@ -234,11 +242,12 @@
   setInterval(() => { if (armCheck) paint(false); }, 5000); // the confirm step goes stale after 2 min
   // after an ARM/RESET the server answers with the new state: show it at once (the next stream push replaces this copy)
   const confirmed = (r) => { if (r && r.ok && r.state && lastP) lastP = Object.assign({}, lastP, { state: r.state, statusChip: r.state === 'DISARMED' ? 'DISARMED-SHADOW' : r.state, haltReason: r.state === 'HALTED' ? lastP.haltReason : null }); };
+  let pnlPeriod = 'all'; try { pnlPeriod = localStorage.getItem('hawse.pilot.pnlPeriod') || 'all'; } catch (_) { /* private mode: all time */ }
   let last = '', lastP = null, act = null; const xf = { form: { amount: '', from: 0, to: 2 }, confirm: null, retry: null };
   const paint = (force) => { const el = document.getElementById('pilotBody'); if (!el) return;
     const a = document.activeElement; if (!force && a && a.dataset && /^(phrase|reset-phrase|xfer-amount|xfer-from|xfer-to)$/.test(a.dataset.pilot || '')) return; // do not repaint while typing
     const C = H.charts, cme = !C || !C.isCme || C.isCme();
-    const h = render(lastP, { local, link, armCheck, cme, act, tf: lc.tfSel, xferForm: xf.form, xferConfirm: xf.confirm, xferRetry: xf.retry }); if (h !== last) { last = h; el.innerHTML = h; } drawLive(); };
+    const h = render(lastP, { local, link, armCheck, cme, act, tf: lc.tfSel, pnlPeriod, xferForm: xf.form, xferConfirm: xf.confirm, xferRetry: xf.retry }); if (h !== last) { last = h; el.innerHTML = h; } drawLive(); };
   // the live chart: public/livechart.js (time frames, zoom, pan, crosshair). lc keeps the chosen time frame and zoom window across repaints.
   const lc = { tfSel: null, tf: 'All', view: null, follow: false, hover: null }; let spP = null, spC = null;
   const spec = () => (spP === lastP ? spC : ((spP = lastP), (spC = liveSpec(lastP))));
@@ -253,6 +262,8 @@
   document.addEventListener('keydown', (e) => { const d = e.key === 'Enter' && e.target && e.target.dataset && e.target.dataset.pilot; const btn = d === 'phrase' ? 'arm' : d === 'reset-phrase' ? 'reset' : null;
     if (btn) { const b = e.target.parentNode.querySelector(btn === 'arm' ? '[data-pilot="arm"],[data-pilot="arm-phone"]' : `[data-pilot="${btn}"]`); if (b) { e.preventDefault(); b.click(); } } });
   document.addEventListener('click', async (e) => { const b = e.target.closest && e.target.closest('[data-pilot]'); if (!b || !b.closest('#pilotBody')) return;
+    if (b.dataset.pilot === 'pnl-period') { pnlPeriod = b.dataset.next || 'all'; try { localStorage.setItem('hawse.pilot.pnlPeriod', pnlPeriod); } catch (_) { /* not saved */ }
+      paint(true); const nb = document.querySelector('#pilotBody [data-pilot="pnl-period"]'); if (nb && nb.focus) nb.focus({ preventScroll: true }); return; }
     if (b.dataset.pilot === 'tf') { lc.tfSel = b.dataset.tf; lc.view = null; lc.follow = false; lc.hover = null; paint(true); return; }
     if (b.dataset.pilot === 'halt') { b.disabled = true; const r = await post('halt'); b.disabled = false; if (!r.ok) alert('HALT: ' + (r.error || 'failed')); }
     if (b.dataset.pilot === 'test-key') { b.disabled = true; await post('test-key'); b.disabled = false; }

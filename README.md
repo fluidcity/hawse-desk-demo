@@ -992,6 +992,14 @@ changes are handled (Nov 1 2026 is a 25-hour day). Under them: the W–L record,
 **open risk now**. A **last 7 days (PT)** table lists each day's settled trades, W–L and P&L. Anything with no data shows **"—"**, never $0.
 All of this comes from `LiveHistory.pnl()` in `server/live/kalshi-live-history.js`; it is display only.
 
+**Live card: tap the TOTAL P&L to change its period (asked for by Bryan).** The big TOTAL number is a button (>= 44 px, dashed border, "tap to
+change · next: …" hint; Enter / Space with a keyboard) that cycles **all time → this week → this month → this year → all time**. The desk computes
+all four in the live history feed (`pnl.periods` from `server/live/kalshi-live-history.js`) on the America/Los_Angeles calendar: week = since
+Monday 00:00 PT, month = calendar month to date, year = calendar year to date (boundaries come from PT day keys, so DST changes never move them;
+tested with fixed timestamps on both sides of each boundary and both DST changes). The label says which period ("TOTAL P&L · this week · since
+Mon Oct 26 PT"), the W–L / win-rate / settled / fills line follows the selected period, and the choice is kept in `localStorage`
+(`hawse.pilot.pnlPeriod`). TODAY and the 7-day table are unchanged. Real ledger settles only; a period with no settle shows "—".
+
 The CME live chart is now an interactive canvas in `public/livechart.js`. It has no dependency, no CDN and makes no network call.
 - **Time frames.** Buttons **1H / 6H / 1D / 1W / All**, each at least 44 px; the default is 1D once there is more than a day of data, otherwise All.
 - **Zoom, pan and reset.** Wheel or pinch zooms around the pointer, down to a 2-minute window. Drag pans the chart, and `touch-action: pan-y`

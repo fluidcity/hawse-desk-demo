@@ -21,6 +21,16 @@ const DAY_FMT = new Intl.DateTimeFormat('en-CA', { timeZone: TZ, year: 'numeric'
 function ptDay(ms) { if (!Number.isFinite(ms)) return null; const p = {}; for (const x of DAY_FMT.formatToParts(new Date(ms))) p[x.type] = x.value; return `${p.year}-${p.month}-${p.day}`; }
 /** n calendar day keys ending at dayKey, oldest first (pure date arithmetic on the key, so no DST hour can skip or repeat a day). */
 function dayKeysBack(dayKey, n) { const [y, m, d] = dayKey.split('-').map(Number), out = []; for (let i = n - 1; i >= 0; i--) out.push(new Date(Date.UTC(y, m - 1, d - i)).toISOString().slice(0, 10)); return out; }
+const MON = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+/**
+ * First PT calendar day of the week (Monday), month and year containing dayKey. Pure date arithmetic on the key (the key itself came
+ * from Intl in America/Los_Angeles), so a DST change can never move a boundary: "this week" = since Monday 00:00 PT, and so on.
+ */
+function periodStarts(dayKey) {
+  const [y, m, d] = dayKey.split('-').map(Number), dow = new Date(Date.UTC(y, m - 1, d)).getUTCDay(); // 0 = Sunday
+  return { week: new Date(Date.UTC(y, m - 1, d - ((dow + 6) % 7))).toISOString().slice(0, 10), month: dayKey.slice(0, 7) + '-01', year: dayKey.slice(0, 4) + '-01-01' };
+}
+const PERIODS = ['all', 'week', 'month', 'year'];
 /**
  * Thin balance reads for the browser: keep the first and last read, the first read at or after every trade marker (the read the marker
  * sits on), and spend the rest of the budget half on the newest 24 hours and half on everything older (uniform). Points are in time order.
@@ -119,7 +129,16 @@ class LiveHistory {
   pnl() {
     const R = this.realized, today = ptDay(this.now()), td = this.days.get(today);
     const daily = dayKeysBack(today, 7).map((k) => { const d = this.days.get(k); return { day: k, trades: d ? d.trades : 0, wins: d ? d.wins : 0, losses: d ? d.losses : 0, pnlCents: d && d.trades ? d.pnlCents : null, fills: d ? d.fills : 0 }; });
-    return { tz: TZ, today, totalCents: R.n ? R.cents : null, todayCents: td && td.trades ? td.pnlCents : null, todaySettled: td ? td.trades : 0,
+    const st = periodStarts(today), periods = {};
+    for (const k of PERIODS) {
+      const from = k === 'all' ? null : st[k], a = { cents: 0, settled: 0, wins: 0, losses: 0, fills: 0 };
+      for (const [dk, d] of this.days) if (dk <= today && (!from || dk >= from)) { a.cents += d.pnlCents; a.settled += d.trades; a.wins += d.wins; a.losses += d.losses; a.fills += d.fills; }
+      if (k === 'all') Object.assign(a, { cents: R.cents, settled: R.n, wins: R.wins, losses: R.losses, fills: this.fills }); // all time = every settle line (also ones without a timestamp)
+      const [fy, fm, fd] = from ? from.split('-').map(Number) : [];
+      const label = k === 'all' ? 'all time' : k === 'week' ? `this week · since Mon ${MON[fm - 1]} ${fd}` : k === 'month' ? `this month · ${MON[fm - 1]} ${fy}` : `this year · ${fy}`;
+      periods[k] = { key: k, label, since: from, cents: a.settled ? a.cents : null, settled: a.settled, wins: a.wins, losses: a.losses, fills: a.fills, winRate: a.settled ? a.wins / a.settled : null };
+    }
+    return { tz: TZ, today, periods, totalCents: R.n ? R.cents : null, todayCents: td && td.trades ? td.pnlCents : null, todaySettled: td ? td.trades : 0,
       wins: R.wins, losses: R.losses, settled: R.n, fills: this.fills, winRate: R.n ? R.wins / R.n : null, daily };
   }
   /**
@@ -139,4 +158,4 @@ class LiveHistory {
   }
 }
 
-module.exports = { LiveHistory, txOf, ptDay, dayKeysBack, downsample, SAME_ROW_GAP_MS, VIEW_POINTS, MAX_MARKS };
+module.exports = { LiveHistory, txOf, ptDay, dayKeysBack, periodStarts, PERIODS, downsample, SAME_ROW_GAP_MS, VIEW_POINTS, MAX_MARKS };

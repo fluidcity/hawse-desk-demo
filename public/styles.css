@@ -399,6 +399,11 @@ canvas.orb-mid{width:100%;height:110px}
 .a-pilot .pl-pnl-num{font-size:clamp(34px,10vw,56px);font-weight:800;white-space:nowrap;line-height:1.05;letter-spacing:-.02em;font-family:var(--mono);font-variant-numeric:tabular-nums;color:#c9d1d9;margin:2px 0}
 .a-pilot .pl-pnl-num.pos{color:var(--mint)}.a-pilot .pl-pnl-num.neg{color:var(--hot)}
 .a-pilot .pl-pnl-sub{font-size:11px}
+.a-pilot .pl-pnl-cyc{display:block;width:100%;min-height:44px;text-align:left;font:inherit;color:inherit;background:rgba(255,255,255,.015);border:1px dashed #3a4350;border-radius:8px;padding:6px 8px;margin:0;cursor:pointer;-webkit-tap-highlight-color:transparent;touch-action:manipulation}
+.a-pilot .pl-pnl-cyc:hover{border-color:#5a6676;background:rgba(255,255,255,.035)}.a-pilot .pl-pnl-cyc:active{background:rgba(255,255,255,.06)}
+.a-pilot .pl-pnl-cyc:focus-visible{outline:2px solid #ffb020;outline-offset:2px}
+.a-pilot .pl-pnl-cyc .pl-pnl-lbl,.a-pilot .pl-pnl-cyc .pl-pnl-num,.a-pilot .pl-pnl-cyc .pl-pnl-hint{display:block}
+.a-pilot .pl-pnl-hint{font-size:11px}
 .a-pilot .pl-pnl-rec{font-size:13px;margin:6px 0 4px}.a-pilot .pl-pnl-risk{color:#ffb020}
 .a-pilot .pl-t.pl-days{min-width:0;max-width:520px}.a-pilot .pl-days caption{text-align:left;padding:2px 0}.a-pilot .pl-days td:nth-child(n+2),.a-pilot .pl-days th:nth-child(n+2){text-align:right}
 .a-pilot .pl-tf{display:flex;flex-wrap:wrap;gap:6px;margin:4px 0 6px}

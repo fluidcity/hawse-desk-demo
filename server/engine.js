@@ -1,4 +1,5 @@
 'use strict';
+const { memInfo, memLine, sse } = require('./lib/mem');
 const path = require('path');
 const { Watchdog } = require('./lib/watchdog');
 // HAWSE paper engine: wires feeds -> strategies -> paper broker -> ledger -> risk gates.
@@ -64,10 +65,12 @@ class Engine {
     this.loop = setInterval(() => this.tick(), 2000);
     this.sampler = setInterval(() => this.ledger.sample(), 5000);
     this.ledger.sample();
+    const ml = () => { try { (this.log || ((m) => console.log(m)))(memLine(this)); } catch { /* observability never breaks the desk */ } };
+    this.memTimer = setInterval(ml, (this.cfg.memLogMs || 5 * 60e3)); if (this.memTimer.unref) this.memTimer.unref(); ml();
     this.watchdog = new Watchdog({ health: this.health, log: this.log || ((m) => console.log(m)), ...(this.cfg.watchdog || {}) }).watchAll(this.feeds);
     if (!this.cfg.watchdog || this.cfg.watchdog.enabled !== false) this.watchdog.start();
   }
-  stop() { clearInterval(this.loop); clearInterval(this.sampler); this.watchdog && this.watchdog.stop(); for (const f of Object.values(this.feeds)) f.stop && f.stop(); }
+  stop() { clearInterval(this.loop); clearInterval(this.sampler); clearInterval(this.memTimer); this.watchdog && this.watchdog.stop(); for (const f of Object.values(this.feeds)) f.stop && f.stop(); }
   tick(now = Date.now()) {
     for (const s of this.strategies) {
       try { s.tick(now); } catch (e) { this.tape.push({ kind: 'error', strategy: s.id, msg: 'tick error: ' + e.message }); }
@@ -132,6 +135,7 @@ class Engine {
       // Stale = a source that has delivered before but not within its staleMs. Shown as a top-bar badge + STALE tags.
       stale: this.health.list().filter((h) => h.status === 'stale').map((h) => ({ id: h.id, label: h.label, ageMs: h.ageMs, staleMs: h.staleMs, mock: h.kind === 'mock' })),
       watchdog: this.watchdog ? this.watchdog.view() : null, monoUptimeMs: Math.round(process.uptime() * 1000),
+      mem: { ...memInfo(), sse: { ...sse } }, // heap growth visible remotely (server/lib/mem.js)
     };
   }
 }

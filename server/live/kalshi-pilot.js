@@ -166,17 +166,19 @@ class KalshiPilot {
     this.write({ t: 'session', state: this.state, hash: this.hash, pid: process.pid });
     if (this.v1 && this.v1.rowListeners) this.v1.rowListeners.push((r) => { try { this.onV1Row(r); } catch (e) { this.log('[kalshi-pilot] ' + e.message); } });
     this.asks = new Map();
-    if (this.kalshi && this.kalshi.on) this.kalshi.on('book', (e) => { if (e && e.tk && assetOf(e.tk) && e.ya != null) this.asks.set(e.tk, { ask: +e.ya, rx: e.rx }); });
+    if (this.kalshi && this.kalshi.on) this.kalshi.on('book', (e) => this.onAskBook(e));
     this.startupReconcile = this.reconcilePending('startup').catch((e) => this.halt('exception in startup reconcile: ' + e.message));
     // read-only: book any acked trade whose fills/settlement never made it into the ledger (never halts, never arms, never clears a halt)
     this.startupRecover = this.startupReconcile.then(() => (this.client ? this.recoverTrades('startup') : null)).catch(() => {});
     const t = setInterval(() => this.tick(), 1000); if (t.unref) t.unref(); this.timers.push(t);
   }
+  onAskBook(e) { if (e && e.tk && assetOf(e.tk) && e.ya != null) this.asks.set(e.tk, { ask: +e.ya, rx: e.rx }); }
   stop() { for (const t of this.timers) clearInterval(t); this.timers = []; }
   killed() { return !!(this.killFile && fs.existsSync(this.killFile)); }
   tick() {
     if (this.killed() && this.state !== 'HALTED') this.halt('kill file present (' + path.basename(this.killFile) + ')');
     this.refreshInfo().catch(() => {}); // display only, throttled to once a minute
+    { const now = this.now(); if (!this.asksPrunedAt || now - this.asksPrunedAt > 60000) { this.asksPrunedAt = now; if (this.asks) for (const [tk, a] of this.asks) if (!(a.rx > now - 3600e3)) this.asks.delete(tk); } } // bounded: one ask per ticker, forgotten 1 h after its last book (15-min markets)
     for (const s of this.signals.values()) if (s.fills.length && !s.settle && s.settlePending && this.now() - s.settlePending.at > 60000) this.trySettle(s.tk).catch(() => {});
   }
   // ---- halts --------------------------------------------------------------------------------------------------

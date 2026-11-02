@@ -147,7 +147,7 @@ class KalshiH2Paper {
     const now = this.now(), F = this.cfg.fill;
     for (const m of this.mk.values()) if (m.pending && now - m.pending.bookRx > F.nextSnapshotMaxMs + 1000) { const sig = m.pending; m.pending = null; this.append({ t: 'skip', reason: 'fill_snapshot_too_late', stage: 'fill', tk: sig.tk, series: sig.series, asset: sig.asset, signalAsk: sig.ya, lagMs: now - sig.bookRx }); }
     for (const [tk, f] of this.fills) if (!f.settled && f.close && now > f.close + this.cfg.settlement.timeoutHours * 3600e3) this.append({ t: 'settle_timeout', tk, series: f.series });
-    for (const [tk, m] of this.mk) if (m.decided && !m.pending && m.lastRx && now - m.lastRx > 2 * 3600e3) this.mk.delete(tk);
+    for (const [tk, m] of this.mk) if (!m.pending && m.lastRx && now - m.lastRx > 2 * 3600e3) this.mk.delete(tk); // bounded: undecided markets too (2 h with no book = a 15-min market long closed; never fires on a live one)
     if (!this.halted) { const st = this.stats(); for (const r of st.failStops) { this.haltOnce(r); break; } }
     if (this.health) this.health.ok('paper.kalshi-h2', 0);
   }

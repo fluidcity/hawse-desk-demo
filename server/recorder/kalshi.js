@@ -146,7 +146,9 @@ class KalshiRecorder {
         this.store.write('kalshi.market', row); this.emit('settle', row);
       }
     }
-    for (const [tk, m] of this.markets) if (m.settled && m.close && now - m.close > 3 * 3600e3) this.markets.delete(tk);
+    // Bounded (2026-11-01): also forget 'extra-dropped' markets (never settle-polled, so they were never deleted and each kept
+    // up to 5000 trade ids) once they are 3 h past close. Nothing is polled or emitted for them after close.
+    for (const [tk, m] of this.markets) if (m.close && now - m.close > 3 * 3600e3 && (m.settled || m.kind === 'extra-dropped')) this.markets.delete(tk);
   }
   async checkSeries() {
     for (const s of this.c.series) {

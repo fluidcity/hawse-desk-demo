@@ -19,6 +19,7 @@ function pilotLocal(req) {
   return localOnly(req.socket.remoteAddress, h);
 }
 const { resolveStatic } = require('./static');
+const { sseStream, memInfo } = require('./lib/mem');
 
 async function labRoute(lab, req, p, url, body) {
   if (!lab) return [404, { error: 'lab module disabled' }];
@@ -50,7 +51,7 @@ function createServer(engine, flags) {
     const url = new URL(req.url, 'http://x');
     const p = url.pathname;
     try {
-      if (p === '/api/health' && req.method === 'GET') return send(res, 200, { ok: true, mode: 'paper', uptimeSec: Math.round(process.uptime()) });
+      if (p === '/api/health' && req.method === 'GET') return send(res, 200, { ok: true, mode: 'paper', uptimeSec: Math.round(process.uptime()), heapUsedMB: memInfo().heapUsedMB, rssMB: memInfo().rssMB });
       if (p === '/api/state' && req.method === 'GET') return send(res, 200, engine.snapshot(flags));
       if (p === '/api/explain' && req.method === 'GET') return send(res, 200, { strategies: engine.explainAll() });
       if (p === '/api/providers' && req.method === 'GET') return send(res, 200, engine.providers.list());
@@ -86,8 +87,7 @@ function createServer(engine, flags) {
       if (p.startsWith('/api/lab')) { const r = await labRoute(engine.lab, req, p, url, body); if (r) return send(res, r[0], r[1]); }
       if (p === '/api/stream') {
         res.writeHead(200, { 'content-type': 'text/event-stream', 'cache-control': 'no-store', connection: 'keep-alive' });
-        const push = () => res.write('data: ' + JSON.stringify(engine.snapshot(flags)) + '\n\n');
-        push(); const iv = setInterval(push, 1500); req.on('close', () => clearInterval(iv)); return;
+        sseStream(req, res, () => engine.snapshot(flags), { everyMs: 1500 }); return; // bounded: skips frames a stalled client has not read (server/lib/mem.js)
       }
       if (req.method === 'POST' && p.startsWith('/api/')) {
         const b = await body(req);

@@ -63,11 +63,11 @@ function pilot({ env = ENV_ON, client = fakeClient(), dir = tmp(), v = fakes(), 
 }
 
 test('frozen hashes: pilot config pinned; v1/v2/v3 unchanged; pilot follows v3 7pct with daily stop OFF by default', () => {
-  assert.equal(sha('config/frozen/kalshi-live-pilot.json'), P.PILOT_SHA256);
+  assert.equal(sha('config/frozen/kalshi-live-pilot-p6.json'), P.PILOT_SHA256); assert.equal(sha('config/frozen/kalshi-live-pilot.json'), 'a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7', 'p5 kept as history');
   assert.equal(sha('config/frozen/kalshi-h2-v1.json'), '2f0053c4eb13bd48697eb06d4a6c841b327313393e97c619e96e3e9956c9675c');
   assert.equal(sha('config/frozen/kalshi-h2-v2.json'), 'ee5185f8e059a8995c557b474b873f47dae867be5f02fb021368c83cf0294a4c');
   assert.equal(sha('config/frozen/kalshi-h2-v3.json'), '5498e1cbea6c45e427876dd2971f041421ef18ad06c103dc7921898f5179ce1c');
-  assert.equal(CFG.perTradePct, 0.07); assert.equal(CFG.follows.line, '7pct'); assert.equal(CFG.version, 'p5'); assert.equal(CFG.bankrollCents, undefined, 'no bankroll cap'); assert.equal(CFG.balanceExchangeIndex, 2); assert.equal(P.PILOT_SHA256, 'a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7');
+  assert.equal(CFG.perTradePct, 0.07); assert.equal(CFG.follows.line, '7pct'); assert.equal(CFG.version, 'p6'); assert.equal(CFG.bankrollCents, undefined, 'no bankroll cap'); assert.equal(CFG.balanceExchangeIndex, 2); assert.equal(P.PILOT_SHA256, '37510c0514f47b482a864c6cfa6f5cfe6c2ce32f6e37fe6b0b02c989152ae323');
   assert.equal(CFG.dailyLossStopCents, null); assert.equal(CFG.shrinkToDailyBudget, false);
   assert.equal(CFG.maxOpenRiskCents, undefined); assert.equal(CFG.totalLossStopCents, undefined); assert.equal(CFG.maxTradeCents, undefined, 'no per-trade dollar ceiling');
   assert.ok(!Object.keys(CFG).some((k) => /loss ?limit|totalLoss/i.test(k)), 'no loss-limit field'); assert.equal(CFG.armPhrase, 'ARM LIVE'); assert.equal(P.loadPilotConfig().cfg.armPhrase, 'ARM LIVE'); assert.equal(CFG.order.maxPriceCents, 98);
@@ -118,7 +118,7 @@ test('sizing: 7% of the live bankroll ($10.50 at $150), price <= ask+1c and <= 9
   let z = P.planSlice(base); assert.equal(z.perTradeCents, 1050); assert.equal(z.contracts, 11); assert.deepEqual(z.bound, ['pct']);
   z = P.planSlice({ ...base, vol: 40 }); assert.equal(z.contracts, 4); assert.deepEqual(z.bound, ['participation']);
   z = P.planSlice({ ...base, vol: null }); assert.equal(z.contracts, 0); assert.deepEqual(z.bound, ['unknown_volume']);
-  z = P.planSlice({ ...base, bankrollCents: 10000000, vol: 1e9, tk: 'KXSOL15M-X', limitCents: 96, availCents: 1e9, openRiskCents: -1e9 }); assert.equal(z.caps.asset, Math.floor(25000 / 95));
+  z = P.planSlice({ ...base, bankrollCents: 10000000, vol: 1e9, tk: 'KXSOL15M-X', limitCents: 96, availCents: 1e9, openRiskCents: -1e9 }); assert.equal(z.caps.asset, Math.floor(500000 / 95), 'p6: SOL $5,000 ceiling');
   z = P.planSlice({ ...base, openRiskCents: 14500 }); assert.equal(z.contracts, 5); assert.ok(z.worstCents <= 500); assert.deepEqual(z.bound, ['openRisk']);
   z = P.planSlice({ ...base, openRiskCents: 14950 }); assert.equal(z.contracts, 0);
   z = P.planSlice({ ...base, filled: 5 }); assert.equal(z.contracts, 6);
@@ -325,9 +325,9 @@ test('full-balance bankroll: a $400 balance -> $400 bankroll and 7% = $28 (asset
   let z = big.plan({ tk: TK, decisionAsk: 95, limit: 96 }, 0, 1000); assert.equal(z.perTradeCents, 2800, '7% of $400 = $28'); assert.equal(z.contracts, 29); assert.equal(z.sizing.bankrollCents, 40000);
   const small = pilot().p; small.balanceCents = 9000; assert.equal(small.bankrollCents(), 9000, '$90 in the account -> $90 bankroll');
   assert.equal(small.plan({ tk: TK, decisionAsk: 95, limit: 96 }, 0, 1000).perTradeCents, 630);
-  // asset caps still bind on a big balance: SOL $250, ETH $400
-  const huge = pilot().p; huge.balanceCents = 1e7; z = huge.plan({ tk: 'KXSOL15M-26NOV011015-15', decisionAsk: 95, limit: 96 }, 0, 1e9); assert.equal(z.perTradeCents, 700000); assert.equal(z.contracts, Math.floor(25000 / 95)); assert.deepEqual(z.bound, ['asset']);
-  z = huge.plan({ tk: 'KXETH15M-26NOV011015-15', decisionAsk: 95, limit: 96 }, 0, 1e9); assert.equal(z.contracts, Math.floor(40000 / 95)); assert.equal(z.sizing.capBound, 'asset cap');
+  // the $5,000 per-asset ceiling (p6: same for BTC, ETH and SOL) still binds on a big balance
+  const huge = pilot().p; huge.balanceCents = 1e7; z = huge.plan({ tk: 'KXSOL15M-26NOV011015-15', decisionAsk: 95, limit: 96 }, 0, 1e9); assert.equal(z.perTradeCents, 700000); assert.equal(z.contracts, Math.floor(500000 / 95)); assert.deepEqual(z.bound, ['asset']);
+  z = huge.plan({ tk: 'KXETH15M-26NOV011015-15', decisionAsk: 95, limit: 96 }, 0, 1e9); assert.equal(z.contracts, Math.floor(500000 / 95)); assert.equal(z.sizing.capBound, 'asset cap');
   // no balance read at all: no bankroll (shadow skips, armed halts; tested below)
   assert.equal(pilot().p.bankrollCents(), null);
 });
@@ -356,6 +356,14 @@ test('bankroll follows deposits and wins (compounds) with no restart; armed halt
   const v2 = fakes(), c2 = fakeClient(); const x = pilot({ v: v2, client: c2 }).p; assert.ok((await x.arm('ARM LIVE')).ok);
   c2.getBalance = async () => { throw new Error('HTTP 503'); }; v2.take(); await x.signals.get(TK).run;
   assert.equal(x.state, 'HALTED'); assert.match(x.haltReason, /balance unreadable/); assert.equal(c2.calls.filter((q) => q[0] === 'create').length, 0);
+});
+
+test('p6: session and arm ledger lines record the p6 hash and version', async () => {
+  const { p, dir } = pilot(); assert.ok((await p.arm('ARM LIVE')).ok); p.disarm();
+  const rows = fs.readFileSync(path.join(dir, 'ledger.jsonl'), 'utf8').trim().split('\n').map((l) => JSON.parse(l));
+  const sess = rows.find((r) => r.t === 'session'), arm = rows.find((r) => r.t === 'arm');
+  assert.equal(sess.hash, P.PILOT_SHA256); assert.equal(sess.version, 'p6'); assert.equal(arm.hash, P.PILOT_SHA256); assert.equal(arm.version, 'p6');
+  assert.ok(P.PILOT_SHA256.startsWith('37510c05')); assert.ok(!JSON.stringify(rows).includes('PRIVATE'), 'no key material in the ledger');
 });
 
 test('arm phrase: exactly "ARM LIVE" (from the frozen config)', async () => {

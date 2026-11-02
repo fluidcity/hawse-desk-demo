@@ -131,6 +131,9 @@
     const times = series.length ? series[series.length > 1 ? 1 : 0].pts.map((q) => q[0]) : [];
     return { series, marks, realized: R, x0, x1, n: L.count || 0, tf: LC.defaultTf(times), ok: (L.count || 0) >= 2 && x1 > x0 && series.some((x) => x.pts.length >= 2) };
   }
+  /** Per-asset per-trade ceilings straight from the frozen config (p6: $5,000 each). */
+  const assetCaps = (c) => { const e = c && c.perAssetCapCents && Object.entries(c.perAssetCapCents); if (!e || !e.length) return 'asset caps —';
+    return 'asset caps ' + e.map(([a, v]) => esc(a) + ' $' + (v / 100).toLocaleString('en-US', { maximumFractionDigits: 0 })).join(' / '); };
   const dayName = (k) => new Date(k + 'T12:00:00Z').toLocaleDateString('en-US', { timeZone: 'UTC', weekday: 'short', month: 'short', day: 'numeric' });
   /**
    * Big REAL MONEY P&L header (above the live chart): realized total and today (America/Los_Angeles day), from the ledger's settle lines
@@ -200,7 +203,7 @@
       `<div class="pl-facts mono"><div><span class="dim">bankroll (shard ${esc(xi)} cash)</span> <b>${$c(m.bankrollCents)}</b></div>` +
       `<div><span class="dim">source</span> shard ${esc(xi)} available cash${esc(shardWhy)}, read at ${esc(t(bs.at, o.tz))}${m.balanceStale ? ' <b class="neg">stale</b>' : ''}${m.backoffMs ? ` <span class="dim">(rate-limited, retry in ${Math.round(m.backoffMs / 1000)}s)</span>` : ''}</div>` +
       `<div><span class="dim">realized P&amp;L</span> <b class="${tone(m.realizedCents)}">${$s(m.realizedCents)}</b> <span class="dim">(info only, not a limit)</span></div><div><span class="dim">open risk</span> ${$c(m.openRiskCents)} / ${$c(m.bankrollCents)} <span class="dim">(≤ bankroll)</span></div>` +
-      `<div><span class="dim">per trade</span> ${fin(c.perTradePct) ? Math.round(c.perTradePct * 100) + '%' : '—'} of shard cash${fin(m.perTradeCents) ? ' = <b>' + $c(m.perTradeCents) + '</b>' : ''} · ≤10% of volume · asset caps (compounds)</div>` +
+      `<div><span class="dim">per trade</span> ${fin(c.perTradePct) ? Math.round(c.perTradePct * 100) + '%' : '—'} of shard cash${fin(m.perTradeCents) ? ' = <b>' + $c(m.perTradeCents) + '</b>' : ''} · ≤10% of volume · ${assetCaps(c)} (compounds)</div>` +
       `<div>${esc(daily)}</div><div><span class="dim">limit</span> ≤ ask+1¢, ≤ ${esc(c.maxPriceCents)}¢, IOC, ${esc(c.maxSlices)} slices</div></div>` + poolsBlock(m, c, o);
     const e = P.env || {}, kt = P.keyTest;
     const env = `<div class="pl-env mono sm dim">Kalshi key: <b>${e.keySet ? 'set' : 'not set'}</b>${e.keySource ? ' (' + esc(e.keySource) + ')' : ''} · LIVE_PILOT_ENABLED ${e.enabledFlag ? '✓' : '✗'} · ${P.mainAccount ? 'main account (other positions and orders never touched)' : 'subaccount'} · config sha256 ${esc(String(P.hash || '').slice(0, 12))}…${P.killFile ? ' · <b class="neg">KILL file present</b>' : ''}</div>`;

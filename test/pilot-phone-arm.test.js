@@ -263,8 +263,8 @@ test('phone UI: confirm step shows shard 2 cash + read time, next trade size, si
 });
 
 test('frozen configs untouched by this feature', () => {
-  assert.equal(sha('config/frozen/kalshi-live-pilot.json'), P.PILOT_SHA256);
-  assert.ok(P.PILOT_SHA256.startsWith('a7d67ee9'));
+  assert.equal(sha('config/frozen/kalshi-live-pilot-p6.json'), P.PILOT_SHA256);
+  assert.ok(P.PILOT_SHA256.startsWith('37510c05')); assert.ok(sha('config/frozen/kalshi-live-pilot.json').startsWith('a7d67ee9'), 'p5 kept as history');
   assert.ok(sha('config/frozen/kalshi-h2-v1.json').startsWith('2f0053c4')); assert.ok(sha('config/frozen/kalshi-h2-v2.json').startsWith('ee5185f8')); assert.ok(sha('config/frozen/kalshi-h2-v3.json').startsWith('5498e1cb'));
 });
 

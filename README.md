@@ -916,16 +916,19 @@ v3 trades exactly v2's decisions and adds size caps. v1 and v2 are unchanged (`2
 ## Kalshi LIVE pilot (Stage Z) · REAL MONEY · ships DISABLED
 
 `server/live/kalshi-pilot.js` + `server/live/kalshi-rest.js` (the only file in the repo that names Kalshi order endpoints or builds an order).
-Follows frozen paper v3's **7% line** (`decision: take`) with real money: frozen config `config/frozen/kalshi-live-pilot.json`
-(version p5, sha256 `a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7`, pinned in code; any edit refuses to load).
+Follows frozen paper v3's **7% line** (`decision: take`) with real money: frozen config `config/frozen/kalshi-live-pilot-p6.json`
+(version p6, sha256 `37510c0514f47b482a864c6cfa6f5cfe6c2ce32f6e37fe6b0b02c989152ae323`, pinned in code; any edit refuses to load).
+History: p5 (`config/frozen/kalshi-live-pilot.json`, sha256 `a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7`) stays on disk unchanged
+and pinned in a test; p6 differs from it only in `perAssetCapCents` (ETH $400 → $5,000, SOL $250 → $5,000; Bryan 2026-11-01: "if we fix it now we won't
+really have to worry in the future"), plus version/status/source/supersedes. The session and arm ledger lines record the loaded hash and version.
 v1/v2/v3 paper code and configs are untouched; the pilot only reads v3's rows after v3 wrote them. The order path is **REST over HTTPS only**
 (no websocket; the WS recorder stays read-only market data).
 
-**Rules (frozen, p5):** **bankroll = the AVAILABLE CASH of exchange shard 2, the shard the 15-minute crypto markets trade on**
+**Rules (frozen, p6):** **bankroll = the AVAILABLE CASH of exchange shard 2, the shard the 15-minute crypto markets trade on**
 (`GET /portfolio/balance?exchange_index=2`, field `balance`, cents; `balanceExchangeIndex: 2` in the config) + the pilot's own open cost (already out of cash).
 It is **not** the all-shard total, **not** `portfolio_value` and **not** cash on any other shard: with $72.51 on shard 0, $7.03 on shard 1 and $0 on
 shard 2 the bankroll is **$0** and the pilot is "stopped trading". No bankroll cap; size **compounds** with wins and deposits on shard 2 ·
-per trade 7% of that bankroll, also capped by the v3 asset caps (BTC $5,000 / ETH $400 / SOL $250) and 10% of known volume · **total open risk ≤ the
+per trade 7% of that bankroll, also capped by a $5,000 per-trade ceiling per asset (BTC $5,000 / ETH $5,000 / SOL $5,000; p5 had ETH $400 / SOL $250, paper v3 keeps its own caps) and 10% of known volume · **total open risk ≤ the
 bankroll** · no per-trade dollar ceiling beyond those caps · **No loss limit:** the pilot trades until you press HALT or a safety stop trips; the balance
 can go to zero. Realized P&L is shown as information only, not a limit · if shard 2 can't fund one contract (including $0) the pilot simply **stops
 trading** with a plain status ("stopped trading: shard 2 cash $X can't buy one contract…", not an error, not a halt), sends no order even when ARMED,

@@ -13,8 +13,12 @@ const rest = require('./kalshi-rest');
 const { PoolTransfer } = require('./kalshi-transfer');
 const { LiveHistory } = require('./kalshi-live-history');
 
-const PILOT_FILE = path.join(__dirname, '..', '..', 'config', 'frozen', 'kalshi-live-pilot.json');
-const PILOT_SHA256 = 'a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7';
+// p6 (Bryan 2026-11-01): same $5,000 per-trade ceiling for BTC, ETH and SOL (the fixed ETH $400 / SOL $250 caps are gone); everything else as p5.
+const PILOT_FILE = path.join(__dirname, '..', '..', 'config', 'frozen', 'kalshi-live-pilot-p6.json');
+const PILOT_SHA256 = '37510c0514f47b482a864c6cfa6f5cfe6c2ce32f6e37fe6b0b02c989152ae323';
+// history: p5 stays on disk byte-for-byte under its old pin (not loaded)
+const PILOT_P5_FILE = path.join(__dirname, '..', '..', 'config', 'frozen', 'kalshi-live-pilot.json');
+const PILOT_P5_SHA256 = 'a7d67ee97402c392d450acb9e4b7965b24b55ed88925a76caff0e6d8fc32d2a7';
 const U = 10000; // u$ per cent
 const BALANCE_REFRESH_MS = 20000, BALANCE_TIMEOUT_MS = 4000; // shadow balance refresh: at most once per 20 s, 4 s timeout
 const ARM_CHECK_MS = 120000; // phone confirm step: the fresh cash read it showed is good for 2 min, once
@@ -166,7 +170,7 @@ class KalshiPilot {
     this.state = halted ? 'HALTED' : this.enabled ? 'DISARMED' : 'DISABLED'; // ARMED is never restored
     if (this.state === 'DISABLED') return; // inert: no listeners, no timers, no files, no network
     this.history.load();
-    this.write({ t: 'session', state: this.state, hash: this.hash, pid: process.pid });
+    this.write({ t: 'session', state: this.state, hash: this.hash, version: this.cfg ? this.cfg.version : null, pid: process.pid });
     if (this.v1 && this.v1.rowListeners) this.v1.rowListeners.push((r) => { try { this.onV1Row(r); } catch (e) { this.log('[kalshi-pilot] ' + e.message); } });
     this.asks = new Map();
     if (this.kalshi && this.kalshi.on) this.kalshi.on('book', (e) => this.onAskBook(e));
@@ -248,7 +252,7 @@ class KalshiPilot {
     }
     if (this.killed()) return { ok: false, error: 'kill file present' };
     const pf = await this.runPreflight(); if (!pf.ok) return { ok: false, error: 'preflight failed: ' + pf.error, preflight: pf };
-    this.state = 'ARMED'; this.write({ t: 'arm', balanceCents: pf.balanceCents, scopes: pf.scopes, scopeNote: pf.scopeNote, subaccount: pf.subaccount, keySource: pf.keySource, source, login });
+    this.state = 'ARMED'; this.write({ t: 'arm', hash: this.hash, version: this.cfg.version, balanceCents: pf.balanceCents, scopes: pf.scopes, scopeNote: pf.scopeNote, subaccount: pf.subaccount, keySource: pf.keySource, source, login });
     return { ok: true, state: 'ARMED', preflight: pf, source };
   }
   disarm(src) { if (this.state === 'ARMED') { this.state = 'DISARMED'; this.write({ t: 'disarm', ...KalshiPilot.src(src) }); } return { ok: true, state: this.state }; }
@@ -331,7 +335,7 @@ class KalshiPilot {
   openRiskCents() { let s = 0; for (const x of this.signals.values()) if (!x.settle && x.filled) s += Math.ceil((x.costMicros + x.feeMicros) / U); return s; }
   dayOpenRiskCents(day) { let s = 0; for (const x of this.signals.values()) if (!x.settle && x.filled && laDay(x.at || 0, this.cfg.dailyLossTimeZone) === day) s += Math.ceil((x.costMicros + x.feeMicros) / U); return s; }
   dayLossCents(day) { const v = this.dayLoss.get(day) || 0; return v < 0 ? Math.ceil(-v / U) : 0; }
-  /** Bankroll = the sizing shard's (cfg.balanceExchangeIndex, 2 in p5) available cash + the pilot's own open cost (already out of cash). No cap: it compounds. Never portfolio_value, other shards or pending deposits. null until a balance is read. */
+  /** Bankroll = the sizing shard's (cfg.balanceExchangeIndex, 2 in p5 and p6) available cash + the pilot's own open cost (already out of cash). No cap: it compounds. Never portfolio_value, other shards or pending deposits. null until a balance is read. */
   bankrollCents() {
     if (this.balanceCents == null) return null;
     return Math.max(0, this.balanceCents + this.openRiskCents());
@@ -443,7 +447,7 @@ class KalshiPilot {
   }
   markBalance() { this.balanceAt = this.balanceTryAt = this.now(); this.balanceStale = false; this.balanceError = null; }
   /**
-   * SHADOW sizing tracks the live sizing-shard cash: a read-only signed GET balance?exchange_index=<cfg> (2 in p5) before a decision, at most once
+   * SHADOW sizing tracks the live sizing-shard cash: a read-only signed GET balance?exchange_index=<cfg> (2 in p5 and p6) before a decision, at most once
    * per 20 s and with a short timeout. A failure never halts in shadow; it marks the balance stale and the last known value is
    * used (or the decision is skipped if there has never been one). A 429 backs off (doubling, up to 60 s) before the next read.
    */
@@ -756,4 +760,4 @@ class KalshiPilot {
   }
 }
 
-module.exports = { KalshiPilot, PERM_MSG, INSUF_MSG, isPermission, isInsufficient, parseBalance, INFO_REFRESH_MS, planSlice, sizingOf, BALANCE_REFRESH_MS, feeCents, worstCents, laDay, loadPilotConfig, PILOT_FILE, PILOT_SHA256, STATES };
+module.exports = { KalshiPilot, PERM_MSG, INSUF_MSG, isPermission, isInsufficient, parseBalance, INFO_REFRESH_MS, planSlice, sizingOf, BALANCE_REFRESH_MS, feeCents, worstCents, laDay, loadPilotConfig, PILOT_FILE, PILOT_SHA256, PILOT_P5_FILE, PILOT_P5_SHA256, STATES };
